@@ -1,4 +1,7 @@
+import { HttpStatus, Logger } from '@nestjs/common';
 import { SsrfPolicy } from '../auth/did-web/ssrf-guard';
+import { AppException } from '../errors/app-exception';
+import { ErrorCode } from '../errors/error-codes';
 import { FederationFetchError, SafeFederationClient } from './safe-federation-client';
 
 function resp(init: {
@@ -89,6 +92,33 @@ describe('SafeFederationClient', () => {
     const r = await client.get('https://localhost/contexts/x');
     expect(r.status).toBe(404);
     expect(r.body).toBe('nope');
+  });
+
+  it('maps a 429 to an AppException (503) and logs the Retry-After hint', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const fetchMock = jest.fn().mockResolvedValue(
+      resp({ status: 429, headers: { 'retry-after': '30' } }),
+    );
+    const client = new SafeFederationClient(loopbackPolicy, fetchMock as unknown as typeof fetch);
+
+    let caught: unknown;
+    try {
+      await client.get('https://localhost/contexts/x');
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(AppException);
+    const ex = caught as AppException;
+    expect(ex.errorCode).toBe(ErrorCode.FEDERATION_UPSTREAM_RATE_LIMITED);
+    expect(ex.getStatus()).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    expect(ex.getStatus()).toBe(503);
+    // Retry-After hint is surfaced in both the log and the error message.
+    expect(ex.message).toContain('30');
+    expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('30'))).toBe(true);
+    expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('429'))).toBe(true);
+
+    warnSpy.mockRestore();
   });
 
   it('surfaces FederationFetchError for transport failures', async () => {

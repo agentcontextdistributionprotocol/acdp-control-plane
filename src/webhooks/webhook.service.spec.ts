@@ -166,6 +166,89 @@ describe('WebhookService', () => {
     expect(deliveryRepo.markDelivered).toHaveBeenCalledWith('del-b', 200, 'tenant-b');
   });
 
+  it('honors a 429 Retry-After (delta-seconds): schedules next attempt >= 30s out', async () => {
+    webhookRepo.listActive.mockResolvedValue([
+      { id: 'wh-1', url: 'https://x.example/h', secret: 's', events: [] },
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: new Headers({ 'retry-after': '30' }),
+    });
+
+    const before = Date.now();
+    await svc.fireEvent({
+      event: 'context_published',
+      runId: 'r-1',
+      timestamp: '2026-01-01T00:00:00Z',
+    });
+    await new Promise((r) => setImmediate(r));
+
+    expect(deliveryRepo.markFailed).toHaveBeenCalledTimes(1);
+    const call = deliveryRepo.markFailed.mock.calls[0];
+    // markFailed(id, attempt, errorMessage, responseStatus, tenantId, nextAttemptAt)
+    const [id, attempt, , responseStatus, tenantId, nextAttemptAt] = call;
+    expect(id).toBe('del-1');
+    expect(attempt).toBe(1);
+    expect(responseStatus).toBe(429);
+    expect(tenantId).toBe('default');
+    const scheduledMs = Date.parse(nextAttemptAt);
+    expect(scheduledMs).toBeGreaterThanOrEqual(before + 30_000);
+    // It defers to the sweep — does NOT mark delivered.
+    expect(deliveryRepo.markDelivered).not.toHaveBeenCalled();
+  });
+
+  it('honors a 429 Retry-After in HTTP-date form', async () => {
+    webhookRepo.listActive.mockResolvedValue([
+      { id: 'wh-1', url: 'https://x.example/h', secret: 's', events: [] },
+    ]);
+    const target = new Date(Date.now() + 45_000);
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: new Headers({ 'retry-after': target.toUTCString() }),
+    });
+
+    await svc.fireEvent({
+      event: 'context_published',
+      runId: 'r-1',
+      timestamp: '2026-01-01T00:00:00Z',
+    });
+    await new Promise((r) => setImmediate(r));
+
+    expect(deliveryRepo.markFailed).toHaveBeenCalledTimes(1);
+    const nextAttemptAt = deliveryRepo.markFailed.mock.calls[0][5];
+    // HTTP-date has second precision; allow a 1s floor for rounding.
+    expect(Date.parse(nextAttemptAt)).toBeGreaterThanOrEqual(target.getTime() - 1000);
+  });
+
+  it('falls back to normal backoff when a 429 carries no parseable Retry-After', async () => {
+    webhookRepo.listActive.mockResolvedValue([
+      { id: 'wh-1', url: 'https://x.example/h', secret: 's', events: [] },
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: new Headers(),
+    });
+
+    await svc.fireEvent({
+      event: 'context_published',
+      runId: 'r-1',
+      timestamp: '2026-01-01T00:00:00Z',
+    });
+    // One microtask lets the first inline attempt record its failure (before
+    // the backoff sleep), which is all we assert on here.
+    await new Promise((r) => setImmediate(r));
+
+    // The first inline attempt records a failure with NO scheduled next
+    // attempt (the 429 deferral path passes a 6th arg; the ordinary failure
+    // path does not), i.e. normal backoff applies.
+    expect(deliveryRepo.markFailed).toHaveBeenCalled();
+    const firstCall = deliveryRepo.markFailed.mock.calls[0];
+    expect(firstCall[5]).toBeUndefined();
+  });
+
   it('does not deliver when no active webhook matches the event', async () => {
     webhookRepo.listActive.mockResolvedValue([
       { id: 'wh-1', url: 'https://x.example/h', secret: 's', events: ['context_archived'] },

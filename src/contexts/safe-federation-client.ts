@@ -17,8 +17,10 @@
  *
  * `fetchImpl` is injectable so tests drive it without a network.
  */
-import { Injectable, Optional } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { SsrfPolicy } from '../auth/did-web/ssrf-guard';
+import { AppException } from '../errors/app-exception';
+import { ErrorCode } from '../errors/error-codes';
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MB — RFC-ACDP-0006 context retrievals
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -40,6 +42,7 @@ export interface FederationResponse {
 
 @Injectable()
 export class SafeFederationClient {
+  private readonly logger = new Logger(SafeFederationClient.name);
   private readonly ssrf: SsrfPolicy;
   private readonly fetchImpl: typeof fetch;
 
@@ -111,6 +114,24 @@ export class SafeFederationClient {
         continue;
       }
 
+      // 3a. Upstream rate-limit — surface a clear 503 rather than relaying a
+      // bare 429 the caller can't act on. The upstream `Retry-After` hint
+      // (if any) is logged and echoed so operators can correlate the limit.
+      if (resp.status === 429) {
+        const retryAfter = resp.headers.get('retry-after');
+        const host = safeHost(url);
+        this.logger.warn(
+          `federation upstream '${host}' returned 429 Too Many Requests` +
+            (retryAfter ? ` (Retry-After: ${retryAfter})` : ' (no Retry-After)'),
+        );
+        throw new AppException(
+          ErrorCode.FEDERATION_UPSTREAM_RATE_LIMITED,
+          `upstream '${host}' is rate limiting` +
+            (retryAfter ? ` (Retry-After: ${retryAfter})` : ''),
+          HttpStatus.SERVICE_UNAVAILABLE,
+        );
+      }
+
       // 4. Read body with a hard cap.
       const body = await this.readCapped(resp, url);
       return {
@@ -153,6 +174,15 @@ function safeOrigin(url: string): string {
     return `${u.protocol}//${u.host}`;
   } catch {
     return '';
+  }
+}
+
+/** Host[:port] for log/error context, or '<unknown>' if unparseable. */
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '<unknown>';
   }
 }
 
