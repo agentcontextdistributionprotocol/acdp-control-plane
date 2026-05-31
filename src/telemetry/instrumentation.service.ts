@@ -33,6 +33,12 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['status'] as const,
   });
 
+  readonly ingestRejectedTotal = new client.Counter({
+    name: 'acdp_ingest_rejected_total',
+    help: 'Total inbound webhook events rejected at the ingest boundary, by reason',
+    labelNames: ['reason'] as const,
+  });
+
   onModuleInit(): void {
     client.collectDefaultMetrics();
   }
