@@ -30,6 +30,7 @@ export class IngestService {
     headerRunId?: string,
     headerTenantId: string = DEFAULT_TENANT_ID,
     originHeader?: string,
+    eventIdHeader?: string,
   ): Promise<void> {
     // Peek the payload to find the claimed authority. We don't ACT on it
     // until HMAC is verified below — it only selects the per-registry
@@ -125,7 +126,11 @@ export class IngestService {
     // then the enrolled base URL (payload.registry_base_url is applied in
     // the processor as a further fallback).
     const baseUrl = originHeader ?? enrolledBaseUrl;
-    await this.processor.process(payload, runId, tenantId, baseUrl);
+    // Dedup id preference: the X-ACDP-Event-Id header (REG-P2-6 echo), then
+    // the envelope's flattened event_id field. Undefined for legacy
+    // registries — the processor then falls back to a content fingerprint.
+    const eventId = eventIdHeader?.trim() || payload.event_id;
+    await this.processor.process(payload, runId, tenantId, baseUrl, eventId);
   }
 }
 

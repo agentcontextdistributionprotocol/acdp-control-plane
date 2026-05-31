@@ -48,6 +48,7 @@ describe('IngestService', () => {
       'run-123',
       'default',
       undefined,
+      undefined,
     );
   });
 
@@ -59,6 +60,7 @@ describe('IngestService', () => {
       expect.any(Object),
       'header-run',
       'default',
+      undefined,
       undefined,
     );
   });
@@ -72,6 +74,32 @@ describe('IngestService', () => {
       'payload-run',
       'default',
       undefined,
+      undefined,
+    );
+  });
+
+  it('threads the X-ACDP-Event-Id header into the processor as the dedup id', async () => {
+    const body = Buffer.from(JSON.stringify(validPayload));
+    await service.handle(body, sign(body), 'run-1', 'default', undefined, 'evt-hdr-1');
+    expect(processor.process).toHaveBeenCalledWith(
+      expect.any(Object),
+      'run-1',
+      'default',
+      undefined,
+      'evt-hdr-1',
+    );
+  });
+
+  it('falls back to payload.event_id when the header is absent', async () => {
+    const withId = { ...validPayload, event_id: 'evt-body-1' };
+    const body = Buffer.from(JSON.stringify(withId));
+    await service.handle(body, sign(body), 'run-1');
+    expect(processor.process).toHaveBeenCalledWith(
+      expect.any(Object),
+      'run-1',
+      'default',
+      undefined,
+      'evt-body-1',
     );
   });
 

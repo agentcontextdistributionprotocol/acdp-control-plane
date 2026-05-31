@@ -31,6 +31,7 @@ export class EventProcessorService {
     runIdOverride?: string,
     tenantId: string = DEFAULT_TENANT_ID,
     originHeader?: string,
+    eventId?: string,
   ): Promise<void> {
     const eventType = String(payload.type ?? 'unknown');
     const ctxId = payload.ctx_id;
@@ -44,7 +45,7 @@ export class EventProcessorService {
     const scenarioId = this.extractScenarioId(payload);
     const eventTs = String(payload.created_at ?? new Date().toISOString());
     const runId = runIdOverride ?? payload.run_id;
-    const fingerprint = this.eventFingerprint(payload, runId);
+    const fingerprint = this.dedupKey(payload, runId, eventId);
 
     // 1. Persist raw event. Idempotent: a registry retry with the same
     //    fingerprint is skipped (create() returns null on conflict) so we
@@ -133,12 +134,22 @@ export class EventProcessorService {
   }
 
   /**
-   * Stable content fingerprint for ingest idempotency. Identical retries
-   * of the same logical event collapse to one row; distinct events stay
-   * distinct because the key spans type, ctx_id, agent, timestamp, run and
-   * version.
+   * Dedup key for ingest idempotency.
+   *
+   * Prefer the registry-minted `event_id` (REG-P2-6): it is minted once at
+   * emit and reused across retries, so it dedupes even if the registry
+   * reshapes a payload field, and — unlike a content hash — never falsely
+   * collapses two genuinely distinct events that share (type, agent,
+   * created_at), e.g. the ctx_id-less context_retrieved / search_executed
+   * variants. Namespaced `evt:` so it can never collide with the hex content
+   * hash below.
+   *
+   * Fall back to a stable content fingerprint for registries not yet sending
+   * an event_id. The fallback hash shape is unchanged from migration 0009 so
+   * pre-existing rows keep deduping across the upgrade.
    */
-  private eventFingerprint(payload: AcdpWebhookEvent, runId?: string): string {
+  private dedupKey(payload: AcdpWebhookEvent, runId?: string, eventId?: string): string {
+    if (eventId) return `evt:${eventId}`;
     const key = [
       payload.type ?? '',
       payload.ctx_id ?? '',

@@ -47,6 +47,28 @@ describe('Ingest trust & reliability (integration)', () => {
     expect(data.length).toBe(1);
   });
 
+  it('dedupes on the X-ACDP-Event-Id header even when payload content differs', async () => {
+    // Same registry-minted event_id across a retry whose body was reshaped
+    // (different created_at) — would yield two distinct content fingerprints,
+    // but the stable event_id collapses them to one (REG-P2-6).
+    const base = event('evtid-run');
+    const r1 = await ctx.client.requestRaw('POST', '/ingest/acdp', {
+      body: { ...base, created_at: '2026-01-01T00:00:00Z' },
+      headers: { 'x-acdp-event-id': 'stable-evt-1' },
+    });
+    const r2 = await ctx.client.requestRaw('POST', '/ingest/acdp', {
+      body: { ...base, created_at: '2026-02-02T00:00:00Z' },
+      headers: { 'x-acdp-event-id': 'stable-evt-1' },
+    });
+    expect(r1.status).toBeLessThan(300);
+    expect(r2.status).toBeLessThan(300);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const resp = await ctx.client.requestRaw('GET', '/events', { query: { runId: 'evtid-run' } });
+    const data = (resp.body as { data: unknown[] }).data;
+    expect(data.length).toBe(1);
+  });
+
   it('registry enroll is admin-only', async () => {
     const nonAdmin = new TestClient(ctx.url, 'test-key');
     const denied = await nonAdmin.requestRaw('POST', '/registries/enroll', {

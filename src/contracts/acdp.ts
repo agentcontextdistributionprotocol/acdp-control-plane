@@ -9,6 +9,14 @@ export type RunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 /** Raw inbound webhook event (as posted by a registry). */
 export interface AcdpWebhookEvent {
+  /**
+   * Stable event id minted once by the registry and reused across retries
+   * (REG-P2-6 WireEnvelope; also echoed in the X-ACDP-Event-Id header). When
+   * present it is the preferred dedup key — see EventProcessorService.dedupKey.
+   */
+  event_id?: string;
+  /** Registry wire-envelope schema version (REG-P2-6). Tolerated, not required. */
+  schema_version?: string;
   type: string;
   ctx_id?: string;
   lineage_id?: string;

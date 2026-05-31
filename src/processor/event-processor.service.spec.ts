@@ -146,11 +146,25 @@ describe('EventProcessorService', () => {
     expect(webhookService.fireEvent).not.toHaveBeenCalled();
   });
 
-  it('sets a fingerprint on the persisted event', async () => {
+  it('sets a content-hash fingerprint when no event_id is supplied', async () => {
     await processor.process(makePayload(), 'run-1');
     expect(ceRepo.create).toHaveBeenCalledWith(
       expect.objectContaining({ fingerprint: expect.stringMatching(/^[a-f0-9]{32}$/) }),
     );
+  });
+
+  it('prefers the registry event_id over the content hash for the dedup key', async () => {
+    await processor.process(makePayload(), 'run-1', 'default', undefined, 'evt-uuid-123');
+    expect(ceRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ fingerprint: 'evt:evt-uuid-123' }),
+    );
+  });
+
+  it('keys dedup on event_id alone — distinct content with the same id collapses', async () => {
+    await processor.process(makePayload({ ctx_id: 'acdp://reg.example/a' }), 'run-1', 'default', undefined, 'evt-1');
+    await processor.process(makePayload({ ctx_id: 'acdp://reg.example/b' }), 'run-2', 'default', undefined, 'evt-1');
+    expect(ceRepo.create.mock.calls[0][0].fingerprint).toBe('evt:evt-1');
+    expect(ceRepo.create.mock.calls[1][0].fingerprint).toBe('evt:evt-1');
   });
 
   it('propagates registry base URL from the Origin header to registryRepo.upsert', async () => {

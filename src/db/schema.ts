@@ -32,9 +32,11 @@ export const contextEvents = pgTable(
     derivedFrom: jsonb('derived_from').$type<string[]>().notNull().default([]),
     registryAuthority: varchar('registry_authority', { length: 255 }).notNull(),
     scenarioId: varchar('scenario_id', { length: 128 }),
-    // Content fingerprint for ingest idempotency. A partial unique index on
+    // Dedup key for ingest idempotency. A partial unique index on
     // (tenant_id, fingerprint) (migration 0009) dedupes registry retries.
-    fingerprint: varchar('fingerprint', { length: 32 }),
+    // Holds either the registry's `evt:<event_id>` (REG-P2-6, retry-stable)
+    // or a 32-char content-hash fallback; widened to 80 in migration 0011.
+    fingerprint: varchar('fingerprint', { length: 80 }),
     rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>().notNull(),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' })
       .notNull()
