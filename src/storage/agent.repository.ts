@@ -25,7 +25,7 @@ export class AgentRepository {
         contextCount: 1,
       })
       .onConflictDoUpdate({
-        target: agents.agentDid,
+        target: [agents.tenantId, agents.agentDid],
         set: {
           lastSeen: now,
           contextCount: sql`${agents.contextCount} + 1`,

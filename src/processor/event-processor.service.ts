@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { AcdpStreamEvent, AcdpWebhookEvent } from '../contracts/acdp';
 import { StreamHubService } from '../events/stream-hub.service';
 import { AgentRepository } from '../storage/agent.repository';
@@ -29,6 +30,7 @@ export class EventProcessorService {
     payload: AcdpWebhookEvent,
     runIdOverride?: string,
     tenantId: string = DEFAULT_TENANT_ID,
+    originHeader?: string,
   ): Promise<void> {
     const eventType = String(payload.type ?? 'unknown');
     const ctxId = payload.ctx_id;
@@ -42,9 +44,12 @@ export class EventProcessorService {
     const scenarioId = this.extractScenarioId(payload);
     const eventTs = String(payload.created_at ?? new Date().toISOString());
     const runId = runIdOverride ?? payload.run_id;
+    const fingerprint = this.eventFingerprint(payload, runId);
 
-    // 1. Persist raw event
-    await this.contextEventRepo.create({
+    // 1. Persist raw event. Idempotent: a registry retry with the same
+    //    fingerprint is skipped (create() returns null on conflict) so we
+    //    don't double-insert lineage nodes or double-fire SSE/webhooks.
+    const created = await this.contextEventRepo.create({
       tenantId,
       eventType,
       eventTs,
@@ -58,8 +63,13 @@ export class EventProcessorService {
       derivedFrom,
       registryAuthority,
       scenarioId: scenarioId ?? null,
+      fingerprint,
       rawPayload: payload as unknown as Record<string, unknown>,
     });
+    if (created === null) {
+      this.logger.debug(`duplicate event skipped fingerprint=${fingerprint}`);
+      return;
+    }
 
     this.instrumentation.eventsIngestedTotal.inc({ event_type: eventType });
 
@@ -85,9 +95,15 @@ export class EventProcessorService {
       await this.agentRepo.upsert(agentId, registryAuthority, tenantId);
     }
 
-    // 5. Registry registry
+    // 5. Registry registry. Capture the base URL so the federation proxy
+    //    can reach this registry later: prefer the explicit payload field,
+    //    fall back to the request Origin header (BUG-CP-07 / FEAT-CP-04).
     if (registryAuthority) {
-      await this.registryRepo.upsert(registryAuthority, undefined, tenantId);
+      const baseUrl =
+        (typeof payload.registry_base_url === 'string'
+          ? payload.registry_base_url
+          : undefined) ?? originHeader;
+      await this.registryRepo.upsert(registryAuthority, baseUrl, tenantId);
     }
 
     // 6. Pub/sub — emit to SSE subscribers (per run + global)
@@ -101,16 +117,37 @@ export class EventProcessorService {
       registryAuthority,
       derivedFrom,
     };
-    if (runId) this.streamHub.publishToRun(runId, streamEvent);
-    this.streamHub.publishGlobal(streamEvent);
+    if (runId) this.streamHub.publishToRun(runId, streamEvent, tenantId);
+    this.streamHub.publishGlobal(streamEvent, tenantId);
 
-    // 7. Outbound webhooks — fire-and-forget
-    void this.webhookService.fireEvent({
-      event: eventType,
-      runId: runId ?? '',
-      timestamp: eventTs,
-      data: streamEvent as unknown as Record<string, unknown>,
-    });
+    // 7. Outbound webhooks — fire-and-forget, scoped to the event's tenant
+    void this.webhookService.fireEvent(
+      {
+        event: eventType,
+        runId: runId ?? '',
+        timestamp: eventTs,
+        data: streamEvent as unknown as Record<string, unknown>,
+      },
+      tenantId,
+    );
+  }
+
+  /**
+   * Stable content fingerprint for ingest idempotency. Identical retries
+   * of the same logical event collapse to one row; distinct events stay
+   * distinct because the key spans type, ctx_id, agent, timestamp, run and
+   * version.
+   */
+  private eventFingerprint(payload: AcdpWebhookEvent, runId?: string): string {
+    const key = [
+      payload.type ?? '',
+      payload.ctx_id ?? '',
+      payload.agent_id ?? '',
+      payload.created_at ?? '',
+      runId ?? '',
+      payload.version ?? '',
+    ].join(':');
+    return createHash('sha256').update(key).digest('hex').slice(0, 32);
   }
 
   private extractScenarioId(payload: AcdpWebhookEvent): string | undefined {

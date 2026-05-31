@@ -28,12 +28,19 @@ export interface ListByRunFilter {
 export class ContextEventRepository {
   constructor(private readonly database: DatabaseService) {}
 
-  async create(input: NewContextEvent): Promise<ContextEvent> {
+  /**
+   * Insert a raw event. When `input.fingerprint` is set, a duplicate
+   * (same tenant + fingerprint) is silently skipped via the partial
+   * unique index — returns null so the caller can short-circuit the
+   * rest of the pipeline (ingest idempotency, FEAT-CP-03).
+   */
+  async create(input: NewContextEvent): Promise<ContextEvent | null> {
     const rows = await this.database.db
       .insert(contextEvents)
       .values(input)
+      .onConflictDoNothing()
       .returning();
-    return rows[0];
+    return rows[0] ?? null;
   }
 
   async listByRun(
@@ -97,6 +104,18 @@ export class ContextEventRepository {
     ]);
 
     return { data, total: Number(totalResult[0]?.value ?? 0) };
+  }
+
+  /**
+   * Delete events older than `cutoffIso` (by event_ts) across all tenants.
+   * Used by the retention sweeper. Returns the number of rows deleted.
+   */
+  async deleteBefore(cutoffIso: string): Promise<number> {
+    const deleted = await this.database.db
+      .delete(contextEvents)
+      .where(lt(contextEvents.eventTs, cutoffIso))
+      .returning({ id: contextEvents.id });
+    return deleted.length;
   }
 
   async countByAgent(

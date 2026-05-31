@@ -7,6 +7,8 @@ import { StreamHubStrategy } from './stream-hub.interface';
 interface RedisEnvelope {
   scope: 'run' | 'global';
   runId?: string;
+  /** Partitions both run and global feeds by tenant. */
+  tenantId: string;
   event: AcdpStreamEvent;
 }
 
@@ -67,24 +69,27 @@ export class RedisStreamHubStrategy implements StreamHubStrategy {
     }
   }
 
-  publishToRun(runId: string, event: AcdpStreamEvent): void {
-    this.publish({ scope: 'run', runId, event });
+  publishToRun(runId: string, event: AcdpStreamEvent, tenantId: string): void {
+    this.publish({ scope: 'run', runId, tenantId, event });
   }
 
-  publishGlobal(event: AcdpStreamEvent): void {
-    this.publish({ scope: 'global', event });
+  publishGlobal(event: AcdpStreamEvent, tenantId: string): void {
+    this.publish({ scope: 'global', tenantId, event });
   }
 
-  streamRun(runId: string): Observable<AcdpStreamEvent> {
+  streamRun(runId: string, tenantId: string): Observable<AcdpStreamEvent> {
     return this.localSubject.asObservable().pipe(
-      filter((msg) => msg.scope === 'run' && msg.runId === runId),
+      filter(
+        (msg) =>
+          msg.scope === 'run' && msg.runId === runId && msg.tenantId === tenantId,
+      ),
       map((msg) => msg.event),
     );
   }
 
-  streamGlobal(): Observable<AcdpStreamEvent> {
+  streamGlobal(tenantId: string): Observable<AcdpStreamEvent> {
     return this.localSubject.asObservable().pipe(
-      filter((msg) => msg.scope === 'global'),
+      filter((msg) => msg.scope === 'global' && msg.tenantId === tenantId),
       map((msg) => msg.event),
     );
   }

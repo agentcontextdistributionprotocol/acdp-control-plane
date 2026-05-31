@@ -31,6 +31,7 @@ export class IngestController {
     @Headers('x-acdp-signature') signature: string,
     @Headers('x-run-id') runId?: string,
     @Headers('x-tenant-id') tenantIdHeader?: string,
+    @Headers('origin') origin?: string,
   ): Promise<void> {
     const body = req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
     // Tenant resolution priority: AuthGuard-pinned (when the endpoint
@@ -39,7 +40,9 @@ export class IngestController {
     // doesn't set tenantId; the header is the production path.
     const tenantId =
       req.tenantId || tenantIdHeader?.trim() || DEFAULT_TENANT_ID;
-    await this.ingestService.handle(body, signature, runId, tenantId);
+    // Origin is a fallback source for the registry's base URL when the
+    // payload omits registry_base_url — lets the federation proxy reach it.
+    await this.ingestService.handle(body, signature, runId, tenantId, origin?.trim());
   }
 
   @Get('health')

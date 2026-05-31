@@ -38,7 +38,11 @@ export class CapabilityRepository {
       .insert(agentCapabilities)
       .values({ ...row, tenantId })
       .onConflictDoNothing({
-        target: [agentCapabilities.agentDid, agentCapabilities.capabilityUri],
+        target: [
+          agentCapabilities.tenantId,
+          agentCapabilities.agentDid,
+          agentCapabilities.capabilityUri,
+        ],
       })
       .returning();
     if (inserted.length > 0) return rowToTriple(inserted[0]!);

@@ -24,6 +24,7 @@ export async function truncateAll(pool?: Pool): Promise<void> {
             context_events,
             agents,
             registries,
+            registry_enrollments,
             runs
           CASCADE
         `);

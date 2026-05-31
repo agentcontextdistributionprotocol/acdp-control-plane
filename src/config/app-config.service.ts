@@ -141,6 +141,17 @@ export class AppConfigService implements OnModuleInit {
   // HMAC secret used to verify incoming registry webhooks. Empty = skip (dev).
   readonly webhookSecret = process.env.WEBHOOK_SECRET ?? '';
 
+  // Outbound webhook delivery retry sweep. The scheduler retries pending
+  // deliveries across all tenants on this interval; <= 0 disables it.
+  readonly webhookRetryIntervalMs = readNumber('WEBHOOK_RETRY_INTERVAL_MS', 300000);
+
+  // When true, ingest accepts ONLY enrolled registry authorities (CP-3.1).
+  // Default false keeps single-tenant / pre-enrollment deployments working.
+  readonly ingestRequireEnrollment = readBoolean('INGEST_REQUIRE_ENROLLMENT', false);
+
+  // Bandit router exploration fraction (Thompson sampling). 0..1.
+  readonly banditExplorationFraction = readNumber('BANDIT_EXPLORATION_FRACTION', 0.05);
+
   // Playground URL — for run-completion notifications back to the playground.
   readonly playgroundUrl = process.env.PLAYGROUND_URL ?? '';
 

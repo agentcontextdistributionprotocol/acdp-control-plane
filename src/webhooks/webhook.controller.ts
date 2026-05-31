@@ -8,10 +8,12 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Req,
   ValidationPipe,
 } from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CreateWebhookDto, UpdateWebhookDto } from '../dto/webhook.dto';
+import { tenantOf, TenantedRequest } from '../tenant/request-tenant';
 import { WebhookService } from './webhook.service';
 
 @ApiTags('webhooks')
@@ -31,18 +33,22 @@ export class WebhookController {
       }),
     )
     body: CreateWebhookDto,
+    @Req() req: TenantedRequest,
   ) {
-    return this.webhookService.register({
-      url: body.url,
-      events: body.events ?? [],
-      secret: body.secret,
-    });
+    return this.webhookService.register(
+      {
+        url: body.url,
+        events: body.events ?? [],
+        secret: body.secret,
+      },
+      tenantOf(req),
+    );
   }
 
   @Get()
   @ApiOperation({ summary: 'List all outbound webhook subscriptions.' })
-  async listWebhooks() {
-    return this.webhookService.list();
+  async listWebhooks(@Req() req: TenantedRequest) {
+    return this.webhookService.list(tenantOf(req));
   }
 
   @Patch(':id')
@@ -58,14 +64,18 @@ export class WebhookController {
       }),
     )
     body: UpdateWebhookDto,
+    @Req() req: TenantedRequest,
   ) {
-    return this.webhookService.update(id, body);
+    return this.webhookService.update(id, body, tenantOf(req));
   }
 
   @Delete(':id')
   @HttpCode(204)
   @ApiOperation({ summary: 'Remove a webhook subscription.' })
-  async deleteWebhook(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.webhookService.remove(id);
+  async deleteWebhook(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: TenantedRequest,
+  ) {
+    return this.webhookService.remove(id, tenantOf(req));
   }
 }

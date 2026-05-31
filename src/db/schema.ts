@@ -32,6 +32,9 @@ export const contextEvents = pgTable(
     derivedFrom: jsonb('derived_from').$type<string[]>().notNull().default([]),
     registryAuthority: varchar('registry_authority', { length: 255 }).notNull(),
     scenarioId: varchar('scenario_id', { length: 128 }),
+    // Content fingerprint for ingest idempotency. A partial unique index on
+    // (tenant_id, fingerprint) (migration 0009) dedupes registry retries.
+    fingerprint: varchar('fingerprint', { length: 32 }),
     rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>().notNull(),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' })
       .notNull()
@@ -52,7 +55,7 @@ export const contextEvents = pgTable(
 export const runs = pgTable(
   'runs',
   {
-    runId: varchar('run_id', { length: 255 }).primaryKey(),
+    runId: varchar('run_id', { length: 255 }).notNull(),
     tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
     scenarioId: varchar('scenario_id', { length: 128 }).notNull(),
     status: varchar('status', { length: 32 }).notNull().default('running'),
@@ -69,6 +72,8 @@ export const runs = pgTable(
       .defaultNow(),
   },
   (t) => ({
+    // Composite PK: the same run_id can exist under different tenants.
+    pk: primaryKey({ columns: [t.tenantId, t.runId] }),
     tenantIdx: index('runs_tenant_idx').on(t.tenantId),
     statusIdx: index('runs_status_idx').on(t.status),
     scenarioIdx: index('runs_scenario_idx').on(t.scenarioId),
@@ -86,7 +91,7 @@ export const lineageEdges = pgTable(
     tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
   },
   (t) => ({
-    pk: primaryKey({ columns: [t.fromCtxId, t.toCtxId] }),
+    pk: primaryKey({ columns: [t.tenantId, t.fromCtxId, t.toCtxId] }),
     toIdx: index('le_to_idx').on(t.toCtxId),
     fromIdx: index('le_from_idx').on(t.fromCtxId),
     runIdx: index('le_run_idx').on(t.runId),
@@ -95,32 +100,70 @@ export const lineageEdges = pgTable(
 );
 
 // Known agent DIDs observed through events.
-export const agents = pgTable('agents', {
-  agentDid: text('agent_did').primaryKey(),
-  tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
-  firstSeen: timestamp('first_seen', { withTimezone: true, mode: 'string' })
-    .notNull()
-    .defaultNow(),
-  lastSeen: timestamp('last_seen', { withTimezone: true, mode: 'string' })
-    .notNull()
-    .defaultNow(),
-  registryAuthority: varchar('registry_authority', { length: 255 }),
-  contextCount: integer('context_count').notNull().default(0),
-});
+export const agents = pgTable(
+  'agents',
+  {
+    agentDid: text('agent_did').notNull(),
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    firstSeen: timestamp('first_seen', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+    lastSeen: timestamp('last_seen', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+    registryAuthority: varchar('registry_authority', { length: 255 }),
+    contextCount: integer('context_count').notNull().default(0),
+  },
+  (t) => ({
+    // Composite PK: the same agent_did can be seen under different tenants.
+    pk: primaryKey({ columns: [t.tenantId, t.agentDid] }),
+  }),
+);
 
 // Known registries observed through events.
-export const registries = pgTable('registries', {
-  authority: varchar('authority', { length: 255 }).primaryKey(),
-  tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
-  baseUrl: text('base_url'),
-  firstSeen: timestamp('first_seen', { withTimezone: true, mode: 'string' })
-    .notNull()
-    .defaultNow(),
-  lastSeen: timestamp('last_seen', { withTimezone: true, mode: 'string' })
-    .notNull()
-    .defaultNow(),
-  eventCount: integer('event_count').notNull().default(0),
-});
+export const registries = pgTable(
+  'registries',
+  {
+    authority: varchar('authority', { length: 255 }).notNull(),
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    baseUrl: text('base_url'),
+    firstSeen: timestamp('first_seen', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+    lastSeen: timestamp('last_seen', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+    eventCount: integer('event_count').notNull().default(0),
+  },
+  (t) => ({
+    // Composite PK: the same authority can be enrolled under different tenants.
+    pk: primaryKey({ columns: [t.tenantId, t.authority] }),
+  }),
+);
+
+// Registry enrollment — the ingest trust anchor (CP-3.1). One row per
+// authority (PK), binding it to a single tenant with an optional
+// per-registry webhook secret + base URL.
+export const registryEnrollments = pgTable(
+  'registry_enrollments',
+  {
+    authority: varchar('authority', { length: 255 }).primaryKey(),
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    baseUrl: text('base_url'),
+    registryDid: text('registry_did'),
+    webhookSecret: varchar('webhook_secret', { length: 255 }),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    tenantIdx: index('registry_enrollments_tenant_idx').on(t.tenantId),
+  }),
+);
 
 // Outbound webhook subscriptions.
 export const webhooks = pgTable('webhooks', {
@@ -216,7 +259,7 @@ export const agentCapabilities = pgTable(
     signature: text('signature').notNull(),
   },
   (t) => ({
-    pk: primaryKey({ columns: [t.agentDid, t.capabilityUri] }),
+    pk: primaryKey({ columns: [t.tenantId, t.agentDid, t.capabilityUri] }),
     capabilityIdx: index('agent_capabilities_capability_idx').on(t.capabilityUri),
     tenantIdx: index('agent_capabilities_tenant_idx').on(t.tenantId),
   }),
@@ -266,6 +309,8 @@ export type NewRun = typeof runs.$inferInsert;
 export type LineageEdge = typeof lineageEdges.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
 export type Registry = typeof registries.$inferSelect;
+export type RegistryEnrollment = typeof registryEnrollments.$inferSelect;
+export type NewRegistryEnrollment = typeof registryEnrollments.$inferInsert;
 export type Webhook = typeof webhooks.$inferSelect;
 export type NewWebhook = typeof webhooks.$inferInsert;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;

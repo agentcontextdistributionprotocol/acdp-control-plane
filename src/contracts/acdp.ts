@@ -17,7 +17,11 @@ export interface AcdpWebhookEvent {
   visibility?: string;
   version?: number;
   derived_from?: string[];
-  registry_authority: string;
+  // Optional on the wire: registries may omit it and the ingest path falls
+  // back to extracting the authority from ctx_id (acdp://<authority>/<id>).
+  registry_authority?: string;
+  /** Registry's public base URL, used to reach it via the federation proxy. */
+  registry_base_url?: string;
   scenario_id?: string;
   run_id?: string;
   created_at?: string;

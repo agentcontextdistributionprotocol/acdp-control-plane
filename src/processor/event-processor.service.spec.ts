@@ -116,8 +116,9 @@ describe('EventProcessorService', () => {
 
   it('publishes to per-run stream when runId present, always publishes globally', async () => {
     await processor.process(makePayload(), 'run-1');
-    expect(streamHub.publishToRun).toHaveBeenCalledWith('run-1', expect.any(Object));
+    expect(streamHub.publishToRun).toHaveBeenCalledWith('run-1', expect.any(Object), 'default');
     expect(streamHub.publishGlobal).toHaveBeenCalledTimes(1);
+    expect(streamHub.publishGlobal).toHaveBeenCalledWith(expect.any(Object), 'default');
 
     streamHub.publishToRun.mockClear();
     streamHub.publishGlobal.mockClear();
@@ -132,6 +133,46 @@ describe('EventProcessorService', () => {
     expect(registryRepo.upsert).toHaveBeenCalledWith('reg.example', undefined, 'default');
     expect(webhookService.fireEvent).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'context_published', runId: 'run-1' }),
+      'default',
+    );
+  });
+
+  it('skips all downstream side effects when the event is a duplicate (create → null)', async () => {
+    ceRepo.create.mockResolvedValueOnce(null);
+    await processor.process(makePayload(), 'run-1');
+    expect(runRepo.upsertFromEvent).not.toHaveBeenCalled();
+    expect(lineageRepo.upsert).not.toHaveBeenCalled();
+    expect(streamHub.publishGlobal).not.toHaveBeenCalled();
+    expect(webhookService.fireEvent).not.toHaveBeenCalled();
+  });
+
+  it('sets a fingerprint on the persisted event', async () => {
+    await processor.process(makePayload(), 'run-1');
+    expect(ceRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ fingerprint: expect.stringMatching(/^[a-f0-9]{32}$/) }),
+    );
+  });
+
+  it('propagates registry base URL from the Origin header to registryRepo.upsert', async () => {
+    await processor.process(makePayload(), 'run-1', 'default', 'https://reg-a.example');
+    expect(registryRepo.upsert).toHaveBeenCalledWith(
+      'reg.example',
+      'https://reg-a.example',
+      'default',
+    );
+  });
+
+  it('prefers payload.registry_base_url over the Origin header', async () => {
+    await processor.process(
+      makePayload({ registry_base_url: 'https://from-payload.example' }),
+      'run-1',
+      'default',
+      'https://from-origin.example',
+    );
+    expect(registryRepo.upsert).toHaveBeenCalledWith(
+      'reg.example',
+      'https://from-payload.example',
+      'default',
     );
   });
 

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, lt } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { DatabaseService } from '../db/database.service';
 import { WebhookDelivery, webhookDeliveries } from '../db/schema';
@@ -82,6 +82,31 @@ export class WebhookDeliveryRepository {
       .select()
       .from(webhookDeliveries)
       .where(and(eq(webhookDeliveries.status, 'pending'), eq(webhookDeliveries.tenantId, tenantId)));
+  }
+
+  /** All pending deliveries across every tenant — for the retry scheduler. */
+  async listAllPending(): Promise<WebhookDelivery[]> {
+    return this.database.db
+      .select()
+      .from(webhookDeliveries)
+      .where(eq(webhookDeliveries.status, 'pending'));
+  }
+
+  /**
+   * Delete delivered deliveries older than `cutoffIso` (by created_at)
+   * across all tenants — retention sweep. Returns rows deleted.
+   */
+  async deleteDeliveredBefore(cutoffIso: string): Promise<number> {
+    const deleted = await this.database.db
+      .delete(webhookDeliveries)
+      .where(
+        and(
+          eq(webhookDeliveries.status, 'delivered'),
+          lt(webhookDeliveries.createdAt, cutoffIso),
+        ),
+      )
+      .returning({ id: webhookDeliveries.id });
+    return deleted.length;
   }
 
   async listByWebhookId(

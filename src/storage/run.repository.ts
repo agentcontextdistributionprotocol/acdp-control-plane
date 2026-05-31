@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { and, count, desc, eq, sql, SQL } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, lt, ne, sql, SQL } from 'drizzle-orm';
 import { DatabaseService } from '../db/database.service';
 import { Run, runs } from '../db/schema';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
@@ -98,6 +98,41 @@ export class RunRepository {
     const row = await this.findById(runId, tenantId);
     if (!row) throw new NotFoundException(`run ${runId} not found`);
     return row;
+  }
+
+  /**
+   * Delete terminal (completed/failed/cancelled) runs whose completion
+   * predates `cutoffIso`. Tenant-agnostic — the retention sweeper purges
+   * across all tenants. Returns the number of rows deleted.
+   */
+  async deleteTerminalBefore(cutoffIso: string): Promise<number> {
+    const deleted = await this.database.db
+      .delete(runs)
+      .where(
+        and(
+          inArray(runs.status, ['completed', 'failed', 'cancelled']),
+          lt(runs.completedAt, cutoffIso),
+        ),
+      )
+      .returning({ runId: runs.runId });
+    return deleted.length;
+  }
+
+  /**
+   * True if `runId` exists under a tenant other than `tenantId`. Used to
+   * reject cross-tenant SSE subscriptions with 404 while still allowing a
+   * caller to subscribe to its own run before the first event creates it.
+   */
+  async existsForOtherTenant(
+    runId: string,
+    tenantId: string = DEFAULT_TENANT_ID,
+  ): Promise<boolean> {
+    const rows = await this.database.db
+      .select({ runId: runs.runId })
+      .from(runs)
+      .where(and(eq(runs.runId, runId), ne(runs.tenantId, tenantId)))
+      .limit(1);
+    return rows.length > 0;
   }
 
   async list(opts: ListRunsOptions): Promise<{ data: Run[]; total: number }> {

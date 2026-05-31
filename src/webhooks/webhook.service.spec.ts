@@ -32,13 +32,19 @@ describe('WebhookService', () => {
       markDelivered: jest.fn().mockResolvedValue(undefined),
       markFailed: jest.fn().mockResolvedValue(undefined),
       listPending: jest.fn().mockResolvedValue([]),
+      listAllPending: jest.fn().mockResolvedValue([]),
     };
 
     originalFetch = global.fetch;
     fetchMock = jest.fn();
     (global as any).fetch = fetchMock;
 
-    svc = new WebhookService(webhookRepo, deliveryRepo, mockInstrumentation());
+    svc = new WebhookService(
+      webhookRepo,
+      deliveryRepo,
+      mockInstrumentation(),
+      { webhookRetryIntervalMs: 0 } as any,
+    );
   });
 
   afterEach(() => {
@@ -106,7 +112,7 @@ describe('WebhookService', () => {
     });
     await new Promise((r) => setImmediate(r));
 
-    expect(deliveryRepo.markDelivered).toHaveBeenCalledWith('del-1', 200);
+    expect(deliveryRepo.markDelivered).toHaveBeenCalledWith('del-1', 200, 'default');
   });
 
   it('swallows repository errors so fire-and-forget callers do not crash', async () => {
@@ -119,6 +125,45 @@ describe('WebhookService', () => {
       }),
     ).resolves.toBeUndefined();
     expect(deliveryRepo.create).not.toHaveBeenCalled();
+  });
+
+  it('scopes fireEvent to the given tenant (listActive + delivery + markDelivered)', async () => {
+    webhookRepo.listActive.mockResolvedValue([
+      { id: 'wh-1', url: 'https://x.example/h', secret: 's', events: [] },
+    ]);
+    fetchMock.mockResolvedValue({ ok: true, status: 200 });
+
+    await svc.fireEvent(
+      { event: 'context_published', runId: 'r-1', timestamp: '2026-01-01T00:00:00Z' },
+      'tenant-a',
+    );
+    await new Promise((r) => setImmediate(r));
+
+    expect(webhookRepo.listActive).toHaveBeenCalledWith('tenant-a');
+    expect(deliveryRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ webhookId: 'wh-1', tenantId: 'tenant-a' }),
+    );
+    expect(deliveryRepo.markDelivered).toHaveBeenCalledWith('del-1', 200, 'tenant-a');
+  });
+
+  it('retryAllPending re-delivers across tenants, scoping each lookup to its delivery tenant', async () => {
+    deliveryRepo.listAllPending.mockResolvedValue([
+      { id: 'del-a', webhookId: 'wh-a', tenantId: 'tenant-a', payload: { event: 'e', runId: 'r', timestamp: 't' }, attempts: 1 },
+      { id: 'del-b', webhookId: 'wh-b', tenantId: 'tenant-b', payload: { event: 'e', runId: 'r', timestamp: 't' }, attempts: 1 },
+    ]);
+    webhookRepo.findById.mockImplementation((id: string, tenantId: string) =>
+      Promise.resolve({ id, url: `https://${tenantId}.example/h`, secret: 's', events: [] }),
+    );
+    fetchMock.mockResolvedValue({ ok: true, status: 200 });
+
+    const n = await svc.retryAllPending();
+    await new Promise((r) => setImmediate(r));
+
+    expect(n).toBe(2);
+    expect(webhookRepo.findById).toHaveBeenCalledWith('wh-a', 'tenant-a');
+    expect(webhookRepo.findById).toHaveBeenCalledWith('wh-b', 'tenant-b');
+    expect(deliveryRepo.markDelivered).toHaveBeenCalledWith('del-a', 200, 'tenant-a');
+    expect(deliveryRepo.markDelivered).toHaveBeenCalledWith('del-b', 200, 'tenant-b');
   });
 
   it('does not deliver when no active webhook matches the event', async () => {

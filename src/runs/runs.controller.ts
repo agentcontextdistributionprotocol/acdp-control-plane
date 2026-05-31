@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   MessageEvent,
+  NotFoundException,
   Param,
   Post,
   Query,
@@ -12,7 +13,6 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import type { Request } from 'express';
 import { Observable } from 'rxjs';
 import { AppConfigService } from '../config/app-config.service';
 import { LineageDag } from '../contracts/acdp';
@@ -23,17 +23,8 @@ import { StreamHubService } from '../events/stream-hub.service';
 import { CheckPolicy } from '../policy/check-policy.decorator';
 import { ContextEventRepository } from '../storage/context-event.repository';
 import { LineageEdgeRepository } from '../storage/lineage-edge.repository';
-import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
+import { tenantOf, TenantedRequest } from '../tenant/request-tenant';
 import { RunsService } from './runs.service';
-
-type TenantedRequest = Request & { tenantId?: string };
-
-/** Pull the AuthGuard-pinned tenant id, with a safe default. */
-function tenantOf(req: TenantedRequest): string {
-  return typeof req.tenantId === 'string' && req.tenantId
-    ? req.tenantId
-    : DEFAULT_TENANT_ID;
-}
 
 @ApiTags('runs')
 @Controller('runs')
@@ -119,12 +110,24 @@ export class RunsController {
   }
 
   @Sse(':runId/events/stream')
+  @CheckPolicy('run.read')
   @ApiOperation({ summary: 'Live SSE stream of events for a run.' })
-  streamRunEvents(@Param('runId') runId: string): Observable<MessageEvent> {
+  async streamRunEvents(
+    @Param('runId') runId: string,
+    @Req() req: TenantedRequest,
+  ): Promise<Observable<MessageEvent>> {
+    const tenantId = tenantOf(req);
+    // 404 if a leaked runId belongs to another tenant. We allow subscribing
+    // to a not-yet-created run (a caller watching its own run before the
+    // first event arrives); the per-run feed is itself tenant-scoped below,
+    // so no cross-tenant events can ever reach this subscriber.
+    if (await this.runsService.existsForOtherTenant(runId, tenantId)) {
+      throw new NotFoundException(`run ${runId} not found`);
+    }
     const heartbeatMs = this.config.streamSseHeartbeatMs;
 
     return new Observable<MessageEvent>((subscriber) => {
-      const sub = this.streamHub.streamRun(runId).subscribe({
+      const sub = this.streamHub.streamRun(runId, tenantId).subscribe({
         next: (event) =>
           subscriber.next({ type: event.type, data: event } as MessageEvent),
         error: (err) => subscriber.error(err),

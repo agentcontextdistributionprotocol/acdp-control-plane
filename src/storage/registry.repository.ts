@@ -25,7 +25,7 @@ export class RegistryRepository {
         eventCount: 1,
       })
       .onConflictDoUpdate({
-        target: registries.authority,
+        target: [registries.tenantId, registries.authority],
         set: {
           lastSeen: now,
           eventCount: sql`${registries.eventCount} + 1`,
