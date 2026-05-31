@@ -95,7 +95,7 @@ well-known fields:
 | Field                | Required | Used for |
 |----------------------|----------|----------|
 | `type`               | **yes**  | Event type (e.g. `context_published`, `context_archived`). Lineage edges only fire on `context_published`. |
-| `agent_id`           | **yes**  | DID of the emitting agent. Indexed; populates the `agents` table. |
+| `agent_id`           | publishes only | DID of the emitting agent. **Required only for `context_published`** — the registry's `context_retrieved` / `search_executed` events are agent-less by design (they carry an optional `requester_did` instead). Indexed; populates the `agents` table when present. |
 | `registry_authority` | **yes**  | DNS-like identifier of the source registry. Indexed; populates the `registries` table. |
 | `ctx_id`             | no       | `acdp://<authority>/<uuid>` URI of the context. |
 | `lineage_id`         | no       | Free-form lineage identifier (separate from edge derivation). |
@@ -110,6 +110,30 @@ well-known fields:
 
 Unknown fields are preserved in `raw_payload` and surfaced via
 `GET /runs/:runId/events`.
+
+### Domain-pack `context_type` gate
+
+When one or more domain packs are configured (`DOMAIN_PACKS` set, e.g.
+`DOMAIN_PACKS=finance`), the control plane gates inbound `context_type`s:
+
+- **Base ACDP types are always accepted** — `data_snapshot`, `analysis`,
+  `prediction`, `alert` (RFC-ACDP-0001) are never pack-gated.
+- A **custom** `context_type` that is neither a base type nor declared by an
+  active pack is **rejected with `400`**.
+- With **no** packs configured, the gate is inactive and every `context_type`
+  is accepted (backward compatible).
+
+> **Operator note — silent divergence.** A registry publishes successfully
+> (`200` to the publishing agent) and persists the context **locally**, but its
+> outbound webhook to a pack-gated control plane is `400`'d. The registry's
+> webhook worker treats a `4xx` as permanent and **gives up** (it logs
+> `webhook_4xx`), so the control plane **never records** that publish — no event
+> row, lineage edge, or registry/agent upsert. The two stores diverge silently
+> for undeclared custom types. The control plane makes its side observable: each
+> gate rejection emits a `warn` log and increments the
+> `acdp_ingest_rejected_total{reason="pack_gate"}` metric. To avoid the
+> divergence, either register a pack that declares the custom type or leave
+> `DOMAIN_PACKS` unset.
 
 ### Minimal example
 
@@ -150,11 +174,20 @@ back the persisted event.
 
 ## Idempotency
 
-The ingest endpoint does **not** dedupe events. If you POST the same payload
-twice, you get two `context_events` rows. Lineage edges are deduplicated at the
-DB level (unique on `(from_ctx_id, to_ctx_id)`), but raw events are not.
+The ingest endpoint **deduplicates** replayed events. Each event is keyed by:
 
-If a registry needs at-least-once delivery semantics, the control plane is
-safe to call repeatedly — the only side effect of duplicate ingestion is a
-slightly inflated `contexts_count` on the run and an inflated `event_count`
-on the registry.
+- the registry-minted **`event_id`** when present — sent in the
+  `X-ACDP-Event-Id` header (and mirrored in the payload envelope). It is minted
+  once at emit time and reused across retries, so it is stable even if the
+  registry reshapes a payload field; or
+- a **content fingerprint** (`sha256` over `type:ctx_id:agent_id:created_at:run:version`)
+  as a fallback for registries that don't send an `event_id`.
+
+The key is stored on `context_events.fingerprint` with a partial unique index
+on `(tenant_id, fingerprint)`. A duplicate is silently skipped (`204`) before
+any side effects — no second event row, lineage edge, SSE broadcast, or webhook
+fan-out. This makes at-least-once registry delivery safe: replays collapse to a
+single logical event.
+
+Lineage edges are additionally deduplicated at the DB level (unique on the
+tenant-scoped `(from_ctx_id, to_ctx_id)` key).

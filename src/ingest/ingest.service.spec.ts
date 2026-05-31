@@ -19,6 +19,7 @@ describe('IngestService', () => {
   let config: Partial<AppConfigService>;
   let packs: DomainPackRegistry;
   let enrollmentRepo: { findByAuthority: jest.Mock };
+  let instrumentation: { ingestRejectedTotal: { inc: jest.Mock } };
   let service: IngestService;
 
   function sign(body: Buffer): string {
@@ -30,11 +31,13 @@ describe('IngestService', () => {
     config = { webhookSecret: secret } as Partial<AppConfigService>;
     packs = new DomainPackRegistry(); // empty → context-type gate is inactive
     enrollmentRepo = { findByAuthority: jest.fn().mockResolvedValue(null) };
+    instrumentation = { ingestRejectedTotal: { inc: jest.fn() } };
     service = new IngestService(
       config as AppConfigService,
       processor as unknown as EventProcessorService,
       packs,
       enrollmentRepo as any,
+      instrumentation as any,
     );
   });
 
@@ -103,6 +106,44 @@ describe('IngestService', () => {
     );
   });
 
+  describe('agent_id requirement (scoped to context_published)', () => {
+    it('accepts context_retrieved with no agent_id', async () => {
+      const payload = {
+        type: 'context_retrieved',
+        registry_authority: 'reg.example',
+        ctx_id: 'acdp://reg.example/c1',
+        created_at: '2026-01-01T00:00:00Z',
+      };
+      const body = Buffer.from(JSON.stringify(payload));
+      await service.handle(body, sign(body), undefined);
+      expect(processor.process).toHaveBeenCalledTimes(1);
+    });
+
+    it('accepts search_executed with no agent_id', async () => {
+      const payload = {
+        type: 'search_executed',
+        registry_authority: 'reg.example',
+        created_at: '2026-01-01T00:00:00Z',
+      };
+      const body = Buffer.from(JSON.stringify(payload));
+      await service.handle(body, sign(body), undefined);
+      expect(processor.process).toHaveBeenCalledTimes(1);
+    });
+
+    it('still rejects context_published with no agent_id', async () => {
+      const payload = {
+        type: 'context_published',
+        registry_authority: 'reg.example',
+        created_at: '2026-01-01T00:00:00Z',
+      };
+      const body = Buffer.from(JSON.stringify(payload));
+      await expect(service.handle(body, sign(body), undefined)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(processor.process).not.toHaveBeenCalled();
+    });
+  });
+
   it('throws Unauthorized on bad signature', async () => {
     const body = Buffer.from(JSON.stringify(validPayload));
     await expect(service.handle(body, 'sha256=deadbeef', undefined)).rejects.toBeInstanceOf(
@@ -140,6 +181,7 @@ describe('IngestService', () => {
       processor as unknown as EventProcessorService,
       packs,
       enrollmentRepo as any,
+      instrumentation as any,
     );
     const body = Buffer.from(JSON.stringify(validPayload));
     await service.handle(body, '', undefined);
@@ -155,6 +197,7 @@ describe('IngestService', () => {
         processor as unknown as EventProcessorService,
         reg,
         enrollmentRepo as any,
+        instrumentation as any,
       );
       const body = Buffer.from(
         JSON.stringify({ ...validPayload, context_type: 'task' }),
@@ -163,6 +206,10 @@ describe('IngestService', () => {
         service.handle(body, sign(body), undefined),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(processor.process).not.toHaveBeenCalled();
+      // The rejection must be observable (warn-log counterpart + metric), not silent.
+      expect(instrumentation.ingestRejectedTotal.inc).toHaveBeenCalledWith({
+        reason: 'pack_gate',
+      });
     });
 
     it('accepts events whose context_type matches a pack-declared type', async () => {
@@ -173,6 +220,7 @@ describe('IngestService', () => {
         processor as unknown as EventProcessorService,
         reg,
         enrollmentRepo as any,
+        instrumentation as any,
       );
       const body = Buffer.from(
         JSON.stringify({ ...validPayload, context_type: 'earnings_report' }),
@@ -189,6 +237,7 @@ describe('IngestService', () => {
         processor as unknown as EventProcessorService,
         reg,
         enrollmentRepo as any,
+        instrumentation as any,
       );
       const body = Buffer.from(
         JSON.stringify({ ...validPayload, context_type: 'data_snapshot' }),
@@ -266,6 +315,7 @@ describe('IngestService', () => {
         processor as unknown as EventProcessorService,
         packs,
         enrollmentRepo as any, // findByAuthority → null (not enrolled)
+        instrumentation as any,
       );
       const body = Buffer.from(JSON.stringify(validPayload));
       await expect(service.handle(body, sign(body), undefined)).rejects.toMatchObject({

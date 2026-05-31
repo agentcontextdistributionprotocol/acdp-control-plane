@@ -69,6 +69,77 @@ describe('Ingest trust & reliability (integration)', () => {
     expect(data.length).toBe(1);
   });
 
+  it('accepts all three event variants (publish, retrieve, search) — retrieve/search carry no agent_id', async () => {
+    const authority = 'reg.local';
+    const runId = 'variants-run';
+    const publish = event(runId);
+    const retrieve = {
+      type: 'context_retrieved',
+      run_id: runId,
+      ctx_id: `acdp://${authority}/${runId}`,
+      registry_authority: authority,
+      requester_did: 'did:web:reader.example',
+      created_at: '2026-01-01T00:00:01Z',
+    };
+    const search = {
+      type: 'search_executed',
+      run_id: runId,
+      registry_authority: authority,
+      query: 'earnings',
+      result_count: 2,
+      created_at: '2026-01-01T00:00:02Z',
+    };
+
+    const rp = await ctx.client.requestRaw('POST', '/ingest/acdp', {
+      body: publish,
+      headers: { 'x-acdp-event-id': 'evt-pub' },
+    });
+    const rr = await ctx.client.requestRaw('POST', '/ingest/acdp', {
+      body: retrieve,
+      headers: { 'x-acdp-event-id': 'evt-ret' },
+    });
+    const rs = await ctx.client.requestRaw('POST', '/ingest/acdp', {
+      body: search,
+      headers: { 'x-acdp-event-id': 'evt-search' },
+    });
+    // The pre-fix guard 400'd retrieve/search for the missing agent_id.
+    expect(rp.status).toBeLessThan(300);
+    expect(rr.status).toBeLessThan(300);
+    expect(rs.status).toBeLessThan(300);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const resp = await ctx.client.requestRaw('GET', '/events', { query: { runId } });
+    const data = (resp.body as { data: unknown[] }).data;
+    expect(data.length).toBe(3);
+  });
+
+  it('dedupes an agent-less context_retrieved via the event_id', async () => {
+    const authority = 'reg.local';
+    const runId = 'retrieve-dedup-run';
+    const retrieve = {
+      type: 'context_retrieved',
+      run_id: runId,
+      ctx_id: `acdp://${authority}/${runId}`,
+      registry_authority: authority,
+      created_at: '2026-01-01T00:00:00Z',
+    };
+    const r1 = await ctx.client.requestRaw('POST', '/ingest/acdp', {
+      body: retrieve,
+      headers: { 'x-acdp-event-id': 'evt-ret-dup' },
+    });
+    const r2 = await ctx.client.requestRaw('POST', '/ingest/acdp', {
+      body: { ...retrieve, created_at: '2026-02-02T00:00:00Z' },
+      headers: { 'x-acdp-event-id': 'evt-ret-dup' },
+    });
+    expect(r1.status).toBeLessThan(300);
+    expect(r2.status).toBeLessThan(300);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const resp = await ctx.client.requestRaw('GET', '/events', { query: { runId } });
+    const data = (resp.body as { data: unknown[] }).data;
+    expect(data.length).toBe(1);
+  });
+
   it('registry enroll is admin-only', async () => {
     const nonAdmin = new TestClient(ctx.url, 'test-key');
     const denied = await nonAdmin.requestRaw('POST', '/registries/enroll', {

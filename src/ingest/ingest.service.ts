@@ -10,6 +10,7 @@ import { AcdpWebhookEvent } from '../contracts/acdp';
 import { DomainPackRegistry } from '../domain-packs/domain-pack';
 import { EventProcessorService } from '../processor/event-processor.service';
 import { RegistryEnrollmentRepository } from '../storage/registry-enrollment.repository';
+import { InstrumentationService } from '../telemetry/instrumentation.service';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { verifyWebhookSignature } from './hmac';
 
@@ -22,6 +23,7 @@ export class IngestService {
     private readonly processor: EventProcessorService,
     private readonly domainPacks: DomainPackRegistry,
     private readonly enrollmentRepo: RegistryEnrollmentRepository,
+    private readonly instrumentation: InstrumentationService,
   ) {}
 
   async handle(
@@ -78,7 +80,13 @@ export class IngestService {
     if (!payload.type) {
       throw new BadRequestException('Missing required field: type');
     }
-    if (!payload.agent_id) {
+    // Only context_published carries an agent_id. The registry's
+    // context_retrieved / search_executed variants are agent-less by design
+    // (acdp-registry event.rs: they carry only an optional requester_did), and
+    // the processor tolerates an empty agent_id — so don't reject them at the
+    // boundary. The webhook worker treats a 4xx as permanent and gives up, so
+    // an over-eager guard here drops retrieve/search events permanently.
+    if (payload.type === 'context_published' && !payload.agent_id) {
       throw new BadRequestException('Missing required field: agent_id');
     }
     // Domain-pack context-type gate (plan §1). Only active when at least
@@ -102,6 +110,14 @@ export class IngestService {
       }
       const requested = String(payload.context_type);
       if (!allowed.has(requested)) {
+        // Make the silent drop observable: the registry's webhook worker logs
+        // `webhook_4xx` and gives up, so without a CP-side counterpart this
+        // rejection is invisible to operators. Warn + counter, then reject.
+        this.logger.warn(
+          `ingest rejected: context_type '${requested}' not declared by any ` +
+            `active domain pack (${packs.map((p) => p.id).join(', ')})`,
+        );
+        this.instrumentation.ingestRejectedTotal.inc({ reason: 'pack_gate' });
         throw new BadRequestException(
           `context_type '${requested}' not declared by any active domain pack ` +
             `(${packs.map((p) => p.id).join(', ')})`,

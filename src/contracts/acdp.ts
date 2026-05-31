@@ -20,7 +20,11 @@ export interface AcdpWebhookEvent {
   type: string;
   ctx_id?: string;
   lineage_id?: string;
-  agent_id: string;
+  // Optional on the wire: only context_published carries an agent_id. The
+  // registry's context_retrieved / search_executed variants are agent-less
+  // (they carry an optional requester_did instead). The processor tolerates
+  // an absent agent_id; the ingest guard requires it only for publishes.
+  agent_id?: string;
   context_type?: string;
   visibility?: string;
   version?: number;
