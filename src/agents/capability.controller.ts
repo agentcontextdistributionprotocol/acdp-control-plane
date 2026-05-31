@@ -16,6 +16,7 @@ import {
   Param,
   Post,
   Query,
+  Req,
 } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
@@ -29,6 +30,7 @@ import {
 import { IsISO8601, IsIn, IsString, MinLength } from 'class-validator';
 import { CheckPolicy } from '../policy/check-policy.decorator';
 import { CheckQuota } from '../quota/check-quota.decorator';
+import { tenantOf, TenantedRequest } from '../tenant/request-tenant';
 import { CapabilityService } from './capability.service';
 
 const ALG_OPTIONS = ['ed25519'] as const;
@@ -103,35 +105,47 @@ export class CapabilityController {
   @ApiOkResponse({ type: CapabilityResponseDto })
   @ApiBadRequestResponse({ description: 'Bad URN, unsupported algorithm, or out-of-window declared_at.' })
   @ApiUnauthorizedResponse({ description: 'Signature does not verify, or agent has no pinned key.' })
-  async declare(@Body() body: DeclareCapabilityRequestDto): Promise<CapabilityResponseDto> {
-    const row = await this.service.declare({
-      agentDid: body.agent_did,
-      capabilityUri: body.capability_uri,
-      declaredAtIso: body.declared_at,
-      keyId: body.key_id,
-      algorithm: body.algorithm,
-      signature: body.signature,
-    });
+  async declare(
+    @Body() body: DeclareCapabilityRequestDto,
+    @Req() req: TenantedRequest,
+  ): Promise<CapabilityResponseDto> {
+    const row = await this.service.declare(
+      {
+        agentDid: body.agent_did,
+        capabilityUri: body.capability_uri,
+        declaredAtIso: body.declared_at,
+        keyId: body.key_id,
+        algorithm: body.algorithm,
+        signature: body.signature,
+      },
+      tenantOf(req),
+    );
     return rowToDto(row);
   }
 
   @Get('search')
   @ApiOperation({ summary: 'Find agents that have declared a capability.' })
   @ApiOkResponse({ type: CapabilityResponseDto, isArray: true })
-  async search(@Query('capability') capability?: string) {
+  async search(
+    @Req() req: TenantedRequest,
+    @Query('capability') capability?: string,
+  ) {
     if (!capability) {
       throw new BadRequestException('`capability` query parameter is required');
     }
-    const rows = await this.service.findAgentsWithCapability(capability);
+    const rows = await this.service.findAgentsWithCapability(capability, tenantOf(req));
     return { data: rows.map(rowToDto), total: rows.length };
   }
 
   @Get('by-agent/*did')
   @ApiOperation({ summary: 'List one agent\'s declared capabilities.' })
   @ApiOkResponse({ type: CapabilityResponseDto, isArray: true })
-  async byAgent(@Param('did') didParts: string[] | string) {
+  async byAgent(
+    @Param('did') didParts: string[] | string,
+    @Req() req: TenantedRequest,
+  ) {
     const did = Array.isArray(didParts) ? didParts.join('/') : didParts;
-    const rows = await this.service.listForAgent(did);
+    const rows = await this.service.listForAgent(did, tenantOf(req));
     return { data: rows.map(rowToDto), total: rows.length };
   }
 }

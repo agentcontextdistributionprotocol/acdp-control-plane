@@ -5,6 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { createHmac } from 'node:crypto';
+import { parseRetryAfterMs } from '../common/retry-after';
 import { AppConfigService } from '../config/app-config.service';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
@@ -188,33 +189,91 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
           signal: AbortSignal.timeout(10_000),
         });
 
-        if (!response.ok) {
-          throw new Error(`webhook returned ${response.status}`);
+        // Subscriber back-pressure: honor a 429 `Retry-After` by scheduling
+        // the next attempt no sooner than the hint, then defer to the retry
+        // sweep instead of blocking inline. Falls through to normal backoff
+        // when the header is absent or unparseable.
+        if (response.status === 429 && attempt < maxAttempts) {
+          const retryAfter = response.headers.get('retry-after');
+          const delayMs = parseRetryAfterMs(retryAfter);
+          if (delayMs !== null) {
+            const nextAttemptAt = new Date(Date.now() + delayMs).toISOString();
+            this.logger.warn(
+              `webhook delivery to ${url} got 429 (attempt ${attempt}/${maxAttempts}); ` +
+                `deferring next attempt until ${nextAttemptAt} (Retry-After: ${retryAfter})`,
+            );
+            await this.deliveryRepository.markFailed(
+              deliveryId,
+              attempt,
+              `webhook returned 429 (Retry-After: ${retryAfter})`,
+              response.status,
+              tenantId,
+              nextAttemptAt,
+            );
+            return;
+          }
         }
 
-        await this.deliveryRepository.markDelivered(deliveryId, response.status, tenantId);
-        this.instrumentation.webhookDeliveriesTotal.inc({ status: 'delivered' });
-        return;
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        this.logger.warn(
-          `webhook delivery to ${url} failed (attempt ${attempt}/${maxAttempts}): ${errorMessage}`,
-        );
-        await this.deliveryRepository.markFailed(
+        if (response.ok) {
+          await this.deliveryRepository.markDelivered(deliveryId, response.status, tenantId);
+          this.instrumentation.webhookDeliveriesTotal.inc({ status: 'delivered' });
+          return;
+        }
+
+        // Non-2xx (including a 429 with no usable Retry-After) → ordinary
+        // failure path: record it and fall through to the inline backoff.
+        await this.recordFailure(
           deliveryId,
+          url,
           attempt,
+          maxAttempts,
+          `webhook returned ${response.status}`,
+          response.status,
+          tenantId,
+        );
+      } catch (error) {
+        // Transport/timeout error (no HTTP response at all).
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await this.recordFailure(
+          deliveryId,
+          url,
+          attempt,
+          maxAttempts,
           errorMessage,
           undefined,
           tenantId,
         );
-        if (attempt >= maxAttempts) {
-          this.instrumentation.webhookDeliveriesTotal.inc({ status: 'failed' });
-        }
-        if (attempt < maxAttempts) {
-          const backoffMs = 1000 * 2 ** (attempt - 1);
-          await new Promise((resolve) => setTimeout(resolve, backoffMs));
-        }
       }
+
+      if (attempt < maxAttempts) {
+        const backoffMs = 1000 * 2 ** (attempt - 1);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      }
+    }
+  }
+
+  /** Record a failed delivery attempt and emit the terminal-failure metric on exhaustion. */
+  private async recordFailure(
+    deliveryId: string,
+    url: string,
+    attempt: number,
+    maxAttempts: number,
+    errorMessage: string,
+    responseStatus: number | undefined,
+    tenantId: string,
+  ): Promise<void> {
+    this.logger.warn(
+      `webhook delivery to ${url} failed (attempt ${attempt}/${maxAttempts}): ${errorMessage}`,
+    );
+    await this.deliveryRepository.markFailed(
+      deliveryId,
+      attempt,
+      errorMessage,
+      responseStatus,
+      tenantId,
+    );
+    if (attempt >= maxAttempts) {
+      this.instrumentation.webhookDeliveriesTotal.inc({ status: 'failed' });
     }
   }
 }

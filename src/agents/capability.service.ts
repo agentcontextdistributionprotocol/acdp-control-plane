@@ -22,6 +22,7 @@ import {
 import { verifyEcdsaP256 } from '../auth/ecdsa-p256';
 import { verifyEd25519 } from '../auth/ed25519';
 import { PinnedKeysService } from '../auth/pinned-keys.service';
+import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { capabilityAssertion, parseCapabilityUri } from './capability-uri';
 import { CapabilityRepository, CapabilityRow } from './capability.repository';
 
@@ -53,14 +54,17 @@ export class CapabilityService {
    * stores that same value (so a re-fetch returns what the agent
    * signed).
    */
-  async declare(req: {
-    agentDid: string;
-    capabilityUri: string;
-    declaredAtIso: string;
-    keyId: string;
-    algorithm: string;
-    signature: string;
-  }): Promise<CapabilityRow> {
+  async declare(
+    req: {
+      agentDid: string;
+      capabilityUri: string;
+      declaredAtIso: string;
+      keyId: string;
+      algorithm: string;
+      signature: string;
+    },
+    tenantId: string = DEFAULT_TENANT_ID,
+  ): Promise<CapabilityRow> {
     // Schema validation (URN form + segment char set).
     parseCapabilityUri(req.capabilityUri);
 
@@ -119,6 +123,7 @@ export class CapabilityService {
       declaredAt: req.declaredAtIso,
       signedBy: req.keyId,
       signature: req.signature,
+      tenantId,
     });
 
     this.logger.log(
@@ -128,14 +133,20 @@ export class CapabilityService {
   }
 
   /** List an agent's declared capabilities. */
-  async listForAgent(agentDid: string): Promise<CapabilityRow[]> {
-    return this.repo.findByAgent(agentDid);
+  async listForAgent(
+    agentDid: string,
+    tenantId: string = DEFAULT_TENANT_ID,
+  ): Promise<CapabilityRow[]> {
+    return this.repo.findByAgent(agentDid, tenantId);
   }
 
   /** Find agents that declared a capability. */
-  async findAgentsWithCapability(capabilityUri: string): Promise<CapabilityRow[]> {
+  async findAgentsWithCapability(
+    capabilityUri: string,
+    tenantId: string = DEFAULT_TENANT_ID,
+  ): Promise<CapabilityRow[]> {
     // Validate the query shape so a typo returns 400 instead of [].
     parseCapabilityUri(capabilityUri);
-    return this.repo.findByCapability(capabilityUri);
+    return this.repo.findByCapability(capabilityUri, tenantId);
   }
 }

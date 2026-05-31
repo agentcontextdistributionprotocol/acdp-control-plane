@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, lt } from 'drizzle-orm';
+import { and, eq, isNull, lt, lte, or } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { DatabaseService } from '../db/database.service';
 import { WebhookDelivery, webhookDeliveries } from '../db/schema';
@@ -63,6 +63,7 @@ export class WebhookDeliveryRepository {
     errorMessage: string,
     responseStatus?: number,
     tenantId: string = DEFAULT_TENANT_ID,
+    nextAttemptAt: string | null = null,
   ): Promise<void> {
     const now = new Date().toISOString();
     await this.database.db
@@ -73,23 +74,44 @@ export class WebhookDeliveryRepository {
         lastAttemptAt: now,
         errorMessage,
         responseStatus,
+        nextAttemptAt,
       })
       .where(and(eq(webhookDeliveries.id, id), eq(webhookDeliveries.tenantId, tenantId)));
   }
 
   async listPending(tenantId: string = DEFAULT_TENANT_ID): Promise<WebhookDelivery[]> {
+    const nowIso = new Date().toISOString();
     return this.database.db
       .select()
       .from(webhookDeliveries)
-      .where(and(eq(webhookDeliveries.status, 'pending'), eq(webhookDeliveries.tenantId, tenantId)));
+      .where(
+        and(
+          eq(webhookDeliveries.status, 'pending'),
+          eq(webhookDeliveries.tenantId, tenantId),
+          this.dueClause(nowIso),
+        ),
+      );
   }
 
-  /** All pending deliveries across every tenant — for the retry scheduler. */
+  /** All pending, currently-due deliveries across every tenant — for the retry scheduler. */
   async listAllPending(): Promise<WebhookDelivery[]> {
+    const nowIso = new Date().toISOString();
     return this.database.db
       .select()
       .from(webhookDeliveries)
-      .where(eq(webhookDeliveries.status, 'pending'));
+      .where(and(eq(webhookDeliveries.status, 'pending'), this.dueClause(nowIso)));
+  }
+
+  /**
+   * A delivery is "due" when it has no scheduled next attempt (legacy rows /
+   * normal backoff) or its `next_attempt_at` has already passed — used to
+   * defer rows behind an upstream 429 `Retry-After`.
+   */
+  private dueClause(nowIso: string) {
+    return or(
+      isNull(webhookDeliveries.nextAttemptAt),
+      lte(webhookDeliveries.nextAttemptAt, nowIso),
+    );
   }
 
   /**

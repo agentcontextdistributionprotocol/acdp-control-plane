@@ -201,6 +201,9 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
     .notNull()
     .defaultNow(),
   deliveredAt: timestamp('delivered_at', { withTimezone: true, mode: 'string' }),
+  // Earliest time the retry sweep may re-attempt this delivery. NULL =
+  // eligible immediately. Set from a 429 `Retry-After` to defer the row.
+  nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true, mode: 'string' }),
 });
 
 // One-shot challenge nonces issued by /auth/challenge.

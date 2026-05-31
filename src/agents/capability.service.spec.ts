@@ -191,4 +191,40 @@ describe('CapabilityService', () => {
     expect(caps).toHaveLength(1);
     expect(caps[0]!.capabilityUri).toBe(URI);
   });
+
+  describe('tenant scoping', () => {
+    it('threads the caller tenant into repo.declare', async () => {
+      const spy = jest.spyOn(repo, 'declare');
+      const declaredAt = new Date().toISOString();
+      await svc.declare(
+        {
+          agentDid: DID, capabilityUri: URI, declaredAtIso: declaredAt,
+          keyId: 'k', algorithm: 'ed25519',
+          signature: signAssertion(priv, capabilityAssertion(DID, URI, declaredAt)),
+        },
+        'tenant-b',
+      );
+      expect(spy).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 'tenant-b' }),
+      );
+    });
+
+    it('threads the caller tenant into repo.findByAgent', async () => {
+      const spy = jest.spyOn(repo, 'findByAgent');
+      await svc.listForAgent(DID, 'tenant-b');
+      expect(spy).toHaveBeenCalledWith(DID, 'tenant-b');
+    });
+
+    it('threads the caller tenant into repo.findByCapability', async () => {
+      const spy = jest.spyOn(repo, 'findByCapability');
+      await svc.findAgentsWithCapability(URI, 'tenant-b');
+      expect(spy).toHaveBeenCalledWith(URI, 'tenant-b');
+    });
+
+    it('defaults to the default tenant when none is supplied', async () => {
+      const spy = jest.spyOn(repo, 'findByAgent');
+      await svc.listForAgent(DID);
+      expect(spy).toHaveBeenCalledWith(DID, 'default');
+    });
+  });
 });
