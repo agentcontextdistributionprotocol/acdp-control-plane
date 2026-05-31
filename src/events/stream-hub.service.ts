@@ -15,19 +15,19 @@ export class StreamHubService implements OnModuleDestroy {
     }
   }
 
-  publishToRun(runId: string, event: AcdpStreamEvent): void {
-    this.strategy.publishToRun(runId, event);
+  publishToRun(runId: string, event: AcdpStreamEvent, tenantId: string): void {
+    this.strategy.publishToRun(runId, event, tenantId);
   }
 
-  publishGlobal(event: AcdpStreamEvent): void {
-    this.strategy.publishGlobal(event);
+  publishGlobal(event: AcdpStreamEvent, tenantId: string): void {
+    this.strategy.publishGlobal(event, tenantId);
   }
 
-  streamRun(runId: string): Observable<AcdpStreamEvent> {
-    return this.strategy.streamRun(runId);
+  streamRun(runId: string, tenantId: string): Observable<AcdpStreamEvent> {
+    return this.strategy.streamRun(runId, tenantId);
   }
 
-  streamGlobal(): Observable<AcdpStreamEvent> {
-    return this.strategy.streamGlobal();
+  streamGlobal(tenantId: string): Observable<AcdpStreamEvent> {
+    return this.strategy.streamGlobal(tenantId);
   }
 }

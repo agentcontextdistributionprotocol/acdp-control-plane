@@ -14,6 +14,7 @@ import { ThrottleByUserGuard } from './auth/throttle-by-user.guard';
 import { AppConfigService } from './config/app-config.service';
 import { ConfigModule } from './config/config.module';
 import { ContextsController } from './contexts/contexts.controller';
+import { SafeFederationClient } from './contexts/safe-federation-client';
 import { DashboardController } from './dashboard/dashboard.controller';
 import { DashboardService } from './dashboard/dashboard.service';
 import { DatabaseModule } from './db/database.module';
@@ -40,6 +41,10 @@ import { RunsService } from './runs/runs.service';
 import { AgentRepository } from './storage/agent.repository';
 import { ContextEventRepository } from './storage/context-event.repository';
 import { LineageEdgeRepository } from './storage/lineage-edge.repository';
+import { DataRetentionService } from './retention/data-retention.service';
+import { BanditRouter } from './routing/bandit-router.service';
+import { RoutingController } from './routing/routing.controller';
+import { RegistryEnrollmentRepository } from './storage/registry-enrollment.repository';
 import { RegistryRepository } from './storage/registry.repository';
 import { RunRepository } from './storage/run.repository';
 import { InstrumentationService } from './telemetry/instrumentation.service';
@@ -77,6 +82,7 @@ import { WebhookService } from './webhooks/webhook.service';
     RegistriesController,
     DashboardController,
     WebhookController,
+    RoutingController,
     HealthController,
     MetricsController,
     // Admin: pinned-key directory reload. Mounted at AppModule level
@@ -124,16 +130,25 @@ import { WebhookService } from './webhooks/webhook.service';
     CapabilityRepository,
     CapabilityService,
     RegistryRepository,
+    RegistryEnrollmentRepository,
     WebhookRepository,
     WebhookDeliveryRepository,
 
     // Services
+    SafeFederationClient,
     InstrumentationService,
     EventProcessorService,
     IngestService,
     RunsService,
     DashboardService,
     WebhookService,
+    DataRetentionService,
+    {
+      provide: BanditRouter,
+      inject: [AppConfigService],
+      useFactory: (config: AppConfigService) =>
+        new BanditRouter({ explorationFraction: config.banditExplorationFraction }),
+    },
   ],
 })
 export class AppModule implements NestModule {

@@ -3,6 +3,8 @@ import { RunsService } from './runs.service';
 describe('RunsService', () => {
   let runRepo: any;
   let config: any;
+  let contextEventRepo: any;
+  let bandit: any;
   let svc: RunsService;
   let originalFetch: typeof fetch;
   let fetchMock: jest.Mock;
@@ -14,7 +16,9 @@ describe('RunsService', () => {
       markComplete: jest.fn(),
     };
     config = { playgroundUrl: '' };
-    svc = new RunsService(runRepo, config);
+    contextEventRepo = { listByRun: jest.fn().mockResolvedValue([]) };
+    bandit = { recordReward: jest.fn() };
+    svc = new RunsService(runRepo, config, contextEventRepo as any, bandit as any);
 
     originalFetch = global.fetch;
     fetchMock = jest.fn();
@@ -46,6 +50,35 @@ describe('RunsService', () => {
     const run = await svc.getOrThrow('r-1');
     expect(run).toEqual({ runId: 'r-1' });
     expect(runRepo.findByIdOrThrow).toHaveBeenCalledWith('r-1', 'default');
+  });
+
+  it('records a bandit reward per participating agent on completion', async () => {
+    runRepo.markComplete.mockResolvedValue({ runId: 'r-1', scenarioId: 'scenario-x' });
+    contextEventRepo.listByRun.mockResolvedValue([
+      { agentId: 'did:web:a' },
+      { agentId: 'did:web:b' },
+      { agentId: 'did:web:a' },
+    ]);
+    await svc.markComplete('r-1', 'completed', undefined, 'default');
+    await new Promise((r) => setImmediate(r)); // fire-and-forget reward
+
+    expect(bandit.recordReward).toHaveBeenCalledWith('scenario-x', 'did:web:a', 1);
+    expect(bandit.recordReward).toHaveBeenCalledWith('scenario-x', 'did:web:b', 1);
+    expect(bandit.recordReward).toHaveBeenCalledTimes(2); // deduped agents
+  });
+
+  it('records reward 0 for a failed run and skips reward for cancelled', async () => {
+    runRepo.markComplete.mockResolvedValue({ runId: 'r-1', scenarioId: 'scenario-x' });
+    contextEventRepo.listByRun.mockResolvedValue([{ agentId: 'did:web:a' }]);
+
+    await svc.markComplete('r-1', 'failed', undefined, 'default');
+    await new Promise((r) => setImmediate(r));
+    expect(bandit.recordReward).toHaveBeenCalledWith('scenario-x', 'did:web:a', 0);
+
+    bandit.recordReward.mockClear();
+    await svc.markComplete('r-1', 'cancelled', undefined, 'default');
+    await new Promise((r) => setImmediate(r));
+    expect(bandit.recordReward).not.toHaveBeenCalled();
   });
 
   it('markComplete does not call playground when PLAYGROUND_URL is empty', async () => {

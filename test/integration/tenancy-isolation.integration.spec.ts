@@ -13,6 +13,7 @@
  */
 import { createTestApp, TestAppContext } from '../helpers/test-app';
 import { TestClient } from '../helpers/test-client';
+import { TestSSEClient } from '../helpers/sse-client';
 
 describe('Cross-tenant isolation (integration)', () => {
   let ctx: TestAppContext;
@@ -110,5 +111,91 @@ describe('Cross-tenant isolation (integration)', () => {
     const clientB = new TestClient(ctx.url, 'key-b');
     const resp = await clientB.requestRaw('GET', '/runs/run-only-a');
     expect(resp.status).toBe(404);
+  });
+
+  it('GET /events is tenant-scoped: each tenant sees only its own events', async () => {
+    await publishEvent('tenant-a', 'run-events-a');
+    await publishEvent('tenant-b', 'run-events-b');
+    await new Promise((r) => setTimeout(r, 100));
+
+    const clientA = new TestClient(ctx.url, 'key-a');
+    const clientB = new TestClient(ctx.url, 'key-b');
+
+    const aResp = await clientA.requestRaw('GET', '/events');
+    const bResp = await clientB.requestRaw('GET', '/events');
+    expect(aResp.status).toBe(200);
+    expect(bResp.status).toBe(200);
+    const aRuns = (aResp.body as { data: Array<{ runId: string }> }).data.map((e) => e.runId);
+    const bRuns = (bResp.body as { data: Array<{ runId: string }> }).data.map((e) => e.runId);
+    expect(aRuns).toContain('run-events-a');
+    expect(aRuns).not.toContain('run-events-b');
+    expect(bRuns).toContain('run-events-b');
+    expect(bRuns).not.toContain('run-events-a');
+  });
+
+  it('GET /dashboard/overview counts only the caller\'s tenant', async () => {
+    await publishEvent('tenant-a', 'run-dash-a');
+    await new Promise((r) => setTimeout(r, 100));
+
+    const clientB = new TestClient(ctx.url, 'key-b');
+    const bResp = await clientB.requestRaw('GET', '/dashboard/overview');
+    expect(bResp.status).toBe(200);
+    // Tenant B has no runs — its dashboard must not count tenant A's run.
+    expect((bResp.body as { totalRuns: number }).totalRuns).toBe(0);
+
+    const clientA = new TestClient(ctx.url, 'key-a');
+    const aResp = await clientA.requestRaw('GET', '/dashboard/overview');
+    expect((aResp.body as { totalRuns: number }).totalRuns).toBeGreaterThanOrEqual(1);
+  });
+
+  it('global SSE feed is tenant-isolated: tenant A does not receive tenant B events', async () => {
+    const sseA = new TestSSEClient(ctx.url, 'key-a');
+    await sseA.connect('/events/stream');
+    try {
+      // Tenant B publishes — tenant A's stream must not receive it.
+      await publishEvent('tenant-b', 'run-sse-b');
+      // Then tenant A publishes — used as a liveness marker.
+      await publishEvent('tenant-a', 'run-sse-a');
+
+      const evt = await sseA.waitForEvent('context_published', 5000);
+      const data = evt.data as { runId?: string };
+      expect(data.runId).toBe('run-sse-a');
+      // Only the tenant-A event should have been delivered.
+      const runIds = sseA.getDataEvents().map((e) => (e.data as { runId?: string }).runId);
+      expect(runIds).not.toContain('run-sse-b');
+    } finally {
+      sseA.close();
+    }
+  });
+
+  it('composite keys: the same runId can exist under two tenants without collision', async () => {
+    // Both tenants publish an event for the SAME run id.
+    const ra = await publishEvent('tenant-a', 'shared-run-id');
+    const rb = await publishEvent('tenant-b', 'shared-run-id');
+    expect(ra.status).toBeLessThan(300);
+    expect(rb.status).toBeLessThan(300);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const clientA = new TestClient(ctx.url, 'key-a');
+    const clientB = new TestClient(ctx.url, 'key-b');
+
+    // Each tenant resolves its OWN row for the shared id (no 404, no cross-read).
+    const aRun = await clientA.requestRaw('GET', '/runs/shared-run-id');
+    const bRun = await clientB.requestRaw('GET', '/runs/shared-run-id');
+    expect(aRun.status).toBe(200);
+    expect(bRun.status).toBe(200);
+    expect((aRun.body as { runId: string }).runId).toBe('shared-run-id');
+    expect((bRun.body as { runId: string }).runId).toBe('shared-run-id');
+  });
+
+  it('per-run SSE rejects a cross-tenant subscriber with 404', async () => {
+    await publishEvent('tenant-a', 'run-sse-owned-a');
+    await new Promise((r) => setTimeout(r, 100));
+
+    const sseB = new TestSSEClient(ctx.url, 'key-b');
+    await expect(sseB.connect('/runs/run-sse-owned-a/events/stream')).rejects.toThrow(
+      /HTTP 404/,
+    );
+    sseB.close();
   });
 });

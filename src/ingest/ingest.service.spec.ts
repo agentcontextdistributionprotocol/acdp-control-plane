@@ -18,6 +18,8 @@ describe('IngestService', () => {
   let processor: { process: jest.Mock };
   let config: Partial<AppConfigService>;
   let packs: DomainPackRegistry;
+  let enrollmentRepo: { findByAuthority: jest.Mock };
+  let instrumentation: { ingestRejectedTotal: { inc: jest.Mock } };
   let service: IngestService;
 
   function sign(body: Buffer): string {
@@ -28,10 +30,14 @@ describe('IngestService', () => {
     processor = { process: jest.fn().mockResolvedValue(undefined) };
     config = { webhookSecret: secret } as Partial<AppConfigService>;
     packs = new DomainPackRegistry(); // empty → context-type gate is inactive
+    enrollmentRepo = { findByAuthority: jest.fn().mockResolvedValue(null) };
+    instrumentation = { ingestRejectedTotal: { inc: jest.fn() } };
     service = new IngestService(
       config as AppConfigService,
       processor as unknown as EventProcessorService,
       packs,
+      enrollmentRepo as any,
+      instrumentation as any,
     );
   });
 
@@ -44,6 +50,8 @@ describe('IngestService', () => {
       expect.objectContaining({ type: 'context_published' }),
       'run-123',
       'default',
+      undefined,
+      undefined,
     );
   });
 
@@ -55,6 +63,8 @@ describe('IngestService', () => {
       expect.any(Object),
       'header-run',
       'default',
+      undefined,
+      undefined,
     );
   });
 
@@ -66,7 +76,72 @@ describe('IngestService', () => {
       expect.any(Object),
       'payload-run',
       'default',
+      undefined,
+      undefined,
     );
+  });
+
+  it('threads the X-ACDP-Event-Id header into the processor as the dedup id', async () => {
+    const body = Buffer.from(JSON.stringify(validPayload));
+    await service.handle(body, sign(body), 'run-1', 'default', undefined, 'evt-hdr-1');
+    expect(processor.process).toHaveBeenCalledWith(
+      expect.any(Object),
+      'run-1',
+      'default',
+      undefined,
+      'evt-hdr-1',
+    );
+  });
+
+  it('falls back to payload.event_id when the header is absent', async () => {
+    const withId = { ...validPayload, event_id: 'evt-body-1' };
+    const body = Buffer.from(JSON.stringify(withId));
+    await service.handle(body, sign(body), 'run-1');
+    expect(processor.process).toHaveBeenCalledWith(
+      expect.any(Object),
+      'run-1',
+      'default',
+      undefined,
+      'evt-body-1',
+    );
+  });
+
+  describe('agent_id requirement (scoped to context_published)', () => {
+    it('accepts context_retrieved with no agent_id', async () => {
+      const payload = {
+        type: 'context_retrieved',
+        registry_authority: 'reg.example',
+        ctx_id: 'acdp://reg.example/c1',
+        created_at: '2026-01-01T00:00:00Z',
+      };
+      const body = Buffer.from(JSON.stringify(payload));
+      await service.handle(body, sign(body), undefined);
+      expect(processor.process).toHaveBeenCalledTimes(1);
+    });
+
+    it('accepts search_executed with no agent_id', async () => {
+      const payload = {
+        type: 'search_executed',
+        registry_authority: 'reg.example',
+        created_at: '2026-01-01T00:00:00Z',
+      };
+      const body = Buffer.from(JSON.stringify(payload));
+      await service.handle(body, sign(body), undefined);
+      expect(processor.process).toHaveBeenCalledTimes(1);
+    });
+
+    it('still rejects context_published with no agent_id', async () => {
+      const payload = {
+        type: 'context_published',
+        registry_authority: 'reg.example',
+        created_at: '2026-01-01T00:00:00Z',
+      };
+      const body = Buffer.from(JSON.stringify(payload));
+      await expect(service.handle(body, sign(body), undefined)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(processor.process).not.toHaveBeenCalled();
+    });
   });
 
   it('throws Unauthorized on bad signature', async () => {
@@ -105,6 +180,8 @@ describe('IngestService', () => {
       emptySecretConfig as AppConfigService,
       processor as unknown as EventProcessorService,
       packs,
+      enrollmentRepo as any,
+      instrumentation as any,
     );
     const body = Buffer.from(JSON.stringify(validPayload));
     await service.handle(body, '', undefined);
@@ -119,6 +196,8 @@ describe('IngestService', () => {
         config as AppConfigService,
         processor as unknown as EventProcessorService,
         reg,
+        enrollmentRepo as any,
+        instrumentation as any,
       );
       const body = Buffer.from(
         JSON.stringify({ ...validPayload, context_type: 'task' }),
@@ -127,6 +206,10 @@ describe('IngestService', () => {
         service.handle(body, sign(body), undefined),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(processor.process).not.toHaveBeenCalled();
+      // The rejection must be observable (warn-log counterpart + metric), not silent.
+      expect(instrumentation.ingestRejectedTotal.inc).toHaveBeenCalledWith({
+        reason: 'pack_gate',
+      });
     });
 
     it('accepts events whose context_type matches a pack-declared type', async () => {
@@ -136,9 +219,28 @@ describe('IngestService', () => {
         config as AppConfigService,
         processor as unknown as EventProcessorService,
         reg,
+        enrollmentRepo as any,
+        instrumentation as any,
       );
       const body = Buffer.from(
         JSON.stringify({ ...validPayload, context_type: 'earnings_report' }),
+      );
+      await service.handle(body, sign(body), undefined);
+      expect(processor.process).toHaveBeenCalledTimes(1);
+    });
+
+    it('accepts base ACDP types even when a pack is active (FEAT-CP-07)', async () => {
+      const reg = new DomainPackRegistry();
+      reg.register(FINANCE_PACK);
+      service = new IngestService(
+        config as AppConfigService,
+        processor as unknown as EventProcessorService,
+        reg,
+        enrollmentRepo as any,
+        instrumentation as any,
+      );
+      const body = Buffer.from(
+        JSON.stringify({ ...validPayload, context_type: 'data_snapshot' }),
       );
       await service.handle(body, sign(body), undefined);
       expect(processor.process).toHaveBeenCalledTimes(1);
@@ -151,6 +253,75 @@ describe('IngestService', () => {
       );
       await service.handle(body, sign(body), undefined);
       expect(processor.process).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('registry enrollment', () => {
+    it('derives tenant from the enrollment and verifies against its per-registry secret', async () => {
+      const perRegistrySecret = 'per-registry-secret-1234';
+      enrollmentRepo.findByAuthority.mockResolvedValue({
+        authority: 'reg.example',
+        tenantId: 'tenant-enrolled',
+        webhookSecret: perRegistrySecret,
+        baseUrl: 'https://reg.example',
+        enabled: true,
+      });
+      const body = Buffer.from(JSON.stringify(validPayload));
+      const sig = `sha256=${createHmac('sha256', perRegistrySecret).update(body).digest('hex')}`;
+
+      await service.handle(body, sig, 'run-x', 'header-tenant-ignored');
+
+      expect(processor.process).toHaveBeenCalledTimes(1);
+      const call = processor.process.mock.calls[0];
+      expect(call[2]).toBe('tenant-enrolled'); // tenant from enrollment, not header
+      expect(call[3]).toBe('https://reg.example'); // base URL from enrollment
+    });
+
+    it('rejects when the global secret signature is used but a per-registry secret is enrolled', async () => {
+      enrollmentRepo.findByAuthority.mockResolvedValue({
+        authority: 'reg.example',
+        tenantId: 'tenant-enrolled',
+        webhookSecret: 'per-registry-secret-1234',
+        enabled: true,
+      });
+      const body = Buffer.from(JSON.stringify(validPayload));
+      // Signed with the GLOBAL secret, which no longer applies.
+      await expect(service.handle(body, sign(body), undefined)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(processor.process).not.toHaveBeenCalled();
+    });
+
+    it('rejects ingest from a disabled enrollment', async () => {
+      enrollmentRepo.findByAuthority.mockResolvedValue({
+        authority: 'reg.example',
+        tenantId: 'tenant-enrolled',
+        webhookSecret: null,
+        enabled: false,
+      });
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await expect(service.handle(body, sign(body), undefined)).rejects.toMatchObject({
+        status: 403,
+      });
+    });
+
+    it('rejects unenrolled authorities when INGEST_REQUIRE_ENROLLMENT is set', async () => {
+      const strictConfig = {
+        webhookSecret: secret,
+        ingestRequireEnrollment: true,
+      } as Partial<AppConfigService>;
+      service = new IngestService(
+        strictConfig as AppConfigService,
+        processor as unknown as EventProcessorService,
+        packs,
+        enrollmentRepo as any, // findByAuthority → null (not enrolled)
+        instrumentation as any,
+      );
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await expect(service.handle(body, sign(body), undefined)).rejects.toMatchObject({
+        status: 403,
+      });
+      expect(processor.process).not.toHaveBeenCalled();
     });
   });
 

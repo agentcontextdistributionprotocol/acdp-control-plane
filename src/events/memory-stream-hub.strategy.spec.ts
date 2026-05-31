@@ -28,13 +28,13 @@ describe('MemoryStreamHubStrategy', () => {
   });
 
   it('delivers per-run events to subscribers on streamRun', async () => {
-    const stream = hub.streamRun('r1').pipe(take(2), toArray());
+    const stream = hub.streamRun('r1', 'tenant-a').pipe(take(2), toArray());
     const collected = firstValueFrom(stream);
 
     // Publish synchronously after subscription
     setImmediate(() => {
-      hub.publishToRun('r1', event({ ts: 't1' }));
-      hub.publishToRun('r1', event({ ts: 't2' }));
+      hub.publishToRun('r1', event({ ts: 't1' }), 'tenant-a');
+      hub.publishToRun('r1', event({ ts: 't2' }), 'tenant-a');
     });
 
     const events = await collected;
@@ -43,10 +43,10 @@ describe('MemoryStreamHubStrategy', () => {
 
   it('does not deliver one run\'s events to another run\'s subscribers', async () => {
     const received: AcdpStreamEvent[] = [];
-    const sub = hub.streamRun('r1').subscribe((e) => received.push(e));
+    const sub = hub.streamRun('r1', 'tenant-a').subscribe((e) => received.push(e));
 
-    hub.publishToRun('r2', event({ runId: 'r2', ts: 't-other' }));
-    hub.publishToRun('r1', event({ ts: 't-mine' }));
+    hub.publishToRun('r2', event({ runId: 'r2', ts: 't-other' }), 'tenant-a');
+    hub.publishToRun('r1', event({ ts: 't-mine' }), 'tenant-a');
 
     // Let microtasks flush
     await new Promise((r) => setImmediate(r));
@@ -55,24 +55,51 @@ describe('MemoryStreamHubStrategy', () => {
     expect(received.map((e) => e.ts)).toEqual(['t-mine']);
   });
 
-  it('global stream receives every publishGlobal event', async () => {
-    const stream = hub.streamGlobal().pipe(take(2), toArray());
+  it('per-run feeds are tenant-scoped: same runId across tenants does not cross-deliver', async () => {
+    const received: AcdpStreamEvent[] = [];
+    const sub = hub.streamRun('shared-run', 'tenant-a').subscribe((e) => received.push(e));
+
+    // Tenant B publishes to a run with the SAME id — must not reach tenant A.
+    hub.publishToRun('shared-run', event({ ts: 'b-evt' }), 'tenant-b');
+    hub.publishToRun('shared-run', event({ ts: 'a-evt' }), 'tenant-a');
+
+    await new Promise((r) => setImmediate(r));
+    sub.unsubscribe();
+
+    expect(received.map((e) => e.ts)).toEqual(['a-evt']);
+  });
+
+  it('global stream receives every publishGlobal event for its tenant', async () => {
+    const stream = hub.streamGlobal('tenant-a').pipe(take(2), toArray());
     const collected = firstValueFrom(stream);
 
     setImmediate(() => {
-      hub.publishGlobal(event({ ts: 'g1' }));
-      hub.publishGlobal(event({ ts: 'g2' }));
+      hub.publishGlobal(event({ ts: 'g1' }), 'tenant-a');
+      hub.publishGlobal(event({ ts: 'g2' }), 'tenant-a');
     });
 
     const events = await collected;
     expect(events.map((e) => e.ts)).toEqual(['g1', 'g2']);
   });
 
+  it('global stream is tenant-isolated: tenant-a does not see tenant-b events', async () => {
+    const received: AcdpStreamEvent[] = [];
+    const sub = hub.streamGlobal('tenant-a').subscribe((e) => received.push(e));
+
+    hub.publishGlobal(event({ ts: 'b-event' }), 'tenant-b');
+    hub.publishGlobal(event({ ts: 'a-event' }), 'tenant-a');
+
+    await new Promise((r) => setImmediate(r));
+    sub.unsubscribe();
+
+    expect(received.map((e) => e.ts)).toEqual(['a-event']);
+  });
+
   it('global stream does not double-deliver per-run events (separation is the processor\'s job)', async () => {
     const received: AcdpStreamEvent[] = [];
-    const sub = hub.streamGlobal().subscribe((e) => received.push(e));
+    const sub = hub.streamGlobal('tenant-a').subscribe((e) => received.push(e));
 
-    hub.publishToRun('r1', event({ ts: 'per-run' }));
+    hub.publishToRun('r1', event({ ts: 'per-run' }), 'tenant-a');
 
     await new Promise((r) => setImmediate(r));
     sub.unsubscribe();
@@ -82,12 +109,12 @@ describe('MemoryStreamHubStrategy', () => {
 
   it('destroy completes all subjects so no further events are received', async () => {
     const received: AcdpStreamEvent[] = [];
-    const sub = hub.streamGlobal().subscribe({
+    const sub = hub.streamGlobal('tenant-a').subscribe({
       next: (e) => received.push(e),
     });
 
     hub.destroy();
-    hub.publishGlobal(event({ ts: 'post-destroy' }));
+    hub.publishGlobal(event({ ts: 'post-destroy' }), 'tenant-a');
 
     await new Promise((r) => setImmediate(r));
     sub.unsubscribe();
