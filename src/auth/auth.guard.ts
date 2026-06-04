@@ -115,12 +115,28 @@ export class AuthGuard implements CanActivate {
           'X-Tenant-Id does not match the tenant the token was issued under',
         );
       }
+      // Strict mode (AUTH_REQUIRE_TENANT): an unbound token — one with no
+      // `tenant` claim — cannot assert a tenant via the spoofable header,
+      // so default-deny it. Mirrors the registry's `require_tenant`.
+      if (this.config.requireTenant && !claimTenant) {
+        this.logger.warn(`strict tenant: token has no tenant claim (sub=${claims.sub})`);
+        throw new ForbiddenException(
+          'tenant required: token carries no tenant claim (AUTH_REQUIRE_TENANT)',
+        );
+      }
       request.tenantId = claimTenant ?? headerTenant ?? DEFAULT_TENANT_ID;
       return true;
     }
 
     const validTokens = this.config.authApiKeys;
     if (validTokens.length === 0) {
+      if (this.config.requireTenant) {
+        // Strict mode can't resolve a tenant for an unauthenticated
+        // request, so default-deny rather than silently using `default`.
+        throw new ForbiddenException(
+          'tenant required but no AUTH_API_KEYS configured (AUTH_REQUIRE_TENANT)',
+        );
+      }
       this.logger.warn('No AUTH_API_KEYS configured; allowing request');
       request.tenantId = DEFAULT_TENANT_ID;
       return true;
@@ -133,7 +149,31 @@ export class AuthGuard implements CanActivate {
     request.actorId = token.slice(0, 8) + '...';
     request.actorType = 'api-key';
     request.actorIsAdmin = constantTimeIncludes(this.config.authAdminApiKeys, token);
-    request.tenantId = this.tenantFor(token);
+    const keyTenant = this.tenantFor(token);
+    // Parity with the JWT path: a header asserting a tenant other than the
+    // one the key is bound to is hostile. We only enforce this for bound
+    // keys — a bare (unbound) key resolves to `default` and never honors
+    // the spoofable header, so there's nothing to disagree with.
+    const apiKeyHeaderTenant = readHeaderTenant(request.headers);
+    if (
+      keyTenant !== DEFAULT_TENANT_ID &&
+      apiKeyHeaderTenant &&
+      apiKeyHeaderTenant !== keyTenant
+    ) {
+      this.logger.warn(
+        `tenant assertion mismatch: key-bound=${keyTenant} header=${apiKeyHeaderTenant}`,
+      );
+      throw new ForbiddenException(
+        'X-Tenant-Id does not match the tenant this API key is bound to',
+      );
+    }
+    // Strict mode: a bare (unbound) API key can't assert a tenant.
+    if (this.config.requireTenant && keyTenant === DEFAULT_TENANT_ID) {
+      throw new ForbiddenException(
+        'tenant required: API key is not bound to a tenant (AUTH_REQUIRE_TENANT)',
+      );
+    }
+    request.tenantId = keyTenant;
     request.actorScopes = []; // api keys carry no scopes
 
     return true;

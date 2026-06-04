@@ -56,6 +56,13 @@ export class AppConfigService implements OnModuleInit {
   // — bare keys (no `:` prefix) bind to the `default` tenant. Documented on
   // `src/tenant/tenant-context.ts`. Empty (default) = single-tenant deployment.
   readonly tenantApiKeysRaw = process.env.TENANT_API_KEYS ?? '';
+  // Strict tenant mode (mirror of the registry's `auth.require_tenant`):
+  // when true, every authenticated request MUST resolve to an explicit,
+  // non-`default` tenant or it is rejected (default-deny). A JWT must
+  // carry a `tenant` claim; an API key must be bound to a tenant in
+  // `TENANT_API_KEYS`. A spoofable `X-Tenant-Id` header alone never
+  // satisfies this. Default false = the legacy silent-`default` fallback.
+  readonly requireTenant = readBoolean('AUTH_REQUIRE_TENANT', false);
   // Per-tenant quota config. Wire format documented in
   // `src/quota/quota-config.ts`. Empty (default) = no rate limits.
   readonly tenantQuotasRaw = process.env.TENANT_QUOTAS ?? '';

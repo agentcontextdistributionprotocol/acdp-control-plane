@@ -75,7 +75,10 @@ export class TokenRequestDto {
   expires_at!: number;
 
   @ApiProperty({
-    description: 'Signature algorithm. Currently `ed25519`; `ecdsa-p256` planned.',
+    description:
+      'Signature algorithm over `signing_input`. Both `ed25519` and ' +
+      '`ecdsa-p256` (IEEE-1363, not DER) are accepted; must match the ' +
+      'pinned/resolved key for the agent (downgrade defense).',
     example: 'ed25519',
     enum: ['ed25519', 'ecdsa-p256'],
   })

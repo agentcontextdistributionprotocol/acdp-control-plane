@@ -5,7 +5,7 @@ import { GlobalExceptionFilter } from './exception.filter';
 
 describe('GlobalExceptionFilter', () => {
   let filter: GlobalExceptionFilter;
-  let res: { status: jest.Mock; json: jest.Mock };
+  let res: { status: jest.Mock; type: jest.Mock; json: jest.Mock };
 
   function host(): ArgumentsHost {
     return {
@@ -20,7 +20,11 @@ describe('GlobalExceptionFilter', () => {
 
   beforeEach(() => {
     filter = new GlobalExceptionFilter();
-    res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    res = {
+      status: jest.fn().mockReturnThis(),
+      type: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
   });
 
   it('renders AppException with its structured body', () => {
@@ -36,15 +40,56 @@ describe('GlobalExceptionFilter', () => {
     );
   });
 
+  it('emits application/acdp+json on every error response (RFC-ACDP-0007 §4)', () => {
+    filter.catch(
+      new AppException(ErrorCode.RUN_NOT_FOUND, 'no such run', HttpStatus.NOT_FOUND),
+      host(),
+    );
+    expect(res.type).toHaveBeenCalledWith('application/acdp+json');
+  });
+
+  it('adds an additive ACDP error envelope alongside legacy fields', () => {
+    filter.catch(
+      new AppException(ErrorCode.RUN_NOT_FOUND, 'no such run', HttpStatus.NOT_FOUND),
+      host(),
+    );
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.NOT_FOUND,
+        errorCode: ErrorCode.RUN_NOT_FOUND,
+        message: 'no such run',
+        error: { code: ErrorCode.RUN_NOT_FOUND, message: 'no such run' },
+      }),
+    );
+  });
+
+  it('surfaces AppException metadata as the ACDP envelope `details`', () => {
+    const ex = new AppException(
+      ErrorCode.RUN_NOT_FOUND,
+      'no such run',
+      HttpStatus.NOT_FOUND,
+      { runId: 'abc' },
+    );
+    filter.catch(ex, host());
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: { code: ErrorCode.RUN_NOT_FOUND, message: 'no such run', details: { runId: 'abc' } },
+      }),
+    );
+  });
+
   it('wraps string-bodied HttpException with INTERNAL_ERROR errorCode', () => {
     const ex = new HttpException('plain string body', HttpStatus.BAD_GATEWAY);
     filter.catch(ex, host());
     expect(res.status).toHaveBeenCalledWith(HttpStatus.BAD_GATEWAY);
-    expect(res.json).toHaveBeenCalledWith({
-      statusCode: HttpStatus.BAD_GATEWAY,
-      errorCode: ErrorCode.INTERNAL_ERROR,
-      message: 'plain string body',
-    });
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.BAD_GATEWAY,
+        errorCode: ErrorCode.INTERNAL_ERROR,
+        message: 'plain string body',
+        error: { code: ErrorCode.INTERNAL_ERROR, message: 'plain string body' },
+      }),
+    );
   });
 
   it('passes through HttpException with object body', () => {
@@ -54,20 +99,27 @@ describe('GlobalExceptionFilter', () => {
     );
     filter.catch(ex, host());
     expect(res.status).toHaveBeenCalledWith(418);
-    expect(res.json).toHaveBeenCalledWith({
-      statusCode: 418,
-      errorCode: 'TEAPOT',
-      message: 'short and stout',
-    });
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: 418,
+        errorCode: 'TEAPOT',
+        message: 'short and stout',
+        error: { code: 'TEAPOT', message: 'short and stout' },
+      }),
+    );
   });
 
   it('returns 500 INTERNAL_ERROR for unknown errors and does not leak the message', () => {
     filter.catch(new Error('boom — secret stack'), host());
     expect(res.status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
-    expect(res.json).toHaveBeenCalledWith({
-      statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-      errorCode: ErrorCode.INTERNAL_ERROR,
-      message: 'Internal server error',
-    });
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+        errorCode: ErrorCode.INTERNAL_ERROR,
+        message: 'Internal server error',
+      }),
+    );
+    const body = res.json.mock.calls[0][0];
+    expect(JSON.stringify(body)).not.toContain('secret stack');
   });
 });
