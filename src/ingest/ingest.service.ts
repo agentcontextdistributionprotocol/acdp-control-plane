@@ -34,13 +34,28 @@ export class IngestService {
     originHeader?: string,
     eventIdHeader?: string,
   ): Promise<void> {
+    // Bound the parse-DoS surface on this @Public() route: reject an
+    // oversized body before decoding, and pre-scan for excessive JSON
+    // nesting depth before JSON.parse builds the object graph.
+    if (body.length > this.config.ingestMaxBodyBytes) {
+      throw new BadRequestException(
+        `Payload exceeds ${this.config.ingestMaxBodyBytes}-byte limit`,
+      );
+    }
+    const text = body.toString('utf8');
+    if (exceedsJsonDepth(text, this.config.ingestMaxJsonDepth)) {
+      throw new BadRequestException(
+        `Payload JSON nesting exceeds depth limit (${this.config.ingestMaxJsonDepth})`,
+      );
+    }
+
     // Peek the payload to find the claimed authority. We don't ACT on it
     // until HMAC is verified below — it only selects the per-registry
     // secret + tenant (the standard multi-tenant webhook pattern: an
     // attacker can claim any authority but can't forge its HMAC).
     let payload: AcdpWebhookEvent;
     try {
-      payload = JSON.parse(body.toString('utf8')) as AcdpWebhookEvent;
+      payload = JSON.parse(text) as AcdpWebhookEvent;
     } catch {
       throw new BadRequestException('Invalid JSON payload');
     }
@@ -71,6 +86,18 @@ export class IngestService {
       throw new ForbiddenException(
         `Registry '${claimedAuthority ?? '(unknown)'}' is not enrolled`,
       );
+    } else if (this.config.ingestStrictTenant && tenantId !== DEFAULT_TENANT_ID) {
+      // Strict mode: no enrollment binds this authority to a tenant, so a
+      // caller-supplied X-Tenant-Id must not let an unenrolled authority
+      // write into an arbitrary tenant. Only a server-side enrollment may
+      // target a NON-default tenant — fall back to the default bucket.
+      // (Off by default: header attribution is the documented V0 fallback.)
+      this.logger.warn(
+        `ingest: unenrolled authority '${claimedAuthority ?? '(unknown)'}' ` +
+          `asserted X-Tenant-Id='${tenantId}'; INGEST_STRICT_TENANT is on, ` +
+          `ignoring and using '${DEFAULT_TENANT_ID}'`,
+      );
+      tenantId = DEFAULT_TENANT_ID;
     }
 
     if (!verifyWebhookSignature(body, signatureHeader ?? '', secret)) {
@@ -161,6 +188,42 @@ const ACDP_BASE_TYPES = new Set<string>([
   'prediction',
   'alert',
 ]);
+
+/**
+ * Cheap structural pre-scan: returns true if the JSON text nests `{`/`[`
+ * deeper than `maxDepth`. Runs in O(n) over the raw string WITHOUT building
+ * an object graph, so it rejects a malicious deeply-nested body before
+ * `JSON.parse` does the expensive (and potentially stack-blowing) work.
+ * String contents (incl. escaped quotes) are skipped so brackets inside
+ * string literals don't count.
+ */
+export function exceedsJsonDepth(text: string, maxDepth: number): boolean {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (c === '\\') {
+        escaped = true;
+      } else if (c === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+    } else if (c === '{' || c === '[') {
+      depth++;
+      if (depth > maxDepth) return true;
+    } else if (c === '}' || c === ']') {
+      if (depth > 0) depth--;
+    }
+  }
+  return false;
+}
 
 /**
  * Pull the authority out of an ACDP context URI. Returns undefined if the

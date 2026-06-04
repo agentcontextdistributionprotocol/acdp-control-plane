@@ -104,6 +104,13 @@ export class JwksClient {
   }
 
   private async fetchAndParse(): Promise<CacheEntry> {
+    // Defense-in-depth even though jwksUrl is operator-configured: require
+    // https, refuse to auto-follow redirects (a redirect could point at an
+    // internal target), and cap the response body so a hostile/compromised
+    // issuer can't stream an unbounded JWKS into memory.
+    if (!this.url.toLowerCase().startsWith('https://')) {
+      throw new Error(`JWKS url ${this.url} must be https`);
+    }
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), 5_000);
     let resp: Response;
@@ -111,14 +118,32 @@ export class JwksClient {
       resp = await this.fetchImpl(this.url, {
         signal: ctrl.signal,
         headers: { Accept: 'application/json' },
+        redirect: 'manual',
       });
     } finally {
       clearTimeout(timeout);
     }
+    if (resp.status >= 300 && resp.status < 400) {
+      throw new Error(`JWKS fetch ${this.url} returned a redirect (refused)`);
+    }
     if (!resp.ok) {
       throw new Error(`JWKS fetch ${this.url} returned HTTP ${resp.status}`);
     }
-    const json = (await resp.json()) as JwksResponse;
+    const MAX_JWKS_BYTES = 64 * 1024;
+    const declared = Number(resp.headers.get('content-length') ?? '');
+    if (Number.isFinite(declared) && declared > MAX_JWKS_BYTES) {
+      throw new Error(`JWKS at ${this.url} exceeds ${MAX_JWKS_BYTES}-byte cap`);
+    }
+    const raw = new Uint8Array(await resp.arrayBuffer());
+    if (raw.byteLength > MAX_JWKS_BYTES) {
+      throw new Error(`JWKS at ${this.url} exceeds ${MAX_JWKS_BYTES}-byte cap`);
+    }
+    let json: JwksResponse;
+    try {
+      json = JSON.parse(new TextDecoder('utf-8').decode(raw)) as JwksResponse;
+    } catch {
+      throw new Error(`JWKS at ${this.url} is not valid JSON`);
+    }
     if (!json || !Array.isArray(json.keys)) {
       throw new Error(`JWKS at ${this.url} is malformed (no keys array)`);
     }

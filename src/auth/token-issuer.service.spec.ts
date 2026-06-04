@@ -18,6 +18,7 @@ function fakeConfig(): any {
   return {
     jwtSecret: 'a'.repeat(64),
     jwtAuthority: 'cp.test',
+    jwtAudience: 'cp.test',
     jwtTtlSeconds: 3600,
     challengeTtlSeconds: 300,
     tenantAgentsRaw: '',
@@ -228,6 +229,31 @@ describe('TokenIssuer', () => {
     });
     const claims = await issuer.verifyJwt(out.token);
     expect(claims.sub).toBe(did);
+  });
+
+  it('mints an aud claim bound to the configured audience', async () => {
+    const ch = await issuer.issueChallenge(did);
+    const out = await issuer.issueToken({
+      agentDid: did,
+      keyId: 'k',
+      nonce: ch.nonce,
+      expiresAt: ch.expiresAt,
+      algorithm: 'ed25519',
+      signature: signChallenge(ch.signingInput),
+    });
+    const decoded = jwt.decode(out.token) as AcdpBearerClaims;
+    expect(decoded.aud).toBe('cp.test');
+  });
+
+  it('verifyJwt rejects a token minted for a different audience', async () => {
+    // A token that is otherwise valid (right iss/alg) but carries a foreign
+    // aud must be rejected — audience binding is enforced on local verify.
+    const foreign = jwt.sign(
+      { iss: 'cp.test', sub: did, aud: 'other-cp', jti: 'x', iat: 0, exp: 99999999999 },
+      fakeConfig().jwtSecret,
+      { algorithm: 'HS256' },
+    );
+    await expect(issuer.verifyJwt(foreign)).rejects.toThrow(UnauthorizedException);
   });
 
   it('verifyJwt rejects a token with a wrong issuer', async () => {

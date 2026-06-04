@@ -63,6 +63,15 @@ export interface IssuedToken {
 export interface AcdpBearerClaims {
   iss: string;
   sub: string;
+  /**
+   * Audience the token is bound to (the issuing authority). Validated on
+   * local verification so a token minted for this CP can't be replayed at
+   * a different audience. Optional for backward compatibility with V0
+   * tokens minted before audience binding. Typed `string | string[]` to
+   * stay compatible with federated tokens (RFC 7519 permits an array
+   * audience); CP itself always mints a single string.
+   */
+  aud?: string | string[];
   jti: string;
   iat: number;
   exp: number;
@@ -281,6 +290,7 @@ export class TokenIssuer {
       decoded = jwt.verify(token, this.signing.material.verifyKey, {
         algorithms: [this.signing.material.algorithm as Algorithm],
         issuer: this.config.jwtAuthority,
+        audience: this.config.jwtAudience,
       }) as unknown as AcdpBearerClaims;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -387,6 +397,7 @@ export class TokenIssuer {
     const claims: AcdpBearerClaims & { nbf: number } = {
       iss: this.config.jwtAuthority,
       sub: agentDid,
+      aud: this.config.jwtAudience,
       jti: randomBytes(12).toString('base64url'),
       iat: now,
       nbf: now,

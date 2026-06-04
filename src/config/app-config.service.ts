@@ -100,6 +100,11 @@ export class AppConfigService implements OnModuleInit {
   readonly tokenIssuanceEnabled = readBoolean('TOKEN_ISSUANCE_ENABLED', false);
   readonly jwtSecret = process.env.JWT_SECRET ?? '';
   readonly jwtAuthority = process.env.JWT_AUTHORITY ?? 'control-plane.local';
+  // Audience bound into issued tokens (`aud`) and required on local
+  // verification. Defaults to our own authority so a CP-issued token is
+  // bound to this CP. Mirrors the registry's `aud = <authority>` contract
+  // so federated peers can enforce audience on both sides.
+  readonly jwtAudience = process.env.JWT_AUDIENCE ?? this.jwtAuthority;
   readonly jwtTtlSeconds = readNumber('JWT_TTL_SECONDS', 3600);
   readonly challengeTtlSeconds = readNumber('CHALLENGE_TTL_SECONDS', 300);
 
@@ -145,9 +150,35 @@ export class AppConfigService implements OnModuleInit {
   // deliveries across all tenants on this interval; <= 0 disables it.
   readonly webhookRetryIntervalMs = readNumber('WEBHOOK_RETRY_INTERVAL_MS', 300000);
 
+  // SSRF posture for OUTBOUND webhook delivery. Subscriber URLs are gated by
+  // the same SsrfPolicy as the federation proxy (https-only, no IP literals,
+  // resolved IPs must not be private/loopback/IMDS, redirects refused). These
+  // relax the policy for local development/testing only — default-secure.
+  readonly webhookSsrfAllowHttp = readBoolean('WEBHOOK_SSRF_ALLOW_HTTP', false);
+  readonly webhookSsrfAllowLoopback = readBoolean(
+    'WEBHOOK_SSRF_ALLOW_LOOPBACK',
+    false,
+  );
+
   // When true, ingest accepts ONLY enrolled registry authorities (CP-3.1).
   // Default false keeps single-tenant / pre-enrollment deployments working.
   readonly ingestRequireEnrollment = readBoolean('INGEST_REQUIRE_ENROLLMENT', false);
+
+  // Strict ingest tenancy. When true, an UNENROLLED authority may not assert a
+  // non-default tenant via the X-Tenant-Id header — only a server-side
+  // enrollment (authoritative) can bind an event to a non-default tenant.
+  // Defaults false for V0 compatibility (header-based attribution stays the
+  // documented fallback); mirrors the registry's `require_tenant` opt-in.
+  // Recommended `true` for multi-tenant deployments that don't enroll a
+  // per-registry secret, where a shared/empty secret would otherwise let a
+  // caller pick an arbitrary tenant.
+  readonly ingestStrictTenant = readBoolean('INGEST_STRICT_TENANT', false);
+
+  // Hard cap on the raw ingest body (bytes) and on JSON nesting depth — a
+  // deeply-nested or oversized payload is rejected BEFORE it is fully parsed,
+  // bounding the JSON-parse DoS surface on the @Public() ingest route.
+  readonly ingestMaxBodyBytes = readNumber('INGEST_MAX_BODY_BYTES', 1_048_576);
+  readonly ingestMaxJsonDepth = readNumber('INGEST_MAX_JSON_DEPTH', 64);
 
   // Bandit router exploration fraction (Thompson sampling). 0..1.
   readonly banditExplorationFraction = readNumber('BANDIT_EXPLORATION_FRACTION', 0.05);

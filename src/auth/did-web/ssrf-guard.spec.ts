@@ -80,11 +80,31 @@ describe('isUnsafeIPv6', () => {
     ['fd00::1'],
     ['fe80::1'],
     ['::ffff:127.0.0.1'],
+    // IPv4-mapped in canonical HEX form — the shape dns.lookup returns for
+    // 169.254.169.254 (IMDS). The old `::ffff:` substring check missed this.
+    ['::ffff:a9fe:a9fe'],
+    ['::ffff:7f00:1'],
+    // IPv4-compatible (deprecated) — ::127.0.0.1 normalises to ::7f00:1.
+    ['::7f00:1'],
+    ['::127.0.0.1'],
+    // NAT64 64:ff9b::/96 reaching IMDS / RFC1918 via a NAT64 gateway.
+    ['64:ff9b::a9fe:a9fe'],
+    ['64:ff9b::169.254.169.254'],
+    ['64:ff9b::a00:1'],
+    // ULA upper half (fd00–fdff) and link-local upper (febf).
+    ['fdff::1'],
+    ['febf::1'],
   ])('forbids %s', (ip) => {
     expect(isUnsafeIPv6(ip)).toBe(true);
   });
 
-  it('allows a public IPv6 address', () => {
-    expect(isUnsafeIPv6('2606:4700:4700::1111')).toBe(false);
+  it.each([
+    ['2606:4700:4700::1111'], // public (Cloudflare)
+    ['2001:4860:4860::8888'], // public (Google DNS)
+    // A NAT64-prefix-looking but public-embedded address is still NAT64 → unsafe,
+    // so we assert a genuinely public global-unicast address here instead.
+    ['2400:cb00::1'],
+  ])('allows public %s', (ip) => {
+    expect(isUnsafeIPv6(ip)).toBe(false);
   });
 });
