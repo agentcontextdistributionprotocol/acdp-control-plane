@@ -150,6 +150,90 @@ describe('pickVerificationMethod', () => {
     );
   });
 
+  it('extracts a P-256 key declared as EcdsaSecp256r1VerificationKey2019 (registry parity)', () => {
+    const d: DidDocument = {
+      id: DID,
+      verificationMethod: [
+        {
+          id: KEY_ID,
+          controller: DID,
+          type: 'EcdsaSecp256r1VerificationKey2019',
+          publicKeyJwk: {
+            kty: 'EC',
+            crv: 'P-256',
+            x: Buffer.alloc(32, 0x11).toString('base64url'),
+            y: Buffer.alloc(32, 0x22).toString('base64url'),
+          },
+        },
+      ],
+      assertionMethod: [KEY_ID],
+    };
+    const key = pickVerificationMethod(d, KEY_ID, 'ecdsa-p256');
+    expect(key.algorithm).toBe('ecdsa-p256');
+    const sec1 = Buffer.from(key.publicKeyB64, 'base64');
+    expect(sec1.length).toBe(65);
+    expect(sec1[0]).toBe(0x04);
+  });
+
+  it('downgrade defense: EcdsaSecp256r1VerificationKey2019 + ed25519 request → error', () => {
+    const d: DidDocument = {
+      id: DID,
+      verificationMethod: [
+        {
+          id: KEY_ID,
+          controller: DID,
+          type: 'EcdsaSecp256r1VerificationKey2019',
+          publicKeyJwk: {
+            kty: 'EC',
+            crv: 'P-256',
+            x: Buffer.alloc(32, 0x11).toString('base64url'),
+            y: Buffer.alloc(32, 0x22).toString('base64url'),
+          },
+        },
+      ],
+      assertionMethod: [KEY_ID],
+    };
+    expect(() => pickVerificationMethod(d, KEY_ID, 'ed25519')).toThrow(
+      /EcdsaSecp256r1VerificationKey2019/,
+    );
+  });
+
+  it('extracts an Ed25519 key declared as Multikey (multicodec-derived)', () => {
+    const d = doc({
+      verificationMethod: [
+        {
+          id: KEY_ID,
+          controller: DID,
+          type: 'Multikey',
+          publicKeyMultibase: ED25519_MB,
+        },
+      ],
+    });
+    const key = pickVerificationMethod(d, KEY_ID, 'ed25519');
+    expect(key.algorithm).toBe('ed25519');
+    expect(Buffer.from(key.publicKeyB64, 'base64').length).toBe(32);
+  });
+
+  it('rejects P-256 via publicKeyMultibase (JWK required, matches acdp-rs)', () => {
+    const d: DidDocument = {
+      id: DID,
+      verificationMethod: [
+        {
+          id: KEY_ID,
+          controller: DID,
+          type: 'EcdsaSecp256r1VerificationKey2019',
+          // A P-256 multibase key (0x8024 multicodec) — accepted as a
+          // downgrade signal but not extractable; must surface clearly.
+          publicKeyMultibase: ED25519_MB.replace(/^z/, 'z'),
+        },
+      ],
+      assertionMethod: [KEY_ID],
+    };
+    expect(() => pickVerificationMethod(d, KEY_ID, 'ecdsa-p256')).toThrow(
+      /requires publicKeyJwk/,
+    );
+  });
+
   it('rejects multibase prefix other than z (base58btc)', () => {
     const d = doc({
       verificationMethod: [

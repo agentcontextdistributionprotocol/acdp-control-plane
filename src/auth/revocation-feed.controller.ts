@@ -22,6 +22,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Inject,
@@ -85,6 +86,10 @@ export class RevocationFeedController {
 
   @Get()
   @HttpCode(HttpStatus.OK)
+  // RFC-ACDP-0007 §4: ACDP protocol responses carry application/acdp+json.
+  // The registry's revocation poller consumes this feed cross-process, so
+  // we mirror the registry's media type here.
+  @Header('Content-Type', 'application/acdp+json')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Federated revocation feed',

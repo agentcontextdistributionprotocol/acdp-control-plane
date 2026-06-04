@@ -97,64 +97,124 @@ function extractKey(
   m: VerificationMethod,
   requestedAlg: 'ed25519' | 'ecdsa-p256',
 ): ResolvedKey {
-  if (m.type === 'Ed25519VerificationKey2020') {
-    if (requestedAlg !== 'ed25519') {
+  // Algorithm-downgrade defense (RFC-ACDP-0008 §3.9): if the method's
+  // `type` (or its JWK / multibase multicodec prefix) declares an
+  // algorithm, it MUST match the requested one before we touch any key
+  // bytes. Extraction itself dispatches on `requestedAlg`, mirroring the
+  // acdp-rs consumer — `type` is a signal, not a gate, so the set of
+  // documents we accept matches what the registry accepts.
+  const declared = declaredAlgorithm(m);
+  if (declared && declared !== requestedAlg) {
+    throw new DidDocumentError(
+      'ALG_MISMATCH',
+      `requested ${requestedAlg} but verificationMethod '${m.id}' is ${m.type}`,
+    );
+  }
+  return requestedAlg === 'ed25519' ? extractEd25519(m) : extractEcdsaP256(m);
+}
+
+function extractEd25519(m: VerificationMethod): ResolvedKey {
+  // A JWK takes precedence when present (OKP/Ed25519); otherwise fall
+  // back to a multibase-z key. Both forms are accepted regardless of the
+  // declared `type`, matching acdp-rs `ed25519_public_key_bytes`.
+  if (m.publicKeyJwk) {
+    const jwk = m.publicKeyJwk;
+    if (jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || !jwk.x) {
       throw new DidDocumentError(
         'ALG_MISMATCH',
-        `requested ${requestedAlg} but verificationMethod '${m.id}' is Ed25519VerificationKey2020`,
+        `requested ed25519 but JWK kty='${jwk.kty}' crv='${jwk.crv}' x?=${!!jwk.x}`,
       );
     }
-    if (!m.publicKeyMultibase) {
-      throw new DidDocumentError(
-        'MALFORMED_KEY',
-        `Ed25519VerificationKey2020 '${m.id}' missing publicKeyMultibase`,
-      );
-    }
+    return { keyId: m.id, algorithm: 'ed25519', publicKeyB64: base64UrlToBase64(jwk.x) };
+  }
+  if (m.publicKeyMultibase) {
     return {
       keyId: m.id,
       algorithm: 'ed25519',
       publicKeyB64: multibaseToBase64Ed25519(m.publicKeyMultibase, m.id),
     };
   }
-  if (m.type === 'JsonWebKey2020') {
-    const jwk = m.publicKeyJwk;
-    if (!jwk) {
-      throw new DidDocumentError(
-        'MALFORMED_KEY',
-        `JsonWebKey2020 '${m.id}' missing publicKeyJwk`,
-      );
-    }
-    if (requestedAlg === 'ed25519') {
-      if (jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || !jwk.x) {
-        throw new DidDocumentError(
-          'ALG_MISMATCH',
-          `requested ed25519 but JWK kty='${jwk.kty}' crv='${jwk.crv}' x?=${!!jwk.x}`,
-        );
-      }
-      return {
-        keyId: m.id,
-        algorithm: 'ed25519',
-        publicKeyB64: base64UrlToBase64(jwk.x),
-      };
-    }
-    // ecdsa-p256
-    if (jwk.kty !== 'EC' || jwk.crv !== 'P-256' || !jwk.x || !jwk.y) {
-      throw new DidDocumentError(
-        'ALG_MISMATCH',
-        `requested ecdsa-p256 but JWK kty='${jwk.kty}' crv='${jwk.crv}' x?=${!!jwk.x} y?=${!!jwk.y}`,
-      );
-    }
-    return {
-      keyId: m.id,
-      algorithm: 'ecdsa-p256',
-      publicKeyB64: ecJwkToSec1Base64(jwk.x, jwk.y, m.id),
-    };
-  }
-  // Exhaustive: the type union excludes everything else.
   throw new DidDocumentError(
-    'UNSUPPORTED_TYPE',
-    `unsupported verificationMethod type for '${m.id}'`,
+    'MALFORMED_KEY',
+    `ed25519 verificationMethod '${m.id}' has neither publicKeyJwk nor publicKeyMultibase`,
   );
+}
+
+function extractEcdsaP256(m: VerificationMethod): ResolvedKey {
+  const jwk = m.publicKeyJwk;
+  if (!jwk) {
+    // Match acdp-rs exactly: P-256 key bytes come from a JWK only.
+    // `publicKeyMultibase` is intentionally unsupported for P-256 on
+    // both sides, so we never accept a P-256 document the registry would
+    // reject (that would just be the inverse asymmetry).
+    throw new DidDocumentError(
+      'MALFORMED_KEY',
+      `ecdsa-p256 verificationMethod '${m.id}' requires publicKeyJwk ` +
+        `(publicKeyMultibase not supported for P-256)`,
+    );
+  }
+  if (jwk.kty !== 'EC' || jwk.crv !== 'P-256' || !jwk.x || !jwk.y) {
+    throw new DidDocumentError(
+      'ALG_MISMATCH',
+      `requested ecdsa-p256 but JWK kty='${jwk.kty}' crv='${jwk.crv}' x?=${!!jwk.x} y?=${!!jwk.y}`,
+    );
+  }
+  return {
+    keyId: m.id,
+    algorithm: 'ecdsa-p256',
+    publicKeyB64: ecJwkToSec1Base64(jwk.x, jwk.y, m.id),
+  };
+}
+
+/**
+ * Best-effort algorithm declaration from the verification method's `type`
+ * and (when relevant) its JWK or multibase multicodec prefix. Returns
+ * `undefined` when no signal is present. Port of acdp-rs
+ * `VerificationMethod::declared_algorithm` (did/document.rs).
+ */
+function declaredAlgorithm(
+  m: VerificationMethod,
+): 'ed25519' | 'ecdsa-p256' | undefined {
+  switch (m.type) {
+    case 'Ed25519VerificationKey2020':
+    case 'Ed25519VerificationKey2018':
+      return 'ed25519';
+    case 'EcdsaSecp256r1VerificationKey2019':
+      return 'ecdsa-p256';
+    case 'JsonWebKey2020': {
+      const jwk = m.publicKeyJwk;
+      if (!jwk) return undefined;
+      if (jwk.kty === 'OKP' && jwk.crv === 'Ed25519') return 'ed25519';
+      if (jwk.kty === 'EC' && jwk.crv === 'P-256') return 'ecdsa-p256';
+      return undefined;
+    }
+    // `Multikey` (and any unrecognized type) — derive from the multibase
+    // multicodec prefix so the downgrade guard is not silently skipped.
+    default:
+      return multicodecAlgorithm(m.publicKeyMultibase);
+  }
+}
+
+/**
+ * Map a `publicKeyMultibase` value to its algorithm via the multicodec
+ * prefix of the decoded key (unsigned-varint): Ed25519 (`0xed 0x01`) or
+ * P-256 (`0x80 0x24`). Returns `undefined` if not base58btc or the codec
+ * is unrecognized. Matches acdp-rs `multicodec_algorithm`.
+ */
+function multicodecAlgorithm(
+  mb: string | undefined,
+): 'ed25519' | 'ecdsa-p256' | undefined {
+  if (!mb || mb[0] !== 'z') return undefined;
+  let decoded: Uint8Array;
+  try {
+    decoded = base58Decode(mb.slice(1));
+  } catch {
+    return undefined;
+  }
+  if (decoded.length < 2) return undefined;
+  if (decoded[0] === 0xed && decoded[1] === 0x01) return 'ed25519';
+  if (decoded[0] === 0x80 && decoded[1] === 0x24) return 'ecdsa-p256';
+  return undefined;
 }
 
 /**

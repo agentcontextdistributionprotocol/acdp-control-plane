@@ -99,6 +99,34 @@ describe('AuthGuard', () => {
     request.headers.authorization = 'Bearer aaa.bbb.ccc';
     await expect(guard.canActivate(ctx(request))).rejects.toThrow(/JWT presented/);
   });
+
+  it('rejects when X-Tenant-Id disagrees with the tenant a bound API key maps to', async () => {
+    (config as Record<string, unknown>).tenantApiKeysRaw = 'tenant-a:valid-token-12345678';
+    request.headers.authorization = 'Bearer valid-token-12345678';
+    request.headers['x-tenant-id'] = 'tenant-b';
+    await expect(guard.canActivate(ctx(request))).rejects.toThrow(ForbiddenException);
+  });
+
+  it('strict mode (AUTH_REQUIRE_TENANT): a bare (unbound) API key is denied', async () => {
+    (config as Record<string, unknown>).requireTenant = true;
+    request.headers.authorization = 'Bearer valid-token-12345678';
+    await expect(guard.canActivate(ctx(request))).rejects.toThrow(ForbiddenException);
+  });
+
+  it('strict mode: a tenant-bound API key is allowed', async () => {
+    (config as Record<string, unknown>).requireTenant = true;
+    (config as Record<string, unknown>).tenantApiKeysRaw = 'tenant-a:valid-token-12345678';
+    request.headers.authorization = 'Bearer valid-token-12345678';
+    await expect(guard.canActivate(ctx(request))).resolves.toBe(true);
+    expect(request.tenantId).toBe('tenant-a');
+  });
+
+  it('strict mode: denies when AUTH_API_KEYS is empty', async () => {
+    (config as Record<string, unknown>).requireTenant = true;
+    config.authApiKeys = [];
+    request.headers.authorization = 'Bearer anything';
+    await expect(guard.canActivate(ctx(request))).rejects.toThrow(ForbiddenException);
+  });
 });
 
 describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
@@ -252,6 +280,40 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
     request.headers.authorization = `Bearer ${tok}`;
     request.headers['x-tenant-id'] = 'tenant-b';
     await expect(guard.canActivate(ctx(request))).rejects.toThrow(ForbiddenException);
+  });
+
+  it('strict mode (AUTH_REQUIRE_TENANT): JWT without a tenant claim is denied', async () => {
+    (config as Record<string, unknown>).requireTenant = true;
+    const tok = fakeJwt({ sub: 'did:web:nobody' });
+    (validator.verify as jest.Mock).mockResolvedValue({
+      iss: 'cp.local',
+      sub: 'did:web:nobody',
+      jti: 'js1',
+      exp: 9_999_999_999,
+      iat: 0,
+      acdp: { registry: 'cp.local', key_id: 'did:web:nobody#k1' },
+      // no tenant claim, and a spoofable header must NOT satisfy strict mode
+    });
+    request.headers.authorization = `Bearer ${tok}`;
+    request.headers['x-tenant-id'] = 'tenant-spoof';
+    await expect(guard.canActivate(ctx(request))).rejects.toThrow(ForbiddenException);
+  });
+
+  it('strict mode: JWT carrying a tenant claim is allowed', async () => {
+    (config as Record<string, unknown>).requireTenant = true;
+    const tok = fakeJwt({ sub: 'did:web:bound' });
+    (validator.verify as jest.Mock).mockResolvedValue({
+      iss: 'cp.local',
+      sub: 'did:web:bound',
+      jti: 'js2',
+      exp: 9_999_999_999,
+      iat: 0,
+      acdp: { registry: 'cp.local', key_id: 'did:web:bound#k1' },
+      tenant: 'tenant-a',
+    });
+    request.headers.authorization = `Bearer ${tok}`;
+    await expect(guard.canActivate(ctx(request))).resolves.toBe(true);
+    expect(request.tenantId).toBe('tenant-a');
   });
 
   it('absent tenant claim → header still wins (backward compat with V0 tokens)', async () => {

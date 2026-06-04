@@ -12,12 +12,22 @@ export interface VerificationMethod {
   /** DID of the controlling identity. */
   controller: string;
   /**
-   * Key-encoding type. We support `Ed25519VerificationKey2020` and
-   * `JsonWebKey2020`. The legacy `Ed25519VerificationKey2018` is
-   * intentionally NOT supported — its base58 encoding differs from
-   * the 2020 form, and accepting both invites confusion bugs.
+   * Key-encoding type. Mirrors the set `acdp-rs`/`acdp-registry-rs`
+   * accept so an agent the registry authenticates also authenticates
+   * here (RFC-ACDP-0008 §3.9). Extraction dispatches on the *requested
+   * algorithm*, not on `type`; `type` (plus the JWK/multibase contents)
+   * only supplies the algorithm-downgrade signal. Supported:
+   *   - `Ed25519VerificationKey2020` / `Ed25519VerificationKey2018` → ed25519
+   *   - `EcdsaSecp256r1VerificationKey2019`                          → ecdsa-p256
+   *   - `JsonWebKey2020` (OKP/Ed25519 or EC/P-256)
+   *   - `Multikey` (algorithm derived from the multibase multicodec prefix)
    */
-  type: 'Ed25519VerificationKey2020' | 'JsonWebKey2020';
+  type:
+    | 'Ed25519VerificationKey2020'
+    | 'Ed25519VerificationKey2018'
+    | 'EcdsaSecp256r1VerificationKey2019'
+    | 'JsonWebKey2020'
+    | 'Multikey';
   /** Multibase-encoded public key (only with `Ed25519VerificationKey2020`). */
   publicKeyMultibase?: string;
   /** JWK (only with `JsonWebKey2020`). */

@@ -34,9 +34,15 @@ export interface TrustedIssuer {
   /** JWKS URL for EdDSA verification. Unset for HS256. */
   jwksUrl?: string;
   /**
-   * Optional audience requirement — when set, the JWT's `aud` claim
-   * MUST match (string equality). Lets a control plane accept a
-   * registry-issued token only when it explicitly names the CP.
+   * Optional audience requirement — when set, the JWT's `aud` claim MUST
+   * match (string equality for a string `aud`; membership for an array).
+   *
+   * NOTE on cross-issuer interop: `acdp-registry-rs` binds every token's
+   * `aud` to *its own* authority (federation replay defense), NOT to the
+   * consumer's. So to accept a peer registry's tokens here, set
+   * `audience=<that registry's authority>` (the value it stamps) — not
+   * this CP's authority, which would reject every peer token. Omit it to
+   * skip the audience check entirely (no replay binding on peer tokens).
    */
   audience?: string;
   /**
