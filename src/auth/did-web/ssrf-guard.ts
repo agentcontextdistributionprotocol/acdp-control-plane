@@ -198,23 +198,88 @@ export function isUnsafeIPv6(ip: string): boolean {
   // ::, ::1, multicast
   if (lower === '::' || lower === '::1') return true;
   if (lower.startsWith('ff')) return true; // ff00::/8 multicast
-  // IPv4-mapped: ::ffff:0.0.0.0/96
-  if (lower.startsWith('::ffff:')) {
-    const v4 = lower.slice('::ffff:'.length);
-    return isIPv4(v4) ? isUnsafeIPv4(v4) : false;
+
+  // Decode to 8 hextets so embedded-IPv4 forms can't slip through in
+  // whatever shape DNS hands back. `dns.lookup` returns the *canonical
+  // hex* form (e.g. 169.254.169.254 → `::ffff:a9fe:a9fe`), NOT the
+  // dotted form, so a substring check on `::ffff:` is not enough.
+  const segs = toHextets(lower);
+  if (segs === null) return false; // unparseable → handled by literal checks below
+
+  // Embedded IPv4 — two forms, both end in the low 32 bits:
+  //   IPv4-mapped     ::ffff:a.b.c.d  → segs[0..4]=0, segs[5]=0xffff
+  //   IPv4-compatible ::a.b.c.d       → segs[0..5]=0  (deprecated, e.g. ::127.0.0.1)
+  if (
+    segs[0] === 0 &&
+    segs[1] === 0 &&
+    segs[2] === 0 &&
+    segs[3] === 0 &&
+    segs[4] === 0 &&
+    (segs[5] === 0 || segs[5] === 0xffff)
+  ) {
+    const v4 = `${segs[6] >> 8}.${segs[6] & 0xff}.${segs[7] >> 8}.${segs[7] & 0xff}`;
+    // `::` and `::1` already handled above; anything else embedding a v4
+    // is filtered through the v4 ranges (loopback, RFC1918, IMDS, …).
+    if (!(segs[6] === 0 && segs[7] === 0)) {
+      return isUnsafeIPv4(v4);
+    }
   }
-  // Parse to segment array for prefix checks.
-  // URL canonicalises the address — use that.
-  let url: URL;
-  try {
-    url = new URL(`https://[${lower}]`);
-  } catch {
-    return false;
-  }
-  const normalized = url.hostname.replace(/^\[|\]$/g, '');
-  // fc00::/7 — unique local
-  if (/^f[cd]/.test(normalized)) return true;
+
+  // NAT64 well-known prefix 64:ff9b::/96 — `64:ff9b::a9fe:a9fe` reaches
+  // IMDS via a NAT64 gateway and must be refused regardless of the
+  // embedded address.
+  if (segs[0] === 0x0064 && segs[1] === 0xff9b) return true;
+
+  // fc00::/7 — unique local (fc00–fdff)
+  if (segs[0] >= 0xfc00 && segs[0] <= 0xfdff) return true;
   // fe80::/10 — link-local (fe80–febf)
-  if (/^fe[89ab]/.test(normalized)) return true;
+  if (segs[0] >= 0xfe80 && segs[0] <= 0xfebf) return true;
   return false;
+}
+
+/**
+ * Expand an IPv6 string (incl. `::` compression and a trailing dotted-quad)
+ * into exactly 8 16-bit hextets. Returns null if the input isn't a parseable
+ * IPv6 address.
+ */
+function toHextets(ip: string): number[] | null {
+  if (!ip.includes(':')) return null;
+  // Normalise an embedded dotted-decimal tail (`…:a.b.c.d`) into two hex
+  // hextets so the rest of the parser only deals with `:`-separated hex.
+  let s = ip;
+  const lastColon = ip.lastIndexOf(':');
+  const tail = ip.slice(lastColon + 1);
+  if (tail.includes('.')) {
+    if (!isIPv4(tail)) return null;
+    const o = tail.split('.').map(Number);
+    const hexTail = `${(((o[0] << 8) | o[1]) >>> 0).toString(16)}:${(((o[2] << 8) | o[3]) >>> 0).toString(16)}`;
+    s = ip.slice(0, lastColon + 1) + hexTail; // keeps the `::` intact
+  }
+
+  const halves = s.split('::');
+  if (halves.length > 2) return null; // more than one '::' is illegal
+  const parseGroup = (g: string): number[] | null => {
+    if (g === '') return [];
+    const parts = g.split(':');
+    const out: number[] = [];
+    for (const p of parts) {
+      if (p === '' || p.length > 4 || !/^[0-9a-f]+$/.test(p)) return null;
+      out.push(parseInt(p, 16));
+    }
+    return out;
+  };
+
+  const left = parseGroup(halves[0]);
+  if (left === null) return null;
+  let segs: number[];
+  if (halves.length === 2) {
+    const right = parseGroup(halves[1]);
+    if (right === null) return null;
+    const fill = 8 - left.length - right.length;
+    if (fill < 0) return null;
+    segs = [...left, ...new Array(fill).fill(0), ...right];
+  } else {
+    segs = left;
+  }
+  return segs.length === 8 ? segs : null;
 }

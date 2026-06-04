@@ -1,10 +1,13 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { createHmac } from 'node:crypto';
+import { SsrfPolicy } from '../auth/did-web/ssrf-guard';
 import { parseRetryAfterMs } from '../common/retry-after';
 import { AppConfigService } from '../config/app-config.service';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
@@ -23,13 +26,28 @@ export interface WebhookPayload {
 export class WebhookService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WebhookService.name);
   private retryTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * SSRF gate for outbound delivery. Subscriber URLs are attacker-supplied
+   * (any authenticated tenant can register one), so every delivery is gated
+   * by the same policy as the federation proxy. Default-secure; the policy
+   * is injectable so tests can stub DNS resolution.
+   */
+  private readonly ssrf: SsrfPolicy;
 
   constructor(
     private readonly webhookRepository: WebhookRepository,
     private readonly deliveryRepository: WebhookDeliveryRepository,
     private readonly instrumentation: InstrumentationService,
     private readonly config: AppConfigService,
-  ) {}
+    @Optional() ssrf?: SsrfPolicy,
+  ) {
+    this.ssrf =
+      ssrf ??
+      new SsrfPolicy({
+        allowHttp: config.webhookSsrfAllowHttp,
+        allowLoopback: config.webhookSsrfAllowLoopback,
+      });
+  }
 
   onModuleInit(): void {
     const intervalMs = this.config.webhookRetryIntervalMs;
@@ -58,6 +76,7 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     input: { url: string; events: string[]; secret: string },
     tenantId: string = DEFAULT_TENANT_ID,
   ) {
+    this.assertSafeUrl(input.url);
     return this.webhookRepository.create({ ...input, tenantId });
   }
 
@@ -70,7 +89,25 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     fields: { url?: string; events?: string[]; secret?: string; active?: boolean },
     tenantId: string = DEFAULT_TENANT_ID,
   ) {
+    if (fields.url !== undefined) this.assertSafeUrl(fields.url);
     return this.webhookRepository.update(id, fields, tenantId);
+  }
+
+  /**
+   * Synchronous scheme + IP-literal gate run at subscription time so an
+   * obviously-unsafe URL (http://, IP literal) is rejected up front. The
+   * full DNS-resolution gate runs again at delivery time in
+   * {@link guardDeliveryUrl} — a hostname can rebind between registration
+   * and delivery, so registration validation alone is not sufficient.
+   */
+  private assertSafeUrl(url: string): void {
+    try {
+      this.ssrf.checkUrl(url);
+    } catch (e) {
+      throw new BadRequestException(
+        `webhook URL rejected by SSRF policy: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   async remove(id: string, tenantId: string = DEFAULT_TENANT_ID) {
@@ -164,6 +201,22 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     return retried;
   }
 
+  /**
+   * Run the full SSRF gate (scheme + IP-literal, then DNS-resolve every
+   * address) against a delivery URL. Returns an error message string on a
+   * policy violation, or null when the URL is safe to fetch.
+   */
+  private async guardDeliveryUrl(url: string): Promise<string | null> {
+    try {
+      this.ssrf.checkUrl(url);
+      const host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+      await this.ssrf.checkResolvedHost(host);
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }
+
   private async deliverWithTracking(
     deliveryId: string,
     url: string,
@@ -176,6 +229,24 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     const body = JSON.stringify(payload);
     const signature = createHmac('sha256', secret).update(body).digest('hex');
 
+    // SSRF gate: subscriber URLs are attacker-supplied. Re-resolve and
+    // range-check at delivery time (closes the DNS-rebind window left open
+    // by registration-time validation). A policy violation is a PERMANENT
+    // failure — never retry it into the internal network.
+    const ssrfError = await this.guardDeliveryUrl(url);
+    if (ssrfError) {
+      await this.recordFailure(
+        deliveryId,
+        url,
+        startAttempt + 1,
+        maxAttempts,
+        `SSRF policy: ${ssrfError}`,
+        undefined,
+        tenantId,
+      );
+      return;
+    }
+
     for (let attempt = startAttempt + 1; attempt <= maxAttempts; attempt++) {
       try {
         const response = await fetch(url, {
@@ -186,6 +257,10 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
             'X-ACDP-Event': payload.event,
           },
           body,
+          // Never auto-follow redirects: a subscriber could 302 us at an
+          // internal target the SSRF gate above already cleared the original
+          // host for. A 3xx is treated as a delivery failure below.
+          redirect: 'manual',
           signal: AbortSignal.timeout(10_000),
         });
 

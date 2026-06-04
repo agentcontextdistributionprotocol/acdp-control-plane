@@ -9,6 +9,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { AppConfigService } from '../config/app-config.service';
 import {
   buildTenantLookup,
@@ -125,13 +126,13 @@ export class AuthGuard implements CanActivate {
       return true;
     }
 
-    if (!validTokens.includes(token)) {
+    if (!constantTimeIncludes(validTokens, token)) {
       throw new UnauthorizedException('Invalid authorization token');
     }
 
     request.actorId = token.slice(0, 8) + '...';
     request.actorType = 'api-key';
-    request.actorIsAdmin = this.config.authAdminApiKeys.includes(token);
+    request.actorIsAdmin = constantTimeIncludes(this.config.authAdminApiKeys, token);
     request.tenantId = this.tenantFor(token);
     request.actorScopes = []; // api keys carry no scopes
 
@@ -173,6 +174,26 @@ function extractScopes(claims: unknown): string[] {
     return c.scope.filter((s): s is string => typeof s === 'string');
   }
   return [];
+}
+
+/**
+ * Constant-time membership test for a secret `token` against a list of valid
+ * secrets. Both sides are SHA-256-hashed first so the comparison is over
+ * fixed-length (32-byte) buffers — this makes `timingSafeEqual` length-safe
+ * and removes the byte-wise short-circuit timing oracle that `===` /
+ * `Array.prototype.includes` leak. We deliberately scan the ENTIRE list (no
+ * early return on match) so the time does not depend on the match position.
+ */
+function constantTimeIncludes(candidates: string[], token: string): boolean {
+  const tokenHash = createHash('sha256').update(token).digest();
+  let matched = false;
+  for (const candidate of candidates) {
+    const candidateHash = createHash('sha256').update(candidate).digest();
+    if (timingSafeEqual(candidateHash, tokenHash)) {
+      matched = true;
+    }
+  }
+  return matched;
 }
 
 function readHeaderTenant(headers: unknown): string | null {

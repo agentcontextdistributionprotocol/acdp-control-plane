@@ -149,6 +149,10 @@ export class CrossIssuerValidator {
       const decoded = jwt.verify(token, this.signing.material.verifyKey, {
         algorithms: [this.signing.material.algorithm as Algorithm],
         issuer: this.config.jwtAuthority,
+        // Bind local tokens to our own audience so one minted for this CP
+        // can't be replayed at a different audience. `jsonwebtoken` rejects
+        // a token whose `aud` doesn't match (and one with no `aud`).
+        audience: this.config.jwtAudience,
         // Local tokens don't carry nbf today, but if a future mint adds
         // it the jsonwebtoken library will respect it automatically.
       });

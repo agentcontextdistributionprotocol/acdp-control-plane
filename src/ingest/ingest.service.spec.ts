@@ -26,9 +26,20 @@ describe('IngestService', () => {
     return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
   }
 
+  /** Build an object nested `n` levels deep, for the depth-cap test. */
+  function nest(n: number): unknown {
+    let v: unknown = 1;
+    for (let i = 0; i < n; i++) v = { v };
+    return v;
+  }
+
   beforeEach(() => {
     processor = { process: jest.fn().mockResolvedValue(undefined) };
-    config = { webhookSecret: secret } as Partial<AppConfigService>;
+    config = {
+      webhookSecret: secret,
+      ingestMaxBodyBytes: 1_048_576,
+      ingestMaxJsonDepth: 64,
+    } as Partial<AppConfigService>;
     packs = new DomainPackRegistry(); // empty → context-type gate is inactive
     enrollmentRepo = { findByAuthority: jest.fn().mockResolvedValue(null) };
     instrumentation = { ingestRejectedTotal: { inc: jest.fn() } };
@@ -53,6 +64,90 @@ describe('IngestService', () => {
       undefined,
       undefined,
     );
+  });
+
+  describe('parse-DoS caps', () => {
+    it('rejects a body over the byte limit before parsing', async () => {
+      const small = { ...config, ingestMaxBodyBytes: 32 } as AppConfigService;
+      const svc = new IngestService(
+        small,
+        processor as unknown as EventProcessorService,
+        packs,
+        enrollmentRepo as any,
+        instrumentation as any,
+      );
+      const body = Buffer.from(JSON.stringify(validPayload)); // > 32 bytes
+      await expect(svc.handle(body, sign(body))).rejects.toThrow(/byte limit/);
+      expect(processor.process).not.toHaveBeenCalled();
+    });
+
+    it('rejects a body that nests deeper than the depth limit', async () => {
+      const deep = JSON.stringify({ ...validPayload, x: nest(200) });
+      const body = Buffer.from(deep);
+      await expect(service.handle(body, sign(body))).rejects.toThrow(/nesting/);
+      expect(processor.process).not.toHaveBeenCalled();
+    });
+
+    it('accepts a body within both caps', async () => {
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await service.handle(body, sign(body), 'run-ok');
+      expect(processor.process).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('tenant resolution on ingest', () => {
+    it('ignores an X-Tenant-Id header from an UNENROLLED authority in strict mode (forces default)', async () => {
+      // INGEST_STRICT_TENANT on + unenrolled authority → a non-default header
+      // tenant must NOT let the caller write into an arbitrary tenant.
+      const strict = new IngestService(
+        { ...config, ingestStrictTenant: true } as AppConfigService,
+        processor as unknown as EventProcessorService,
+        packs,
+        enrollmentRepo as any,
+        instrumentation as any,
+      );
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await strict.handle(body, sign(body), 'run-1', 'attacker-tenant');
+      expect(processor.process).toHaveBeenCalledWith(
+        expect.any(Object),
+        'run-1',
+        'default',
+        undefined,
+        undefined,
+      );
+    });
+
+    it('trusts the X-Tenant-Id header for an unenrolled authority by default (V0 fallback)', async () => {
+      // Default (strict off): header attribution remains the documented
+      // fallback so existing single-secret multi-tenant deployments work.
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await service.handle(body, sign(body), 'run-1', 'tenant-x');
+      expect(processor.process).toHaveBeenCalledWith(
+        expect.any(Object),
+        'run-1',
+        'tenant-x',
+        undefined,
+        undefined,
+      );
+    });
+
+    it('uses the enrollment tenant (not the header) for an ENROLLED authority', async () => {
+      enrollmentRepo.findByAuthority.mockResolvedValue({
+        enabled: true,
+        tenantId: 'tenant-blue',
+        webhookSecret: null,
+        baseUrl: null,
+      });
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await service.handle(body, sign(body), 'run-1', 'attacker-tenant');
+      expect(processor.process).toHaveBeenCalledWith(
+        expect.any(Object),
+        'run-1',
+        'tenant-blue',
+        undefined,
+        undefined,
+      );
+    });
   });
 
   it('prefers X-Run-Id header over payload.run_id when both are present', async () => {

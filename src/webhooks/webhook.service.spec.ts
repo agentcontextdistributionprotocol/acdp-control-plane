@@ -1,7 +1,20 @@
+import { SsrfPolicy } from '../auth/did-web/ssrf-guard';
 import { WebhookService } from './webhook.service';
 
 function mockInstrumentation() {
   return { webhookDeliveriesTotal: { inc: jest.fn() } } as any;
+}
+
+/**
+ * SsrfPolicy with DNS resolution stubbed out — the delivery-test hosts
+ * (`*.example`) don't resolve, so we bypass `checkResolvedHost` while still
+ * exercising the synchronous scheme/IP-literal gate. Mirrors the
+ * did-web-resolver spec's approach of subclassing to skip real DNS.
+ */
+class StubResolvePolicy extends SsrfPolicy {
+  async checkResolvedHost(): Promise<string[]> {
+    return [];
+  }
 }
 
 describe('WebhookService', () => {
@@ -44,6 +57,8 @@ describe('WebhookService', () => {
       deliveryRepo,
       mockInstrumentation(),
       { webhookRetryIntervalMs: 0 } as any,
+      // https `*.example` hosts pass the sync gate; DNS is stubbed.
+      new StubResolvePolicy(),
     );
   });
 
@@ -262,5 +277,61 @@ describe('WebhookService', () => {
 
     expect(deliveryRepo.create).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe('SSRF gate', () => {
+    // Use the real (secure) policy here so the gate actually runs.
+    function secureSvc() {
+      return new WebhookService(
+        webhookRepo,
+        deliveryRepo,
+        mockInstrumentation(),
+        { webhookRetryIntervalMs: 0 } as any,
+        new SsrfPolicy(),
+      );
+    }
+
+    it('rejects registering an http:// webhook URL', async () => {
+      await expect(
+        secureSvc().register({ url: 'http://x.example/h', events: [], secret: 's' }),
+      ).rejects.toThrow(/SSRF policy/i);
+      expect(webhookRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects registering an IP-literal (IMDS) webhook URL', async () => {
+      await expect(
+        secureSvc().register({
+          url: 'https://169.254.169.254/latest/meta-data/',
+          events: [],
+          secret: 's',
+        }),
+      ).rejects.toThrow(/SSRF policy/i);
+      expect(webhookRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('does not deliver to a URL that fails the delivery-time gate', async () => {
+      const svcSecure = secureSvc();
+      webhookRepo.listActive.mockResolvedValue([
+        // Passes the sync gate (https, hostname) but resolves to loopback —
+        // the delivery-time DNS check refuses it.
+        { id: 'wh-1', url: 'https://localhost/h', secret: 's', events: [] },
+      ]);
+
+      await svcSecure.fireEvent({
+        event: 'context_published',
+        runId: 'r-1',
+        timestamp: '2026-01-01T00:00:00Z',
+      });
+      // Delivery is fire-and-forget and the gate does an async DNS lookup —
+      // poll briefly for the recorded failure.
+      for (let i = 0; i < 50 && deliveryRepo.markFailed.mock.calls.length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(deliveryRepo.markFailed).toHaveBeenCalled();
+      const reason = deliveryRepo.markFailed.mock.calls[0][2];
+      expect(String(reason)).toMatch(/SSRF policy/i);
+    });
   });
 });
