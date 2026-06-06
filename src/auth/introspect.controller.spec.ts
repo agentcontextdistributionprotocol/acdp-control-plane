@@ -29,6 +29,7 @@ function freshClaims(overrides: Partial<{
   jti: string;
   sub: string;
   iss: string;
+  aud: string;
   exp: number;
   keyId: string;
   registry: string;
@@ -40,6 +41,7 @@ function freshClaims(overrides: Partial<{
     jti: overrides.jti ?? 'jti-1',
     iat: now,
     exp: overrides.exp ?? now + 3600,
+    ...(overrides.aud !== undefined ? { aud: overrides.aud } : {}),
     acdp: {
       registry: overrides.registry ?? ISS,
       key_id: overrides.keyId ?? 'did:web:alice#key-1',
@@ -137,7 +139,7 @@ describe('IntrospectController', () => {
     const PEER_SECRET = 'P'.repeat(64);
     const cfg = fakeConfig();
     const peerRegistry = new TrustedIssuerRegistry([
-      { iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET },
+      { iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET, audience: PEER_ISS },
     ]);
     const mod = await Test.createTestingModule({
       controllers: [IntrospectController],
@@ -151,7 +153,7 @@ describe('IntrospectController', () => {
     const c = mod.get(IntrospectController);
 
     const peerToken = tokenFor(
-      freshClaims({ iss: PEER_ISS, sub: 'did:web:federated-bob' }),
+      freshClaims({ iss: PEER_ISS, sub: 'did:web:federated-bob', aud: PEER_ISS }),
       PEER_SECRET,
     );
     const res = await c.introspect({ token: peerToken });
@@ -196,24 +198,26 @@ describe('IntrospectController', () => {
     expect(res).toEqual({ active: false });
   });
 
-  it('does NOT consult local revocation list for trusted-peer tokens', async () => {
-    // Peer revocation propagation is plan §9 follow-up; the local CP
-    // revocation list must not silently reject peer tokens with a
-    // colliding jti.
+  it('DOES reject a trusted-peer token whose jti is in the local revocation list', async () => {
+    // Cross-issuer revocation propagation (plan §9, now implemented): the
+    // RevocationPollerService imports each peer's revocations into the local
+    // store, so a single isRevoked(jti) check honors propagated revocations.
+    // The introspect path therefore reports a revoked peer token as inactive.
     const PEER_ISS = 'registry-a.peer';
     const PEER_SECRET = 'P'.repeat(64);
     const cfg = fakeConfig();
     const peerRegistry = new TrustedIssuerRegistry([
-      { iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET },
+      { iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET, audience: PEER_ISS },
     ]);
     const revocations = new InMemoryRevocationRepository();
+    // Simulate a revocation imported from the peer's feed (iss = the peer).
     await revocations.revoke({
-      jti: 'jti-collide',
-      sub: 'did:web:other',
-      iss: cfg.jwtAuthority,
+      jti: 'jti-peer-revoked',
+      sub: 'did:web:federated-bob',
+      iss: PEER_ISS,
       exp: Math.floor(Date.now() / 1000) + 3600,
-      revokedBy: 'test',
-      reason: 'admin_revoke',
+      revokedBy: `cross-issuer-poll:${PEER_ISS}`,
+      reason: 'unspecified',
     });
     const mod = await Test.createTestingModule({
       controllers: [IntrospectController],
@@ -230,11 +234,12 @@ describe('IntrospectController', () => {
       freshClaims({
         iss: PEER_ISS,
         sub: 'did:web:federated-bob',
-        jti: 'jti-collide',
+        aud: PEER_ISS,
+        jti: 'jti-peer-revoked',
       }),
       PEER_SECRET,
     );
     const res = await c.introspect({ token: peerToken });
-    expect(res.active).toBe(true);
+    expect(res).toEqual({ active: false });
   });
 });

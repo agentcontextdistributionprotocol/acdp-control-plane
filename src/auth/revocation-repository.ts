@@ -66,6 +66,18 @@ export interface RevocationRepository {
     sinceMs: number,
     limit: number,
   ): Promise<{ entries: RevocationRecord[]; nextCursor: number | null }>;
+
+  /**
+   * Durable per-issuer cursor for the cross-issuer revocation poller
+   * (`RevocationPollerService`). Returns the last persisted unix-ms cursor
+   * for `issuer`, or `null` when none is stored — in which case the poller
+   * starts at 0 (a one-time full re-fetch; `revoke()` is idempotent so this
+   * is harmless). Mirrors the registry's `get/set_revocation_cursor`.
+   */
+  getRevocationCursor(issuer: string): Promise<number | null>;
+
+  /** Persist the per-issuer poll cursor (unix-ms). */
+  setRevocationCursor(issuer: string, cursorMs: number): Promise<void>;
 }
 
 export const REVOCATION_REPOSITORY = Symbol('REVOCATION_REPOSITORY');

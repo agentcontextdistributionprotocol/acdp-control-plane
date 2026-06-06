@@ -43,6 +43,13 @@ export interface TestAppOptions {
    * tests (revocation feed, pinned-keys reload).
    */
   adminApiKey?: string;
+  /**
+   * Force strict tenant mode (AUTH_REQUIRE_TENANT=true). Auto-enabled whenever
+   * `tenantApiKeys` is set, because the app now fails startup if tenant
+   * bindings exist without strict mode (multi-tenant fail-fast). Set
+   * explicitly for the rare strict-mode-without-bindings case.
+   */
+  requireTenant?: boolean;
 }
 
 /**
@@ -69,6 +76,15 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
   } else {
     process.env.AUTH_API_KEYS = apiKey;
     delete process.env.TENANT_API_KEYS;
+  }
+  // Tenant bindings require strict mode or the app fails startup (multi-tenant
+  // fail-fast). Auto-enable it for any multi-tenant test app; allow an explicit
+  // opt-in otherwise. Clear it when neither applies so env doesn't leak across
+  // suites (process.env is mutated in place).
+  if (tenantApiKeys.length > 0 || opts.requireTenant) {
+    process.env.AUTH_REQUIRE_TENANT = 'true';
+  } else {
+    delete process.env.AUTH_REQUIRE_TENANT;
   }
   if (opts.adminApiKey) {
     // Union the admin key into AUTH_API_KEYS so AuthGuard accepts it,

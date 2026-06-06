@@ -249,6 +249,19 @@ export const revokedTokens = pgTable(
   }),
 );
 
+// Durable per-issuer cursor for the cross-issuer revocation poller
+// (`RevocationPollerService`). `cursor_ms` is the unix-ms `revoked_at` of the
+// last applied entry from `issuer`'s feed; the poller resumes here on restart
+// so it doesn't re-fetch the whole feed from since=0. Mirrors the registry's
+// per-issuer revocation cursor.
+export const revocationCursors = pgTable('revocation_cursors', {
+  issuer: text('issuer').primaryKey(),
+  cursorMs: bigint('cursor_ms', { mode: 'number' }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' })
+    .notNull()
+    .defaultNow(),
+});
+
 // Self-declared agent capabilities (#4). Signature gates the write so
 // a third party can't claim capabilities for an agent they don't control.
 export const agentCapabilities = pgTable(
@@ -323,6 +336,8 @@ export type AuthChallenge = typeof authChallenges.$inferSelect;
 export type NewAuthChallenge = typeof authChallenges.$inferInsert;
 export type RevokedToken = typeof revokedTokens.$inferSelect;
 export type NewRevokedToken = typeof revokedTokens.$inferInsert;
+export type RevocationCursor = typeof revocationCursors.$inferSelect;
+export type NewRevocationCursor = typeof revocationCursors.$inferInsert;
 export type AgentCapability = typeof agentCapabilities.$inferSelect;
 export type NewAgentCapability = typeof agentCapabilities.$inferInsert;
 export type IssuanceLedgerEntry = typeof issuanceLedger.$inferSelect;

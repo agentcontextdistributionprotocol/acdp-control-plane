@@ -106,6 +106,25 @@ export class PostgresRevocationRepository implements RevocationRepository {
         : null;
     return { entries, nextCursor };
   }
+
+  async getRevocationCursor(issuer: string): Promise<number | null> {
+    const result = await this.db.db.execute(
+      sql`SELECT cursor_ms FROM revocation_cursors WHERE issuer = ${issuer} LIMIT 1`,
+    );
+    const row = result.rows[0] as { cursor_ms: string | number } | undefined;
+    if (!row) return null;
+    const n = Number(row.cursor_ms);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  async setRevocationCursor(issuer: string, cursorMs: number): Promise<void> {
+    await this.db.db.execute(
+      sql`INSERT INTO revocation_cursors (issuer, cursor_ms, updated_at)
+          VALUES (${issuer}, ${cursorMs}, now())
+          ON CONFLICT (issuer)
+          DO UPDATE SET cursor_ms = EXCLUDED.cursor_ms, updated_at = now()`,
+    );
+  }
 }
 
 function nowSeconds(): number {

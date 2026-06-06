@@ -98,4 +98,39 @@ describe('AppConfigService', () => {
       expect(() => cfg.onModuleInit()).not.toThrow();
     });
   });
+
+  describe('multi-tenant fail-fast (all environments)', () => {
+    beforeEach(() => {
+      // Run in development to prove the check is NOT gated behind prod.
+      process.env.NODE_ENV = 'development';
+      delete process.env.TENANT_AGENTS;
+      delete process.env.TENANT_API_KEYS;
+      delete process.env.AUTH_REQUIRE_TENANT;
+    });
+
+    it('throws when TENANT_AGENTS is set but AUTH_REQUIRE_TENANT is false', () => {
+      process.env.TENANT_AGENTS = 'tenant-a:did:web:agents.example:alice';
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).toThrow(/AUTH_REQUIRE_TENANT=true/);
+    });
+
+    it('throws when a tenant-bound TENANT_API_KEYS entry exists without strict mode', () => {
+      process.env.TENANT_API_KEYS = 'tenant-a:key-a';
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).toThrow(/AUTH_REQUIRE_TENANT=true/);
+    });
+
+    it('allows bare (default-bound) API keys without strict mode', () => {
+      process.env.TENANT_API_KEYS = 'bare-key-1,default:bare-key-2';
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).not.toThrow();
+    });
+
+    it('passes when tenant bindings are present AND strict mode is on', () => {
+      process.env.TENANT_AGENTS = 'tenant-a:did:web:agents.example:alice';
+      process.env.AUTH_REQUIRE_TENANT = 'true';
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).not.toThrow();
+    });
+  });
 });

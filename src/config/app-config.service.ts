@@ -135,6 +135,14 @@ export class AppConfigService implements OnModuleInit {
    * `src/auth/trusted-issuers.ts`. Empty (default) = no federation.
    */
   readonly trustedIssuersRaw = process.env.TRUSTED_ISSUERS ?? '';
+  /**
+   * Federation: peer `/auth/revocations` feeds this control plane polls so a
+   * token revoked at a trusted issuer is rejected here before its natural
+   * expiry (reciprocal of the registry's revocation poller). Wire format
+   * documented in `src/auth/revocation-feeds.ts`. Empty (default) = the CP
+   * serves its own feed but does not consume any peer's.
+   */
+  readonly revocationFeedsRaw = process.env.REVOCATION_FEEDS ?? '';
 
   // Auth-store backend selection — drives the #8 persistent stores,
   // the #12 issuance ledger, and any future auth tables. `memory` is
@@ -229,7 +237,43 @@ export class AppConfigService implements OnModuleInit {
     this.validate();
   }
 
+  /**
+   * True when the operator configured any non-`default` tenant binding —
+   * either an agent→tenant mapping (`TENANT_AGENTS`) or a tenant-bound API
+   * key (`TENANT_API_KEYS` entry with a `tenantId:` prefix other than
+   * `default`). Bare API keys (no prefix) bind to `default` and don't count
+   * as a multi-tenant intent. Parsing is intentionally lightweight so this
+   * service keeps depending only on `process.env`.
+   */
+  private hasTenantBindings(): boolean {
+    if (this.tenantAgentsRaw.trim().length > 0) return true;
+    return this.tenantApiKeysRaw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .some((entry) => {
+        const idx = entry.indexOf(':');
+        if (idx <= 0) return false; // bare key → default tenant
+        return entry.slice(0, idx) !== 'default';
+      });
+  }
+
   private validate(): void {
+    // Multi-tenant fail-fast (parity with the registry's main.rs startup
+    // bail, commit c988ea4): if the operator configured tenant bindings
+    // (the intent is multi-tenancy) but left AUTH_REQUIRE_TENANT=false, a
+    // request that resolves to no tenant runs with the tenant filter
+    // disabled and can surface cross-tenant rows. Force strict enforcement
+    // at startup rather than fail open — in EVERY environment, not just prod.
+    if (this.hasTenantBindings() && !this.requireTenant) {
+      throw new Error(
+        'Tenant bindings are configured (TENANT_AGENTS or a tenant-bound ' +
+          'TENANT_API_KEYS entry) but AUTH_REQUIRE_TENANT=false. A request ' +
+          'that resolves to no tenant would run unscoped and leak cross-tenant ' +
+          'data. Set AUTH_REQUIRE_TENANT=true to enable strict enforcement.',
+      );
+    }
+
     if (this.isDevelopment) return;
 
     if (this.authApiKeys.length === 0) {
@@ -263,6 +307,13 @@ export class AppConfigService implements OnModuleInit {
 
     if (this.dbPoolMax < 2) {
       throw new Error('DB_POOL_MAX must be >= 2 to avoid connection pool starvation');
+    }
+
+    if (this.revocationFeedsRaw.trim() && !this.tokenIssuanceEnabled) {
+      this.logger.warn(
+        'REVOCATION_FEEDS is configured but TOKEN_ISSUANCE_ENABLED=false — ' +
+          'the cross-issuer revocation poller only runs when issuance is enabled.',
+      );
     }
 
     if (this.tokenIssuanceEnabled) {
