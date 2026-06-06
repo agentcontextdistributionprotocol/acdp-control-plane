@@ -7,6 +7,7 @@ import {
 @Injectable()
 export class InMemoryRevocationRepository implements RevocationRepository {
   private readonly store = new Map<string, RevocationRecord>();
+  private readonly cursors = new Map<string, number>();
 
   async revoke(record: RevocationRecord): Promise<boolean> {
     if (this.store.has(record.jti)) return false;
@@ -66,6 +67,14 @@ export class InMemoryRevocationRepository implements RevocationRepository {
         ? (entries[entries.length - 1].revokedAt?.getTime() ?? null)
         : null;
     return { entries, nextCursor };
+  }
+
+  async getRevocationCursor(issuer: string): Promise<number | null> {
+    return this.cursors.get(issuer) ?? null;
+  }
+
+  async setRevocationCursor(issuer: string, cursorMs: number): Promise<void> {
+    this.cursors.set(issuer, cursorMs);
   }
 }
 

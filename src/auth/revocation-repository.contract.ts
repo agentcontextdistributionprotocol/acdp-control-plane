@@ -81,4 +81,22 @@ export function runRevocationRepositoryContract(
     await repo.revoke(record({ jti: 'c', exp: now - 10 }));
     expect(await repo.size()).toBe(2);
   });
+
+  it('getRevocationCursor returns null before any cursor is set', async () => {
+    expect(await repo.getRevocationCursor('peer.example')).toBeNull();
+  });
+
+  it('setRevocationCursor persists and overwrites a per-issuer cursor', async () => {
+    await repo.setRevocationCursor('peer.example', 1000);
+    expect(await repo.getRevocationCursor('peer.example')).toBe(1000);
+    await repo.setRevocationCursor('peer.example', 2500);
+    expect(await repo.getRevocationCursor('peer.example')).toBe(2500);
+  });
+
+  it('tracks cursors independently per issuer', async () => {
+    await repo.setRevocationCursor('a.example', 100);
+    await repo.setRevocationCursor('b.example', 200);
+    expect(await repo.getRevocationCursor('a.example')).toBe(100);
+    expect(await repo.getRevocationCursor('b.example')).toBe(200);
+  });
 }

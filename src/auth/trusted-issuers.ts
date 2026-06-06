@@ -7,13 +7,19 @@
  *
  * Config wire format: `TRUSTED_ISSUERS` is a comma-separated list of
  *
- *   HS256:   <iss>|HS256|<shared-secret>[|audience][|scope]
- *   EdDSA:   <iss>|EdDSA|<jwks-url>[|audience][|scope]
+ *   HS256:   <iss>|HS256|<shared-secret>|<audience>[|scope]
+ *   EdDSA:   <iss>|EdDSA|<jwks-url>|<audience>[|scope]
+ *
+ * `audience` is REQUIRED. `acdp-registry-rs` binds every token's `aud` to its
+ * own authority as a federation replay defense (#16); accepting a peer's
+ * tokens without verifying `aud` here would defeat that defense, so we refuse
+ * to trust an issuer with no declared audience. Set it to the value the peer
+ * stamps (its own authority), NOT this CP's authority.
  *
  * Examples:
  *
- *   TRUSTED_ISSUERS=registry-a|HS256|sharedsecretAAAA...
- *   TRUSTED_ISSUERS=registry-b|EdDSA|https://registry-b.example/.well-known/jwks.json
+ *   TRUSTED_ISSUERS=registry-a|HS256|sharedsecretAAAA...|registry-a.example
+ *   TRUSTED_ISSUERS=registry-b|EdDSA|https://registry-b.example/.well-known/jwks.json|registry-b.example
  *
  * The pipe-delimited format is deliberately ugly so reviewers notice
  * if a token is being trusted from somewhere unexpected.
@@ -34,17 +40,16 @@ export interface TrustedIssuer {
   /** JWKS URL for EdDSA verification. Unset for HS256. */
   jwksUrl?: string;
   /**
-   * Optional audience requirement — when set, the JWT's `aud` claim MUST
-   * match (string equality for a string `aud`; membership for an array).
+   * Required audience binding — the JWT's `aud` claim MUST match (string
+   * equality for a string `aud`; membership for an array).
    *
    * NOTE on cross-issuer interop: `acdp-registry-rs` binds every token's
    * `aud` to *its own* authority (federation replay defense), NOT to the
    * consumer's. So to accept a peer registry's tokens here, set
    * `audience=<that registry's authority>` (the value it stamps) — not
-   * this CP's authority, which would reject every peer token. Omit it to
-   * skip the audience check entirely (no replay binding on peer tokens).
+   * this CP's authority, which would reject every peer token.
    */
-  audience?: string;
+  audience: string;
   /**
    * Optional space-separated required scopes. The JWT's `scp` claim
    * (when present) MUST contain ALL listed scopes for acceptance.
@@ -59,15 +64,23 @@ export function parseTrustedIssuers(raw: string): TrustedIssuer[] {
   const out: TrustedIssuer[] = [];
   for (const entry of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
     const parts = entry.split('|');
-    if (parts.length < 3) {
+    if (parts.length < 4) {
       throw new TrustedIssuerError(
-        `TRUSTED_ISSUERS entry '${entry}' has ${parts.length} fields; minimum is iss|alg|secret`,
+        `TRUSTED_ISSUERS entry '${entry}' has ${parts.length} fields; ` +
+          `minimum is iss|alg|material|audience`,
       );
     }
     const [iss, alg, material, audience, requiredScope] = parts;
     if (!iss || !alg || !material) {
       throw new TrustedIssuerError(
         `TRUSTED_ISSUERS entry '${entry}' has an empty required field`,
+      );
+    }
+    if (!audience) {
+      throw new TrustedIssuerError(
+        `TRUSTED_ISSUERS entry for iss='${iss}': audience is required ` +
+          `(the peer binds aud to its own authority as a replay defense; ` +
+          `set audience=<that authority>)`,
       );
     }
     if (alg === 'HS256') {
@@ -80,7 +93,7 @@ export function parseTrustedIssuers(raw: string): TrustedIssuer[] {
         iss,
         alg: 'HS256',
         secret: material,
-        audience: audience || undefined,
+        audience,
         requiredScope: requiredScope || undefined,
       });
     } else if (alg === 'EdDSA') {
@@ -93,7 +106,7 @@ export function parseTrustedIssuers(raw: string): TrustedIssuer[] {
         iss,
         alg: 'EdDSA',
         jwksUrl: material,
-        audience: audience || undefined,
+        audience,
         requiredScope: requiredScope || undefined,
       });
     } else {

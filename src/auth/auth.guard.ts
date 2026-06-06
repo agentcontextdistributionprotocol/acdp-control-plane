@@ -107,6 +107,14 @@ export class AuthGuard implements CanActivate {
         (claims as { tenant: string }).tenant.length > 0
           ? (claims as { tenant: string }).tenant
           : null;
+      // Reserved-tenant guard (parity with the registry's
+      // `reject_reserved_tenant`, commit c988ea4): `default` is the silent
+      // column default for untenanted rows. Allowing a caller to *assert* it
+      // (even via a signed claim) would alias the entire untenanted bucket — a
+      // cross-boundary read. Untenanted access stays reachable only through the
+      // *absence* of any assertion, never an explicit `default`.
+      assertNotReservedTenant(claimTenant, 'token claim');
+      assertNotReservedTenant(headerTenant, 'X-Tenant-Id header');
       if (claimTenant && headerTenant && headerTenant !== claimTenant) {
         this.logger.warn(
           `tenant assertion mismatch: claim=${claimTenant} header=${headerTenant} sub=${claims.sub}`,
@@ -155,6 +163,10 @@ export class AuthGuard implements CanActivate {
     // keys — a bare (unbound) key resolves to `default` and never honors
     // the spoofable header, so there's nothing to disagree with.
     const apiKeyHeaderTenant = readHeaderTenant(request.headers);
+    // Reserved-tenant guard: a request may never *assert* `default` via the
+    // header (see the JWT path above). A key resolving to `default` through
+    // the absence of a binding is still legitimate untenanted access.
+    assertNotReservedTenant(apiKeyHeaderTenant, 'X-Tenant-Id header');
     if (
       keyTenant !== DEFAULT_TENANT_ID &&
       apiKeyHeaderTenant &&
@@ -234,6 +246,24 @@ function constantTimeIncludes(candidates: string[], token: string): boolean {
     }
   }
   return matched;
+}
+
+/**
+ * Reject `DEFAULT_TENANT_ID` ("default") as an explicitly-asserted tenant from
+ * any source (header or signed token claim). It is the column default for
+ * untenanted rows, so honoring an explicit assertion of it would alias the
+ * entire untenanted bucket — a cross-boundary read/write. Untenanted access
+ * remains reachable only via the *absence* of an assertion (a `null` here),
+ * which this function passes through untouched. Mirrors the registry's
+ * `reject_reserved_tenant` (acdp-registry-core, commit c988ea4).
+ */
+function assertNotReservedTenant(tenant: string | null, source: string): void {
+  if (tenant === DEFAULT_TENANT_ID) {
+    throw new ForbiddenException(
+      `'${DEFAULT_TENANT_ID}' is a reserved tenant sentinel and cannot be ` +
+        `asserted via ${source}`,
+    );
+  }
 }
 
 function readHeaderTenant(headers: unknown): string | null {

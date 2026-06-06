@@ -85,4 +85,31 @@ describe('AuthGuard — tenant extraction', () => {
     // aren't blocked by a tenant-config typo.
     expect(() => newGuard(['key'], 'malformed-no-colon-and-still-fine')).not.toThrow();
   });
+
+  describe('reserved tenant ("default") rejection', () => {
+    it('rejects an explicit X-Tenant-Id: default assertion (bound key)', async () => {
+      const { guard, request } = newGuard(['key-a'], 'tenant-a:key-a');
+      request.headers.authorization = 'Bearer key-a';
+      request.headers['x-tenant-id'] = DEFAULT_TENANT_ID;
+      await expect(guard.canActivate(ctx(request))).rejects.toThrow(
+        /reserved tenant sentinel/,
+      );
+    });
+
+    it('rejects an explicit X-Tenant-Id: default assertion (bare key)', async () => {
+      const { guard, request } = newGuard(['bare-key']);
+      request.headers.authorization = 'Bearer bare-key';
+      request.headers['x-tenant-id'] = DEFAULT_TENANT_ID;
+      await expect(guard.canActivate(ctx(request))).rejects.toThrow(
+        /reserved tenant sentinel/,
+      );
+    });
+
+    it('still allows resolving to default via the ABSENCE of an assertion', async () => {
+      const { guard, request } = newGuard(['bare-key']);
+      request.headers.authorization = 'Bearer bare-key';
+      await guard.canActivate(ctx(request));
+      expect(request.tenantId).toBe(DEFAULT_TENANT_ID);
+    });
+  });
 });

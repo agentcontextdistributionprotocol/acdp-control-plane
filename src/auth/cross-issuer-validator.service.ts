@@ -61,13 +61,12 @@ export class CrossIssuerValidator {
     private readonly trusted: TrustedIssuerRegistry,
     private readonly signing: SigningMaterialService,
     /**
-     * Optional revocation repo. When present, locally-issued tokens whose
-     * `jti` is recorded as revoked are rejected before the caller sees
-     * `{active:true}` from introspect (previously a silent oracle).
-     *
-     * Trusted-issuer tokens are NOT consulted against the local list —
-     * each issuer owns its own revocation feed; cross-issuer revocation
-     * propagation is plan §9 follow-up and intentionally out of scope here.
+     * Optional revocation repo. When present, any token whose `jti` is
+     * recorded as revoked is rejected before the caller sees `{active:true}`
+     * from introspect. This now covers BOTH our own tokens (recorded on
+     * revoke) and trusted-issuer tokens (imported by `RevocationPollerService`
+     * from each peer's `/auth/revocations` feed), closing the former
+     * cross-issuer propagation gap (plan §9).
      */
     @Optional()
     @Inject(REVOCATION_REPOSITORY)
@@ -104,13 +103,12 @@ export class CrossIssuerValidator {
       }
       claims = await this.verifyTrusted(token, trusted);
     }
-    // Revocation: consult the local list only for our own tokens. Trusted
-    // peers own their own revocation feeds — see ctor doc.
-    if (
-      this.revocations &&
-      claims.iss === this.config.jwtAuthority &&
-      claims.jti
-    ) {
+    // Revocation: consult the local list for EVERY issuer. Our own tokens are
+    // recorded here directly on revoke; a trusted peer's revocations are
+    // imported by `RevocationPollerService` (which polls the peer's
+    // `/auth/revocations` feed with issuer-confinement). So a single
+    // `isRevoked(jti)` check now honors both local and propagated revocations.
+    if (this.revocations && claims.jti) {
       const revoked = await this.revocations.isRevoked(claims.jti);
       if (revoked) {
         throw new UnauthorizedException(

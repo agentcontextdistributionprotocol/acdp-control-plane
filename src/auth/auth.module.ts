@@ -26,6 +26,7 @@ import {
   RevocationRepository,
 } from './revocation-repository';
 import { RevocationFeedController } from './revocation-feed.controller';
+import { RevocationPollerService } from './revocation-poller.service';
 import { RevokeController } from './revoke.controller';
 import { SigningMaterialService } from './signing-material.service';
 import { TokenIssuer } from './token-issuer.service';
@@ -127,6 +128,7 @@ export class AuthModule {
         IssuanceLedgerService,
         AuthSweeperService,
         CrossIssuerValidator,
+        RevocationPollerService,
       ],
       exports: [
         AuthGuard,
