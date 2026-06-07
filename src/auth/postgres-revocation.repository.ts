@@ -74,7 +74,14 @@ export class PostgresRevocationRepository implements RevocationRepository {
     limit: number,
   ): Promise<{ entries: RevocationRecord[]; nextCursor: number | null }> {
     const cap = Math.max(1, Math.min(limit | 0, 500));
-    // revoked_at is a TIMESTAMP — compare against to_timestamp(sinceMs/1000).
+    // revoked_at is a microsecond-precision TIMESTAMP, but the cursor is
+    // millisecond-granular. nextCursor below floors the final entry's timestamp
+    // down to its millisecond, so the next poll's strict `revoked_at > cursor`
+    // RE-FETCHES any same-millisecond entries that didn't fit this page (their
+    // sub-ms component keeps them above the floored cursor) rather than skipping
+    // them. Re-fetch is idempotent, so unlike the ms-granular in-memory store
+    // this path cannot lose entries at a page boundary and needs no group
+    // extension. Compare against to_timestamp(sinceMs/1000).
     const result = await this.db.db.execute(
       sql`SELECT jti, sub, iss, exp, revoked_by, reason, revoked_at
           FROM revoked_tokens

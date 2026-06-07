@@ -11,7 +11,11 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { EnrollRegistryDto } from '../dto/enroll-registry.dto';
 import { RegistryEnrollmentRepository } from '../storage/registry-enrollment.repository';
 import { RegistryRepository } from '../storage/registry.repository';
-import { tenantOf, TenantedRequest } from '../tenant/request-tenant';
+import {
+  assertNotReservedTenant,
+  tenantOf,
+  TenantedRequest,
+} from '../tenant/request-tenant';
 
 @ApiTags('registries')
 @Controller('registries')
@@ -52,6 +56,10 @@ export class RegistriesController {
     if (!req.actorIsAdmin) {
       throw new ForbiddenException('registry enrollment is admin-only');
     }
+    // An admin may bind an enrollment to an explicit tenant, but `default` is
+    // the reserved untenanted sentinel — it can never be named explicitly
+    // (parity with the AuthGuard's reserved-tenant rejection).
+    assertNotReservedTenant(body.tenantId, 'tenantId');
     const row = await this.enrollmentRepo.upsert({
       authority: body.authority,
       tenantId: body.tenantId ?? tenantOf(req),
