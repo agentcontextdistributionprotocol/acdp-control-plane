@@ -174,4 +174,18 @@ describe('Ingest pipeline (integration)', () => {
     const run = (await ctx.client.getRun(runId)) as Record<string, unknown>;
     expect(run.runId).toBe(runId);
   });
+
+  it('accepts a payload larger than the framework default (~200 kB, under the 1 MB ingest cap)', async () => {
+    // Regression for the interop fix: the registry's max_payload_bytes is 1 MB,
+    // but Express's ~100 kB default body-parser limit would 413 a legitimate
+    // webhook before HMAC verification. main.ts (and the test harness) raise the
+    // limit to INGEST_MAX_BODY_BYTES so bodies in the 100 kB–1 MB range pass.
+    const runId = 'run-large-body';
+    const payload = makeEvent({ run_id: runId, padding: 'x'.repeat(200_000) });
+    const res = await ctx.client.ingest(payload, { secret: SECRET });
+    expect(res.status).toBe(204);
+
+    const run = (await ctx.client.getRun(runId)) as Record<string, unknown>;
+    expect(run.runId).toBe(runId);
+  });
 });

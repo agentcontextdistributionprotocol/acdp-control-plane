@@ -106,7 +106,9 @@ export class RedisStreamHubStrategy implements StreamHubStrategy {
         this.logger.warn(`Failed to publish to Redis: ${err.message}`);
       });
     }
-    // Also emit locally so same-instance subscribers don't depend on the round-trip
-    this.localSubject.next(envelope);
+    // Do NOT also emit locally: the subscriber connection receives every
+    // message published to the channel — including this instance's own — and
+    // re-emits it on `localSubject` (see the `message` handler). Emitting here
+    // too would deliver every event to same-instance SSE subscribers twice.
   }
 }

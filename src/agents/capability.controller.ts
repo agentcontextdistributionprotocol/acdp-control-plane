@@ -33,7 +33,7 @@ import { CheckQuota } from '../quota/check-quota.decorator';
 import { tenantOf, TenantedRequest } from '../tenant/request-tenant';
 import { CapabilityService } from './capability.service';
 
-const ALG_OPTIONS = ['ed25519'] as const;
+const ALG_OPTIONS = ['ed25519', 'ecdsa-p256'] as const;
 
 export class DeclareCapabilityRequestDto {
   @ApiProperty({ description: 'Agent DID making the declaration.', example: 'did:web:cp.example.com:agents:alice' })
@@ -67,7 +67,7 @@ export class DeclareCapabilityRequestDto {
   algorithm!: string;
 
   @ApiProperty({
-    description: 'Base64-encoded Ed25519 signature over `acdp-cap:v1:<agent_did>:<capability_uri>:<declared_at>`.',
+    description: 'Base64-encoded signature (Ed25519 or ECDSA P-256, per `algorithm`) over `acdp-cap:v1:<agent_did>:<capability_uri>:<declared_at>`.',
   })
   @IsString()
   @MinLength(1)
@@ -95,7 +95,7 @@ export class CapabilityController {
   @CheckQuota('capability.declare')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Self-declare a capability for an agent (Ed25519-signed).',
+    summary: 'Self-declare a capability for an agent (Ed25519 or ECDSA P-256 signed).',
     description:
       'The signature MUST cover `acdp-cap:v1:<agent_did>:<capability_uri>:<declared_at>` and verify ' +
       'against the agent\'s pinned public key. Idempotent: redeclaring the same `(agent_did, capability_uri)` ' +

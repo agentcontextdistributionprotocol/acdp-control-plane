@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
@@ -23,11 +24,20 @@ async function bootstrap() {
   });
 
   const pinoLogger = new PinoLogger(config.logLevel, config.isDevelopment);
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     cors: false,
     logger: pinoLogger,
     rawBody: true,
   });
+
+  // Align the framework body-parser limit with INGEST_MAX_BODY_BYTES. Without
+  // this, Express's ~100 kB default rejects legitimate registry webhooks before
+  // they reach the HMAC check — the registry's own max_payload_bytes is 1 MB, so
+  // the CP must accept the same ceiling. `useBodyParser` preserves the rawBody
+  // capture (rawBody: true above) that the ingest HMAC verification depends on.
+  const bodyLimit = config.ingestMaxBodyBytes;
+  app.useBodyParser('json', { limit: bodyLimit });
+  app.useBodyParser('urlencoded', { limit: bodyLimit, extended: true });
 
   app.use(helmet());
   app.useGlobalFilters(new GlobalExceptionFilter());

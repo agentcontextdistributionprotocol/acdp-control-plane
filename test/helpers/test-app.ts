@@ -1,8 +1,10 @@
 import 'reflect-metadata';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { Test, TestingModule } from '@nestjs/testing';
 import * as promClient from 'prom-client';
 import { AppModule } from '../../src/app.module';
+import { AppConfigService } from '../../src/config/app-config.service';
 import { runMigrations } from '../../src/db/migrate';
 import { DatabaseService } from '../../src/db/database.service';
 import { GlobalExceptionFilter } from '../../src/errors/exception.filter';
@@ -119,7 +121,17 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
     imports: [AppModule],
   }).compile();
 
-  const app = moduleRef.createNestApplication({ rawBody: true });
+  const app = moduleRef.createNestApplication<NestExpressApplication>({
+    rawBody: true,
+  });
+  // Mirror main.ts: raise the body-parser limit to INGEST_MAX_BODY_BYTES so the
+  // harness exercises the same ingest ceiling as production.
+  const config = app.get(AppConfigService);
+  app.useBodyParser('json', { limit: config.ingestMaxBodyBytes });
+  app.useBodyParser('urlencoded', {
+    limit: config.ingestMaxBodyBytes,
+    extended: true,
+  });
   app.useGlobalFilters(new GlobalExceptionFilter());
   app.enableCors({ origin: '*', credentials: true });
   app.useGlobalPipes(
