@@ -1,5 +1,5 @@
 /**
- * Wire-format types for ACDP (Agent Context Description Protocol).
+ * Wire-format types for ACDP (Agent Context Distribution Protocol).
  *
  * These mirror the canonical event/payload shapes produced by registries and
  * consumed by the control-plane ingest pipeline.

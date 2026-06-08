@@ -1,0 +1,31 @@
+# Build-context filter for `acdp-control-plane/Dockerfile`, which builds
+# from the workspace root (`context: ..`). BuildKit prefers this
+# `<dockerfile>.dockerignore` over the generic root `.dockerignore`
+# (which excludes acdp-control-plane/ for the OTHER repos' compose files).
+#
+# Keep only what this multi-stage build needs: the `acdp-rs` crate (for
+# the native binding) and `acdp-control-plane` itself.
+
+# Heavy / regenerated artifacts everywhere
+**/target/
+**/node_modules/
+**/dist/
+**/coverage/
+**/.git/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/.DS_Store
+**/*.log
+**/.env
+**/.env.local
+
+# Sibling repos this image doesn't need
+acdp-playground/
+acdp-registry-rs/
+acdp-ui-console/
+agentcontextdistributionprotocol/
+agentcontextdistributionprotocol.zip

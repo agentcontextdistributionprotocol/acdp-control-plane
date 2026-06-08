@@ -19,8 +19,7 @@ import {
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
-import { verifyEcdsaP256 } from '../auth/ecdsa-p256';
-import { verifyEd25519 } from '../auth/ed25519';
+import { verifySignatureB64 } from '../auth/acdp-verify';
 import { PinnedKeysService } from '../auth/pinned-keys.service';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { capabilityAssertion, parseCapabilityUri } from './capability-uri';
@@ -109,10 +108,12 @@ export class CapabilityService {
       req.capabilityUri,
       req.declaredAtIso,
     );
-    const ok =
-      pinned.algorithm === 'ed25519'
-        ? verifyEd25519(pinned.publicKey, signingInput, req.signature)
-        : verifyEcdsaP256(pinned.publicKey, signingInput, req.signature);
+    const ok = verifySignatureB64(
+      pinned.algorithm,
+      pinned.rawB64,
+      signingInput,
+      req.signature,
+    );
     if (!ok) {
       throw new UnauthorizedException('capability declaration signature verification failed');
     }

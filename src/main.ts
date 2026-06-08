@@ -54,7 +54,7 @@ async function bootstrap() {
     const swagger = new DocumentBuilder()
       .setTitle('ACDP Control Plane')
       .setDescription(
-        'Control plane for the Agent Context Description Protocol — ingests registry events, ' +
+        'Control plane for the Agent Context Distribution Protocol — ingests registry events, ' +
           'correlates runs, broadcasts SSE, and acts as an IdP for federated bearer tokens.',
       )
       .setVersion(config.clientVersion)

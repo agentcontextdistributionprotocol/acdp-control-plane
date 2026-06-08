@@ -24,7 +24,7 @@
 # unaffected — only the webhook URL validation is relaxed.
 #
 # Build context: the parent of acdp-registry-rs/acdp-rs (i.e. the
-# `agentcontextdescriptionprotocol/` directory). docker-compose.e2e.yml sets
+# `agentcontextdistributionprotocol/` directory). docker-compose.e2e.yml sets
 # the `context:` to `../..` and the `dockerfile:` to this file's path.
 
 FROM rust:1.88-bookworm AS builder
