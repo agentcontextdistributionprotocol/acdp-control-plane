@@ -63,7 +63,7 @@ to `acdp-registry-rs/docker/Dockerfile`.
 - This sibling checkout layout (the compose builds from neighbour repos):
 
 ```
-agentcontextdescriptionprotocol/
+agentcontextdistributionprotocol/
 ├── acdp-control-plane/        (this repo)
 │   └── e2e/                   (this directory)
 ├── acdp-playground/

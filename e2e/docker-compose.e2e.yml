@@ -4,10 +4,10 @@
 #   ./run-e2e.sh
 #
 # The compose file builds from sibling repos in
-# ../../agentcontextdescriptionprotocol/{acdp-playground,acdp-registry-rs,acdp-rs}
+# ../../agentcontextdistributionprotocol/{acdp-playground,acdp-registry-rs,acdp-rs}
 # so the layout must be:
 #
-#   agentcontextdescriptionprotocol/
+#   agentcontextdistributionprotocol/
 #     ├── acdp-control-plane/   (this repo)
 #     │   └── e2e/              (this directory)
 #     ├── acdp-playground/

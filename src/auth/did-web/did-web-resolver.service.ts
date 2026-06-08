@@ -32,9 +32,8 @@ import {
   OnModuleDestroy,
   Optional,
 } from '@nestjs/common';
-import { DidDocument, ResolvedKey } from './did-document';
-import { DidDocumentError, parseDidDocument, pickVerificationMethod } from './did-document-parser';
-import { DidUrlError, didWebToUrl, stripFragment } from './did-url';
+import { AcdpDid, AcdpDidDocument } from 'acdp';
+import { ResolvedKey } from './did-document';
 import { SsrfPolicy, SsrfPolicyError } from './ssrf-guard';
 
 const MAX_BODY_BYTES = 64 * 1024;        // RFC-ACDP-0006 §7.3
@@ -104,8 +103,22 @@ export class DefaultDidFetcher implements DidFetcher {
 }
 
 interface CacheEntry {
-  doc: DidDocument;
+  doc: AcdpDidDocument;
   cachedAt: number;
+}
+
+/**
+ * Extract a stable `code: message` detail from an error thrown by the
+ * `acdp` binding (its errors carry the reason on `.code`). Falls back to
+ * the plain message for non-binding errors.
+ */
+function bindingErrDetail(e: unknown): string {
+  if (e && typeof e === 'object' && 'code' in e) {
+    const code = String((e as { code: unknown }).code);
+    const msg = e instanceof Error ? e.message : String(e);
+    return `${code}: ${msg}`;
+  }
+  return e instanceof Error ? e.message : String(e);
 }
 
 @Injectable()
@@ -145,15 +158,12 @@ export class DidWebResolverService implements OnModuleDestroy {
     didUrl: string,
     requestedAlg: 'ed25519' | 'ecdsa-p256',
   ): Promise<ResolvedKey> {
-    const did = stripFragment(didUrl);
+    const did = AcdpDid.stripFragment(didUrl);
     let url: string;
     try {
-      url = didWebToUrl(did);
+      url = AcdpDid.webToUrl(did);
     } catch (e) {
-      throw new DidResolutionError(
-        'URL',
-        e instanceof DidUrlError ? e.message : String(e),
-      );
+      throw new DidResolutionError('URL', bindingErrDetail(e));
     }
 
     // SSRF: scheme + IP-literal check synchronously (no DNS yet).
@@ -167,19 +177,24 @@ export class DidWebResolverService implements OnModuleDestroy {
     }
 
     const doc = await this.resolveDocument(did, url);
+    // Key extraction (assertionMethod gate + algorithm-downgrade defense)
+    // is delegated to `acdp-rs` via the binding, so the set of documents
+    // this control plane accepts matches the registry exactly.
     try {
-      return pickVerificationMethod(doc, didUrl, requestedAlg);
+      const k = doc.keyForAlgorithm(didUrl, requestedAlg);
+      return {
+        keyId: k.keyId,
+        algorithm: k.algorithm as 'ed25519' | 'ecdsa-p256',
+        publicKeyB64: k.publicKeyB64,
+      };
     } catch (e) {
-      throw new DidResolutionError(
-        'PICK',
-        e instanceof DidDocumentError ? `${e.code}: ${e.message}` : String(e),
-      );
+      throw new DidResolutionError('PICK', bindingErrDetail(e));
     }
   }
 
   /** Drop the cached document for a DID — used by admin rotation hooks. */
   invalidate(did: string): void {
-    this.cache.delete(stripFragment(did));
+    this.cache.delete(AcdpDid.stripFragment(did));
   }
 
   /** Visible for tests / health checks. */
@@ -189,7 +204,7 @@ export class DidWebResolverService implements OnModuleDestroy {
 
   // ── internals ────────────────────────────────────────────────────────
 
-  private async resolveDocument(did: string, url: string): Promise<DidDocument> {
+  private async resolveDocument(did: string, url: string): Promise<AcdpDidDocument> {
     const cached = this.cache.get(did);
     if (cached && this.isFresh(cached)) {
       return cached.doc;
@@ -244,23 +259,14 @@ export class DidWebResolverService implements OnModuleDestroy {
         `did:web '${url}' body ${bytes.byteLength}B exceeds ${MAX_BODY_BYTES}B cap`,
       );
     }
-    let json: unknown;
+    const text = new TextDecoder('utf-8').decode(bytes);
+    // Parse + `id`-match validation is delegated to the binding
+    // (`AcdpDidDocument.parse`), which also surfaces malformed JSON.
+    let doc: AcdpDidDocument;
     try {
-      json = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+      doc = AcdpDidDocument.parse(text, did);
     } catch (e) {
-      throw new DidResolutionError(
-        'PARSE',
-        `did:web '${url}' body is not valid JSON: ${e instanceof Error ? e.message : e}`,
-      );
-    }
-    let doc: DidDocument;
-    try {
-      doc = parseDidDocument(json, did);
-    } catch (e) {
-      throw new DidResolutionError(
-        'PARSE',
-        e instanceof DidDocumentError ? `${e.code}: ${e.message}` : String(e),
-      );
+      throw new DidResolutionError('PARSE', bindingErrDetail(e));
     }
 
     this.cache.set(did, { doc, cachedAt: Date.now() });

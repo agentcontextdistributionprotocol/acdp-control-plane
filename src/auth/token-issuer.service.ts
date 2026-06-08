@@ -34,11 +34,7 @@ import jwt, { type Algorithm, type SignOptions } from 'jsonwebtoken';
 import { AppConfigService } from '../config/app-config.service';
 import { ChallengeStore, ChallengeRecord } from './challenge-store.service';
 import { DidWebResolverService } from './did-web/did-web-resolver.service';
-import {
-  publicKeyFromBase64Sec1,
-  verifyEcdsaP256,
-} from './ecdsa-p256';
-import { publicKeyFromBase64, verifyEd25519 } from './ed25519';
+import { verifySignatureB64 } from './acdp-verify';
 import { IssuanceLedgerService } from './issuance-ledger.service';
 import {
   buildAgentTenantLookup,
@@ -252,10 +248,12 @@ export class TokenIssuer {
     }
 
     // Verify the signature over the canonical signing input.
-    const ok =
-      pinned.algorithm === 'ed25519'
-        ? verifyEd25519(pinned.publicKey, record.signingInput, req.signature)
-        : verifyEcdsaP256(pinned.publicKey, record.signingInput, req.signature);
+    const ok = verifySignatureB64(
+      pinned.algorithm,
+      pinned.rawB64,
+      record.signingInput,
+      req.signature,
+    );
     if (!ok) {
       this.ledger?.record({
         sub: req.agentDid,
@@ -341,7 +339,7 @@ export class TokenIssuer {
    * `reject_unpinned` outcome.
    *
    * Uses the request's `algorithm` to pick the verification method,
-   * which the resolver's pickVerificationMethod() enforces against
+   * which the resolver's binding-backed key extraction enforces against
    * `assertionMethod` and the method's key type (downgrade defense).
    */
   private async resolveDidWebKey(
@@ -354,17 +352,12 @@ export class TokenIssuer {
         req.keyId.startsWith(req.agentDid) ? req.keyId : `${req.agentDid}#${req.keyId}`,
         req.algorithm as 'ed25519' | 'ecdsa-p256',
       );
-      const publicKey =
-        resolved.algorithm === 'ed25519'
-          ? publicKeyFromBase64(resolved.publicKeyB64)
-          : publicKeyFromBase64Sec1(resolved.publicKeyB64);
       this.logger.log(
         `did:web fallback resolved ${req.agentDid} via ${resolved.keyId} (${resolved.algorithm})`,
       );
       return {
         agentDid: req.agentDid,
         algorithm: resolved.algorithm,
-        publicKey,
         rawB64: resolved.publicKeyB64,
       };
     } catch (e) {

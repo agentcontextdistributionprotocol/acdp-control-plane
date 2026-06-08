@@ -33,16 +33,14 @@
  * instead of constructing per-module copies.
  */
 import { Global, Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { KeyObject } from 'node:crypto';
-import { publicKeyFromBase64Sec1 } from './ecdsa-p256';
-import { publicKeyFromBase64 } from './ed25519';
+import { assertValidPublicKey } from './acdp-verify';
 
 export type PinnedAlgorithm = 'ed25519' | 'ecdsa-p256';
 
 export interface PinnedKey {
   agentDid: string;
   algorithm: PinnedAlgorithm;
-  publicKey: KeyObject;
+  /** Standard base64 raw public key — fed straight to `AcdpVerifier`. */
   rawB64: string;
   /** Unix seconds (inclusive). `undefined` = open from beginning of time. */
   validFromSec?: number;
@@ -94,11 +92,12 @@ export class PinnedKeysService implements OnModuleInit {
         if (!did || !rhs) continue;
         try {
           const parsed = parseKeyEntry(rhs);
-          const key = decodePublicKey(parsed.keyB64, parsed.algorithm);
+          // Validate the key bytes up-front so a malformed entry is
+          // skipped at boot rather than failing later inside verify.
+          assertValidPublicKey(parsed.algorithm, parsed.keyB64);
           next.set(did, {
             agentDid: did,
             algorithm: parsed.algorithm,
-            publicKey: key,
             rawB64: parsed.keyB64,
             validFromSec: parsed.validFromSec,
             validUntilSec: parsed.validUntilSec,
@@ -219,13 +218,4 @@ export function parseKeyEntry(rhs: string): ParsedEntry {
   }
 
   return { keyB64: body.trim(), algorithm, validFromSec, validUntilSec };
-}
-
-function decodePublicKey(b64: string, alg: PinnedAlgorithm): KeyObject {
-  switch (alg) {
-    case 'ed25519':
-      return publicKeyFromBase64(b64);
-    case 'ecdsa-p256':
-      return publicKeyFromBase64Sec1(b64);
-  }
 }

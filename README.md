@@ -1,6 +1,6 @@
 # ACDP Control Plane
 
-Scenario-agnostic control plane for the Agent Context Description Protocol
+Scenario-agnostic control plane for the Agent Context Distribution Protocol
 (ACDP). Ingests webhook events from ACDP registries, correlates them into runs
 via the `X-Run-Id` header, persists raw events + lineage edges, and broadcasts
 the firehose via Server-Sent Events.
