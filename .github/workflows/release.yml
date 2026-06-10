@@ -11,6 +11,14 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# The docker/* actions below still ship Node.js 20 entrypoints at their current
+# majors. GitHub forces those to Node.js 24 on 2026-06-16 and removes Node.js 20
+# from runners on 2026-09-16. Opt in early so the workflow is exercised on Node 24
+# before it becomes mandatory; this env var is a harmless no-op once Node 24 is
+# the runner default.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   image:
     name: build + push (GHCR)
