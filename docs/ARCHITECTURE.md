@@ -14,6 +14,12 @@ registries (which authoritatively store contexts and emit lifecycle webhooks) an
 6. **Authenticates & authorizes** callers (API keys + JWT issuance + federation),
    isolates them by **tenant**, and gates actions with **policy** and **quota**.
 
+> Where this service mirrors protocol or registry behavior (crypto, SSRF, did:web,
+> auth challenge-response, tenancy, webhook event shapes), it relies on the
+> [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs) and
+> tracks the [registry](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs)
+> rather than re-implementing. See the ecosystem map in [README.md](./README.md#ecosystem--sources-of-truth).
+
 ```
               ┌──────────────────────┐
               │   ACDP Registry A    │──┐

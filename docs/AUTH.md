@@ -4,9 +4,21 @@ This document covers how the control plane authenticates callers, issues its own
 bearer tokens, accepts tokens from federated peers, and propagates revocation.
 Endpoint shapes live in [API.md](./API.md#auth); tenancy in [TENANCY.md](./TENANCY.md).
 
+> **This model mirrors the registry.** The CP's challenge-response, JWT claims,
+> signing algorithms, and revocation federation are deliberately the same as the
+> registry's so agent code and tokens are interchangeable. The authoritative
+> description of that shared model is the registry's
+> [AUTHENTICATION.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md).
+> The normative wire rules are [RFC-ACDP-0001 §5.8](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/rfcs)
+> (agent auth) and the [signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/registries).
+> This page documents only what is **CP-specific** (how those rules are wired,
+> issuance ledger, persistence, the guard).
+
 All protocol crypto (Ed25519 / ECDSA-P256 verification, did:web resolution, SSRF
-classification) comes from the `acdp` SDK (Rust `acdp-rs` via NAPI), wrapped thinly
-in `src/auth/` — never hand-rolled.
+classification) comes from the [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs)
+(Rust `acdp-rs` via NAPI), wrapped thinly in `src/auth/` — never hand-rolled. The
+SSRF defenses the did:web resolver inherits are documented in
+[acdp-rs · Security](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/security.md).
 
 ## The guard (`AuthGuard`)
 
@@ -66,7 +78,10 @@ Agent                                   Control Plane
 ```
 
 - **Signing input** (canonical, ASCII):
-  `acdp-registry-auth:v1:<nonce>:<agent_did>:<authority>:<expires_at>`.
+  `acdp-registry-auth:v1:<nonce>:<agent_did>:<authority>:<expires_at>`. This
+  namespaced format is the registry's — see
+  [AUTHENTICATION.md → "The signing input is namespaced"](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md);
+  the CP uses it verbatim so an agent signs the same bytes for either peer.
 - **Key resolution**: `PinnedKeysService.get(agentDid)` first (local emergency
   control, with optional validity window); for `did:web:` subjects, falls back to
   `DidWebResolverService` (SSRF-gated). No key → `401`.
@@ -103,7 +118,9 @@ Agent                                   Control Plane
 
 `kid` is `JWT_KID` if set, else derived from a stable fingerprint of the key
 material. It is embedded in the JWT header and published in JWKS so verifiers can
-match.
+match. The supported signature algorithms are governed by the spec's
+[signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/registries);
+the CP accepts exactly the set the SDK verifies.
 
 ## Pinned keys
 
@@ -148,7 +165,9 @@ both local and peer tokens.
 
 A token is invalid before `exp` if its `jti` is revoked. The verify hot-path
 calls a single `isRevoked(jti)` that honors **both** locally-revoked and
-peer-propagated revocations.
+peer-propagated revocations. This is the same bidirectional model the registry
+runs — see [AUTHENTICATION.md → "Cross-issuer revocation federation"](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md);
+the feed format and issuer-confinement rule are shared.
 
 **This CP serves** `GET /auth/revocations` (admin-only, cursor-paginated) so
 peers can poll our revocations.

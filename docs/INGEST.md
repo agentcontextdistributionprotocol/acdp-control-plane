@@ -115,9 +115,13 @@ A new run record is auto-created the first time the control plane sees a given
 
 ## Event shape
 
-The control plane is intentionally **liberal** in what it accepts — it stores
-the raw payload in `context_events.raw_payload` and extracts a small set of
-well-known fields:
+The wire shape of these events is defined by the **emitter** — the registry — in
+its [WEBHOOKS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/WEBHOOKS.md)
+(event envelope + `context.published` / `context.retrieved` / `search.executed`
+variants). The table below is **not** a second definition of that wire format; it
+is the subset of fields the CP *extracts* and what each is used for. The control
+plane is intentionally **liberal** — it stores the raw payload in
+`context_events.raw_payload` and reads only these well-known fields:
 
 | Field                | Required | Used for |
 |----------------------|----------|----------|
@@ -144,7 +148,10 @@ When one or more domain packs are configured (`DOMAIN_PACKS` set, e.g.
 `DOMAIN_PACKS=finance`), the control plane gates inbound `context_type`s:
 
 - **Base ACDP types are always accepted** — `data_snapshot`, `analysis`,
-  `prediction`, `alert` (RFC-ACDP-0001) are never pack-gated.
+  `prediction`, `alert` are never pack-gated. These are the protocol baseline,
+  registered in the spec's
+  [context-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/registries)
+  (RFC-ACDP-0001); domain packs only *add* vertical types on top.
 - A **custom** `context_type` that is neither a base type nor declared by an
   active pack is **rejected with `400`**.
 - With **no** packs configured, the gate is inactive and every `context_type`

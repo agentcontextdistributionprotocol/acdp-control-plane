@@ -9,6 +9,15 @@ and `domain-packs/domain-packs.module.ts`. Start from `.env.example`.
 Defaults below are the code defaults. Several variables are **fail-fast in
 production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startup-validation).
 
+> Several keys are env-var equivalents of the registry's TOML config (e.g.
+> `AUTH_REQUIRE_TENANT` ↔ `auth.require_tenant`, `TENANT_AGENTS` ↔
+> `[[auth.tenant_agents]]`, `REVOCATION_FEEDS` ↔ `[[auth.revocation_feeds]]`,
+> `CONTROL_PLANE_PINNED_KEYS` ↔ `[[playground.pinned_keys]]`). They exist so the
+> CP enforces the same rules; the model behind them lives in the registry's
+> [CONFIGURATION.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/CONFIGURATION.md),
+> [AUTHENTICATION.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md),
+> and [MULTI-TENANCY.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/MULTI-TENANCY.md).
+
 ## Core server
 
 | Var | Type | Default | Meaning |

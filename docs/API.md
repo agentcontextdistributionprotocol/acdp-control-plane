@@ -203,7 +203,9 @@ Gated by `@CheckPolicy('context.retrieve')`. Proxies the request to the registry
 that owns the context. `ctxId` format: `acdp://<authority>/<id>` (authority
 matches `^[a-zA-Z0-9.:-]+$` — no path, no scheme, no IP literal). The authority
 is looked up in the caller's tenant enrollments, and the request is forwarded to
-`<base_url>/contexts/<ctxId>` through the **SSRF-safe** `SafeFederationClient`:
+`<base_url>/contexts/<ctxId>` through the **SSRF-safe** `SafeFederationClient`
+(the same defense model as the SDK — [acdp-rs · Security](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/security.md),
+RFC-ACDP-0006 §7 / RFC-ACDP-0008):
 
 - HTTPS-only; DNS-resolved IPs must not be private/loopback/link-local/IMDS.
 - Redirects followed manually, max 3, same-authority only (else `502`).

@@ -2,9 +2,17 @@
 
 The **tenant** is the unit of data isolation in the control plane. Every
 tenant-owned row carries a `tenant_id`, every repository filters by it, and the
-guard layer pins the resolving tenant on the request. This mirrors the registry's
-tenancy model. Key files: `src/tenant/{tenant-context,request-tenant,tenant-agents}.ts`
-and `src/auth/auth.guard.ts`.
+guard layer pins the resolving tenant on the request. Key files:
+`src/tenant/{tenant-context,request-tenant,tenant-agents}.ts` and
+`src/auth/auth.guard.ts`.
+
+> **This model mirrors the registry**, by design — the resolution precedence,
+> strict mode (`require_tenant`), and reserved-`default` rejection are the same
+> rules, so the same JWT `tenant` claim scopes a caller identically on either
+> peer. The authoritative description is the registry's
+> [MULTI-TENANCY.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/MULTI-TENANCY.md).
+> This page documents the CP's wiring (the guard, repositories, and the
+> fail-fast startup check) rather than re-deriving the model.
 
 ## The default tenant
 
