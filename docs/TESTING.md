@@ -4,78 +4,100 @@ Two layers, two commands.
 
 ## Unit tests
 
-Colocated next to source as `*.spec.ts`. Jest discovers them via the
-configuration block in `package.json` (`rootDir: src`, `testRegex:
-.*\.spec\.ts$`). Dependencies are mocked; no DB, no HTTP server, no network.
+Colocated next to source as `*.spec.ts`. Jest discovers them via the config block
+in `package.json` (`rootDir: src`, `testRegex: .*\.spec\.ts$`). Dependencies are
+mocked; no DB, no HTTP server, no network.
 
 ```bash
-npm test                 # one-shot
-npm run test:watch       # watch mode
-npm run test:cov         # with coverage report → coverage/
+npm test                          # one-shot
+npm test -- src/auth/auth.guard.spec.ts   # single file
+npm test -- -t "rejects spoofed tenant"    # filter by test name
+npm run test:watch                # watch mode
+npm run test:cov                  # coverage → coverage/
 ```
 
-What's covered (the contracts most likely to break under a refactor):
+The suite is broad — every guard, decider, store, parser, and the pipeline core
+is covered. Highlights of the contracts most likely to break under refactor:
 
-| File                                    | What it pins down                                                  |
-|-----------------------------------------|--------------------------------------------------------------------|
-| `src/ingest/hmac.spec.ts`               | HMAC verifier: prefix tolerance, tampering, empty-secret bypass    |
-| `src/ingest/ingest.service.spec.ts`     | HMAC + JSON parsing + required-field validation + run-id precedence |
-| `src/processor/event-processor.service.spec.ts` | The 6-step pipeline (persist→correlate→lineage→agent/registry→SSE→webhooks) |
-| `src/auth/auth.guard.spec.ts`           | Bearer/raw key handling, `@Public()`, dev-mode bypass              |
-| `src/errors/exception.filter.spec.ts`   | `AppException` rendering, message non-leakage on unknown errors    |
-| `src/webhooks/webhook.service.spec.ts`  | Event filtering, HMAC headers, outbox tracking, error swallowing   |
-| `src/runs/runs.service.spec.ts`         | Pagination wrapping, playground notification (fire-and-forget)     |
-| `src/config/app-config.service.spec.ts` | Env-var parsing + production fail-fast validation                  |
-| `src/events/memory-stream-hub.strategy.spec.ts` | Per-run isolation, global feed, destroy semantics             |
+| Area | Specs (under `src/`) |
+|------|----------------------|
+| Ingest | `ingest/hmac.spec.ts`, `ingest/ingest.service.spec.ts` |
+| Pipeline | `processor/event-processor.service.spec.ts` |
+| Auth guard / tenancy | `auth/auth.guard.spec.ts`, `auth/auth.guard.tenant.spec.ts` |
+| Issuance & crypto | `auth/token-issuer.service.spec.ts`, `auth/jwt-signing.spec.ts`, `auth/acdp-verify.spec.ts`, `auth/challenge-store.service.spec.ts` |
+| Federation & revocation | `auth/cross-issuer-validator.service.spec.ts`, `auth/jwks-client.spec.ts`, `auth/trusted-issuers.spec.ts`, `auth/revocation-feeds.spec.ts`, `auth/revocation-poller.service.spec.ts` |
+| did:web & SSRF | `auth/did-web/did-web-resolver.service.spec.ts`, `auth/did-web/ssrf-guard.spec.ts`, `contexts/safe-federation-client.spec.ts` |
+| Policy | `policy/static-rules-policy.decider.spec.ts`, `policy/opa-policy.decider.spec.ts`, `policy/caching-policy.decider.spec.ts`, `policy/policy.guard.spec.ts`, `policy/controller-coverage.spec.ts` |
+| Quota | `quota/quota.guard.spec.ts`, `quota/quota-config.spec.ts`, `quota/quota-store.spec.ts` |
+| Capabilities & routing | `agents/capability.service.spec.ts`, `agents/capability-uri.spec.ts`, `routing/bandit-router.service.spec.ts` |
+| Tenancy parsers | `tenant/tenant-context.spec.ts`, `tenant/tenant-agents.spec.ts` |
+| Streaming | `events/memory-stream-hub.strategy.spec.ts`, `events/redis-stream-hub.strategy.spec.ts` |
+| Webhooks | `webhooks/webhook.service.spec.ts` |
+| Config & errors | `config/app-config.service.spec.ts`, `errors/exception.filter.spec.ts` |
+
+> `policy/controller-coverage.spec.ts` is a guardrail: it asserts which controller
+> methods must carry `@CheckPolicy`, so a new handler that forgets authorization
+> fails CI.
 
 ## Integration tests
 
-Live in `test/integration/`. Boot the full NestJS app, run real migrations
-against a real Postgres (port `5433` by default), exercise via HTTP. Run
-serially (`maxWorkers: 1`) and truncate all tables between specs (via
-`ctx.cleanup()` in `beforeEach`).
+Live in `test/integration/**.integration.spec.ts`. They boot the full NestJS app,
+run real migrations against a real Postgres on **port 5433**
+(`acdp_control_plane_test`), and exercise the service over HTTP. Config is
+`test/jest.integration.config.ts`: `maxWorkers: 1` (serial), 60 s timeout, with
+`globalSetup`/`globalTeardown`.
 
 ```bash
-npm run test:integration
+npm run test:integration                       # full suite
+npm run test:integration -- ingest.integration # single spec (regex against path)
 ```
 
-By default `globalSetup` starts Postgres via Docker Compose
-(`docker-compose.test.yml`). If you're managing the container yourself, set
-`KEEP_TEST_DB=1` to skip teardown:
+### Database lifecycle
 
-```bash
-docker compose -f docker-compose.test.yml up -d postgres-test
-KEEP_TEST_DB=1 npm run test:integration
-```
+- `test/setup/global-setup.ts` runs `docker compose -f docker-compose.test.yml up
+  -d postgres-test --wait` (skipped when `CI` is set — rely on a CI service
+  container instead), waits for connectivity, and points `DATABASE_URL` at the
+  test DB.
+- `test/setup/global-teardown.ts` tears the container down **unless** `CI` or
+  `KEEP_TEST_DB` is set — keep it up for fast re-runs:
 
-In CI, set `CI=1` to skip the docker-compose orchestration entirely and rely on
-service containers.
+  ```bash
+  docker compose -f docker-compose.test.yml up -d postgres-test
+  KEEP_TEST_DB=1 npm run test:integration
+  ```
+
+- Each spec calls `ctx.cleanup()` in `beforeEach` to `truncateAll()` between cases.
 
 ### Suites
 
-| Spec                                          | Covers                                                                         |
-|-----------------------------------------------|--------------------------------------------------------------------------------|
-| `health.integration.spec.ts`                  | `/healthz`, `/readyz`, `/metrics` shape + public access                       |
-| `auth.integration.spec.ts`                    | Missing / wrong / valid Bearer; `@Public()` bypass                            |
-| `ingest.integration.spec.ts`                  | HMAC verify, payload validation, run correlation across multiple events       |
-| `lineage.integration.spec.ts`                 | DAG construction, edge dedup, empty-DAG path                                  |
-| `runs-lifecycle.integration.spec.ts`          | `running` → `completed` lifecycle, list filters + pagination, 404s            |
-| `events-stream.integration.spec.ts`           | Per-run SSE isolation, global SSE firehose                                    |
-| `webhooks.integration.spec.ts`                | Create/list/delete + 400 validation                                           |
+| Spec | Covers |
+|------|--------|
+| `health.integration.spec.ts` | `/healthz`, `/readyz`, `/metrics` shape + public access |
+| `auth.integration.spec.ts` | Missing / wrong / valid bearer; `@Public()` bypass |
+| `auth-persistence.integration.spec.ts` | Postgres-backed challenge / revocation / ledger |
+| `pinned-keys-admin.integration.spec.ts` | Admin pinned-key reload |
+| `ingest.integration.spec.ts` | HMAC verify, payload validation, run correlation |
+| `ingest-trust.integration.spec.ts` | Enrollment gate + strict-tenant ingest |
+| `lineage.integration.spec.ts` | DAG construction, edge dedup, empty-DAG path |
+| `runs-lifecycle.integration.spec.ts` | `running`→`completed`, list filters + pagination, 404s |
+| `events-stream.integration.spec.ts` | Per-run SSE isolation, global firehose |
+| `webhooks.integration.spec.ts` | Create/list/delete + 400 validation |
+| `tenancy-isolation.integration.spec.ts` | Cross-tenant read isolation + header spoof rejection |
+| `domain-packs.integration.spec.ts` | Pack-gated `context_type` accept/reject |
+| `federation-proxy.integration.spec.ts` | `/contexts` proxy + SSRF + 429→503 mapping |
+| `retention-routing.integration.spec.ts` | Data retention purge + bandit routing |
 
 ### How the test app is wired (`test/helpers/test-app.ts`)
 
-- Clears the `prom-client` registry to avoid duplicate-metric errors between
-  suites that re-instantiate `InstrumentationService`.
-- Runs `runMigrations(TEST_DB_URL)` against the test database before booting.
+- Clears the `prom-client` registry to avoid duplicate-metric errors across suites.
+- Runs `runMigrations(TEST_DB_URL)` against the test DB before booting.
 - Boots the real `AppModule` with `rawBody: true`, the global `ValidationPipe`,
-  and `GlobalExceptionFilter` — the same wiring as `main.ts` minus helmet and
-  swagger.
-- Listens on a random port (`app.listen(0)`); tests reach it via `ctx.url` or
-  the typed `TestClient`.
-- Exposes `ctx.cleanup()` which truncates all tables — call it in `beforeEach`.
+  and `GlobalExceptionFilter` — same wiring as `main.ts` minus helmet and swagger.
+- Listens on a random port (`app.listen(0)`); reach it via `ctx.url` or the typed
+  `ctx.client` (`TestClient`).
+- `createTestApp(opts)` returns `{ app, url, client, module, cleanup }`.
 
-### How to write a new integration spec
+### Writing a new integration spec
 
 ```ts
 import { createTestApp, TestAppContext } from '../helpers/test-app';
@@ -83,17 +105,9 @@ import { createTestApp, TestAppContext } from '../helpers/test-app';
 describe('my feature', () => {
   let ctx: TestAppContext;
 
-  beforeAll(async () => {
-    ctx = await createTestApp({ webhookSecret: 'optional-secret' });
-  });
-
-  beforeEach(async () => {
-    await ctx.cleanup();        // truncate between tests
-  });
-
-  afterAll(async () => {
-    await ctx.app.close();      // closes pool, completes SSE subjects
-  });
+  beforeAll(async () => { ctx = await createTestApp({ webhookSecret: 'optional-secret' }); });
+  beforeEach(async () => { await ctx.cleanup(); });        // truncate between tests
+  afterAll(async () => { await ctx.app.close(); });        // closes pool, completes SSE subjects
 
   it('does the thing', async () => {
     const res = await ctx.client.ingest(myEvent, { runId: 'r-1', secret: 'optional-secret' });
@@ -103,6 +117,7 @@ describe('my feature', () => {
 ```
 
 For SSE:
+
 ```ts
 import { TestSSEClient } from '../helpers/sse-client';
 
@@ -111,3 +126,4 @@ await sse.connect(`/runs/${runId}/events/stream`);
 await sse.waitForEvent('context_published', 5000);
 sse.close();
 ```
+</content>

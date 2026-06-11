@@ -23,6 +23,33 @@ signature.
 If `WEBHOOK_SECRET` is empty, HMAC verification is **skipped** (development
 mode). The boot log emits a warning when this is the case in production.
 
+A registry **enrollment** may override the global secret with a per-registry
+`webhookSecret` (see [API.md](./API.md#registries) → `POST /registries/enroll`).
+When an enrollment with a secret exists for the event's `registry_authority`,
+that secret is used to verify the signature instead of the global one.
+
+## Registry trust & enrollment
+
+Two opt-in env flags harden which registries the control plane accepts:
+
+| Env var | Default | Effect when `true` |
+|---------|---------|--------------------|
+| `INGEST_REQUIRE_ENROLLMENT` | `false` | Ingest accepts **only** authorities that have a `POST /registries/enroll` record (`enabled=true`). Unenrolled authorities are rejected with `403`. |
+| `INGEST_STRICT_TENANT` | `false` | An unenrolled authority may **not** assert a non-`default` tenant via `X-Tenant-Id`; only a server-side enrollment can bind an event to a non-`default` tenant. Recommended for multi-tenant deployments. |
+
+With both `false` (the default), behavior is backward compatible: any authority
+may ingest and the `X-Tenant-Id` header (subject to the auth-layer rules) binds
+the tenant. See [TENANCY.md](./TENANCY.md) for how the resolved tenant is stamped.
+
+## Request limits
+
+The ingest endpoint bounds its parse surface **before** fully decoding the body:
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `INGEST_MAX_BODY_BYTES` | `1048576` (1 MiB) | Hard cap on the raw request body. Oversized → `400`. |
+| `INGEST_MAX_JSON_DEPTH` | `64` | Hard cap on JSON nesting depth. Deeper → `400` (bounds JSON-parse DoS). |
+
 ### Reference signer (Node.js)
 
 ```ts
