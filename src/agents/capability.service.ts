@@ -64,8 +64,17 @@ export class CapabilityService {
     },
     tenantId: string = DEFAULT_TENANT_ID,
   ): Promise<CapabilityRow> {
-    // Schema validation (URN form + segment char set).
-    parseCapabilityUri(req.capabilityUri);
+    // Schema validation (URN form + segment char set). parseCapabilityUri
+    // throws a plain CapabilityUriError (the helper is Nest-free); map it to a
+    // 400 at this boundary so a malformed URN is a client error, not a 500 —
+    // consistent with the other BadRequestExceptions below.
+    try {
+      parseCapabilityUri(req.capabilityUri);
+    } catch (e) {
+      throw new BadRequestException(
+        e instanceof Error ? e.message : `invalid capability URI: '${req.capabilityUri}'`,
+      );
+    }
 
     if (req.algorithm !== 'ed25519' && req.algorithm !== 'ecdsa-p256') {
       throw new BadRequestException(

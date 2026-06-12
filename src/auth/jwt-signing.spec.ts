@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import {
   buildSigningMaterial,
   generateEd25519Pem,
@@ -54,7 +55,8 @@ describe('buildSigningMaterial', () => {
       expect(m.publicJwk!.crv).toBe('Ed25519');
       expect(m.publicJwk!.alg).toBe('EdDSA');
       expect(m.publicJwk!.use).toBe('sig');
-      expect(m.publicJwk!.x).toBeTruthy();
+      // x is the raw Ed25519 public key (32 bytes) base64url-encoded → 43 chars.
+      expect(m.publicJwk!.x).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(m.publicJwk!.kid).toBe(m.kid);
     });
 
@@ -71,6 +73,19 @@ describe('buildSigningMaterial', () => {
           privateKeyPem: '-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----\n',
         }),
       ).toThrow(JwtSigningConfigError);
+    });
+
+    it('throws when the PEM is a valid key but NOT Ed25519 (e.g. an EC key)', () => {
+      // A syntactically valid PEM of the wrong key type must be rejected — the
+      // JWKS/JWT path is Ed25519-only.
+      const ecPem = generateKeyPairSync('ec', {
+        namedCurve: 'P-256',
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+        publicKeyEncoding: { type: 'spki', format: 'pem' },
+      }).privateKey;
+      expect(() =>
+        buildSigningMaterial({ algorithm: 'EdDSA', privateKeyPem: ecPem }),
+      ).toThrow(/Ed25519/);
     });
 
     it('derives a kid stable across calls for the same key', () => {

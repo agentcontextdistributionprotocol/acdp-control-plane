@@ -135,7 +135,9 @@ export class DidWebResolverService implements OnModuleDestroy {
   constructor(
     @Optional() ssrf?: SsrfPolicy,
     @Optional() @Inject(DID_FETCHER) fetcher?: DidFetcher,
-    cacheTtlSeconds?: number,
+    // Without @Optional() Nest tries to resolve a `Number` provider and the
+    // whole AuthModule.forRoot() graph fails to boot when issuance is enabled.
+    @Optional() cacheTtlSeconds?: number,
   ) {
     this.ssrf = ssrf ?? new SsrfPolicy();
     this.fetcher = fetcher ?? new DefaultDidFetcher();

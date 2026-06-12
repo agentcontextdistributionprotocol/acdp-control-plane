@@ -10,7 +10,8 @@ describe('ChallengeStore (in-memory repo)', () => {
 
   it('issues a challenge with the canonical signing input', async () => {
     const rec = await store.issue('did:web:alice', 'cp.local', 60);
-    expect(rec.nonce).toBeTruthy();
+    // nonce is randomBytes(16) base64url-encoded → 22 url-safe chars.
+    expect(rec.nonce).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(rec.agentDid).toBe('did:web:alice');
     expect(rec.registryAuthority).toBe('cp.local');
     expect(rec.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));

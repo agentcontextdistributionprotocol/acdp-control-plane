@@ -29,13 +29,15 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
-import jwt, { type Algorithm, type SignOptions } from 'jsonwebtoken';
+import jwt from 'jsonwebtoken';
 
 import { AppConfigService } from '../config/app-config.service';
 import { ChallengeStore, ChallengeRecord } from './challenge-store.service';
 import { DidWebResolverService } from './did-web/did-web-resolver.service';
 import { verifySignatureB64 } from './acdp-verify';
+import { signJwt, verifyJwt } from './jwt-codec';
 import { IssuanceLedgerService } from './issuance-ledger.service';
+import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import {
   buildAgentTenantLookup,
   parseTenantAgents,
@@ -285,8 +287,9 @@ export class TokenIssuer {
   async verifyJwt(token: string): Promise<AcdpBearerClaims> {
     let decoded: AcdpBearerClaims;
     try {
-      decoded = jwt.verify(token, this.signing.material.verifyKey, {
-        algorithms: [this.signing.material.algorithm as Algorithm],
+      decoded = verifyJwt(token, {
+        algorithms: [this.signing.material.algorithm],
+        key: this.signing.material.verifyKey,
         issuer: this.config.jwtAuthority,
         audience: this.config.jwtAudience,
       }) as unknown as AcdpBearerClaims;
@@ -399,16 +402,22 @@ export class TokenIssuer {
         registry: this.config.jwtAuthority,
         key_id: keyId,
       },
-      tenant,
     };
-    const opts: SignOptions = {
-      algorithm: this.signing.material.algorithm as Algorithm,
-      noTimestamp: true,
+    // Only stamp a `tenant` claim for an explicitly-mapped agent. An unmapped
+    // agent resolves to the reserved `default` sentinel, which the AuthGuard
+    // REJECTS when asserted (parity with the registry's reject_reserved_tenant)
+    // — so stamping it here would make our own token unusable. Untenanted
+    // access is reachable only through the ABSENCE of the claim.
+    if (tenant !== DEFAULT_TENANT_ID) {
+      claims.tenant = tenant;
+    }
+    const token = signJwt(claims as unknown as Record<string, unknown>, {
+      algorithm: this.signing.material.algorithm,
+      key: this.signing.material.signingKey,
       // `kid` lets verifiers (local + federated) pick the right key during
       // rotation. EdDSA publishes the matching kid in /.well-known/jwks.json.
       keyid: this.signing.material.kid,
-    };
-    const token = jwt.sign(claims, this.signing.material.signingKey, opts);
+    });
     return { token, tokenType: 'Bearer', expiresAt: exp };
   }
 }

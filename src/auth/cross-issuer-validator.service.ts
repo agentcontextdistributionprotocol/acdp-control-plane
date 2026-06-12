@@ -29,8 +29,9 @@ import {
   Optional,
   UnauthorizedException,
 } from '@nestjs/common';
-import jwt, { type Algorithm } from 'jsonwebtoken';
+import jwt from 'jsonwebtoken';
 import { AppConfigService } from '../config/app-config.service';
+import { verifyJwt } from './jwt-codec';
 import { JwksClient } from './jwks-client';
 import {
   REVOCATION_REPOSITORY,
@@ -144,15 +145,14 @@ export class CrossIssuerValidator {
 
   private verifyLocal(token: string): FederatedClaims {
     try {
-      const decoded = jwt.verify(token, this.signing.material.verifyKey, {
-        algorithms: [this.signing.material.algorithm as Algorithm],
+      const decoded = verifyJwt(token, {
+        algorithms: [this.signing.material.algorithm],
+        key: this.signing.material.verifyKey,
         issuer: this.config.jwtAuthority,
         // Bind local tokens to our own audience so one minted for this CP
-        // can't be replayed at a different audience. `jsonwebtoken` rejects
-        // a token whose `aud` doesn't match (and one with no `aud`).
+        // can't be replayed at a different audience. Verification rejects a
+        // token whose `aud` doesn't match (and one with no `aud`).
         audience: this.config.jwtAudience,
-        // Local tokens don't carry nbf today, but if a future mint adds
-        // it the jsonwebtoken library will respect it automatically.
       });
       return decoded as unknown as FederatedClaims;
     } catch (e) {
@@ -168,16 +168,18 @@ export class CrossIssuerValidator {
     let decoded: FederatedClaims;
     try {
       if (trusted.alg === 'HS256') {
-        decoded = jwt.verify(token, trusted.secret ?? '', {
+        decoded = verifyJwt(token, {
           algorithms: ['HS256'],
+          key: trusted.secret ?? '',
           issuer: trusted.iss,
         }) as unknown as FederatedClaims;
       } else {
         // EdDSA via JWKS: fetch the right key by `kid` from the token
         // header, then verify with EdDSA.
         const verifyKey = await this.resolveJwksKey(trusted, token);
-        decoded = jwt.verify(token, verifyKey, {
-          algorithms: ['EdDSA' as Algorithm],
+        decoded = verifyJwt(token, {
+          algorithms: ['EdDSA'],
+          key: verifyKey,
           issuer: trusted.iss,
         }) as unknown as FederatedClaims;
       }

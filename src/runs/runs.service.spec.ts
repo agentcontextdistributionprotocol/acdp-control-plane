@@ -111,6 +111,12 @@ describe('RunsService', () => {
     runRepo.markComplete.mockResolvedValue({ runId: 'r-1' });
     fetchMock.mockRejectedValue(new Error('connection refused'));
 
-    await expect(svc.markComplete('r-1', 'completed')).resolves.toBeDefined();
+    // The notification failure is swallowed: markComplete still returns the
+    // persisted run rather than propagating the fetch rejection.
+    await expect(svc.markComplete('r-1', 'completed')).resolves.toEqual({
+      runId: 'r-1',
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(fetchMock).toHaveBeenCalled();
   });
 });

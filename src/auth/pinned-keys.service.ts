@@ -28,11 +28,12 @@
  * `TokenIssuer`) fall through to did:web resolution — the dispatch
  * the rest of the codebase already implements for "no pin" cases.
  *
- * Marked `@Global()` so cross-module consumers (`CapabilityService`,
- * `TokenIssuer`, and the admin reload controller) share one directory
- * instead of constructing per-module copies.
+ * Provided by the `@Global()` `PinnedKeysModule` so cross-module consumers
+ * (`CapabilityService`, `TokenIssuer`, and the admin reload controller) share
+ * one directory instead of constructing per-module copies. (A class-level
+ * `@Global()` decorator does nothing — global-ness is a module property.)
  */
-import { Global, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { assertValidPublicKey } from './acdp-verify';
 
 export type PinnedAlgorithm = 'ed25519' | 'ecdsa-p256';
@@ -48,7 +49,6 @@ export interface PinnedKey {
   validUntilSec?: number;
 }
 
-@Global()
 @Injectable()
 export class PinnedKeysService implements OnModuleInit {
   private readonly logger = new Logger(PinnedKeysService.name);
