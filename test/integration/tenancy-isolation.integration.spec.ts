@@ -198,4 +198,33 @@ describe('Cross-tenant isolation (integration)', () => {
     );
     sseB.close();
   });
+
+  describe('X-Tenant-Id spoofing defenses', () => {
+    it('rejects a header asserting a tenant other than the key is bound to (403)', async () => {
+      // key-a is bound to tenant-a; claiming tenant-b via the header is hostile.
+      const clientA = new TestClient(ctx.url, 'key-a');
+      const res = await clientA.requestRaw('GET', '/runs', {
+        headers: { 'X-Tenant-Id': 'tenant-b' },
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects an explicit assertion of the reserved `default` tenant (403)', async () => {
+      // `default` is the silent untenanted sentinel — reachable only by the
+      // ABSENCE of an assertion, never by asserting it.
+      const clientA = new TestClient(ctx.url, 'key-a');
+      const res = await clientA.requestRaw('GET', '/runs', {
+        headers: { 'X-Tenant-Id': 'default' },
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('allows a header that agrees with the key-bound tenant (200)', async () => {
+      const clientA = new TestClient(ctx.url, 'key-a');
+      const res = await clientA.requestRaw('GET', '/runs', {
+        headers: { 'X-Tenant-Id': 'tenant-a' },
+      });
+      expect(res.status).toBe(200);
+    });
+  });
 });

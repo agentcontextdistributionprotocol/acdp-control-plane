@@ -84,4 +84,34 @@ describe('Federation proxy (integration)', () => {
     );
     expect(resp.status).toBe(400);
   });
+
+  // SSRF: an IP-literal base_url is refused synchronously (no DNS, no egress)
+  // regardless of range — the guard is https-only + reject-IP-literal. Covers
+  // cloud-metadata (IMDS) and the RFC-1918 / link-local private ranges.
+  const ssrfTargets: Array<[string, string]> = [
+    ['cloud metadata (IMDS)', 'https://169.254.169.254'],
+    ['RFC-1918 10/8', 'https://10.0.0.1'],
+    ['RFC-1918 192.168/16', 'https://192.168.1.1'],
+    ['RFC-1918 172.16/12', 'https://172.16.0.1'],
+    ['IPv6 loopback', 'https://[::1]:9'],
+  ];
+
+  it.each(ssrfTargets)(
+    'SSRF-blocks a %s base_url (502, never egresses)',
+    async (_label, baseUrl) => {
+      await ctx.client.ingest(ingestBody({ registry_base_url: baseUrl }));
+      await new Promise((r) => setTimeout(r, 100));
+
+      const resp = await ctx.client.requestRaw('GET', CTX_PATH);
+      expect(resp.status).toBe(502);
+    },
+  );
+
+  it('rejects a plaintext http base_url (https-only; 502)', async () => {
+    await ctx.client.ingest(ingestBody({ registry_base_url: 'http://registry-a.example' }));
+    await new Promise((r) => setTimeout(r, 100));
+
+    const resp = await ctx.client.requestRaw('GET', CTX_PATH);
+    expect(resp.status).toBe(502);
+  });
 });

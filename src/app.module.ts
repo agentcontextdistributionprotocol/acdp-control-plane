@@ -9,7 +9,7 @@ import { CapabilityService } from './agents/capability.service';
 import { AuthGuard } from './auth/auth.guard';
 import { AuthModule } from './auth/auth.module';
 import { PinnedKeysAdminController } from './auth/pinned-keys-admin.controller';
-import { PinnedKeysService } from './auth/pinned-keys.service';
+import { PinnedKeysModule } from './auth/pinned-keys.module';
 import { ThrottleByUserGuard } from './auth/throttle-by-user.guard';
 import { AppConfigService } from './config/app-config.service';
 import { ConfigModule } from './config/config.module';
@@ -57,6 +57,9 @@ import { WebhookService } from './webhooks/webhook.service';
   imports: [
     ConfigModule,
     DatabaseModule,
+    // PinnedKeysModule is @Global() and must be imported before AuthModule so
+    // TokenIssuer (in AuthModule.forRoot()) can inject PinnedKeysService.
+    PinnedKeysModule,
     AuthModule.forRoot(),
     PolicyModule,
     QuotaModule,
@@ -115,12 +118,9 @@ import { WebhookService } from './webhooks/webhook.service';
     },
     StreamHubService,
 
-    // Pinned-key directory is @Global() so both AuthModule (TokenIssuer)
-    // and AgentsModule (CapabilityService) can inject the same instance.
-    // Registering it here unconditionally means capability declarations
-    // work even when TOKEN_ISSUANCE_ENABLED is off (the agent still
-    // needs to prove they own the DID before declaring caps for it).
-    PinnedKeysService,
+    // PinnedKeysService is provided by the @Global() PinnedKeysModule above
+    // (a class-level @Global() decorator is a no-op; module-level is required)
+    // so both AuthModule (TokenIssuer) and CapabilityService share one instance.
 
     // Repositories
     ContextEventRepository,

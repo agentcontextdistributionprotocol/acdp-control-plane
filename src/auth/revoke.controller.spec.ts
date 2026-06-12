@@ -2,7 +2,6 @@
 import { Test } from '@nestjs/testing';
 import jwt from 'jsonwebtoken';
 
-import { AuthSweeperService } from './auth-sweeper.service';
 import {
   CHALLENGE_REPOSITORY,
 } from './challenge-repository';
@@ -141,11 +140,6 @@ describe('RevokeController', () => {
     expect(claims.sub).toBe('did:web:alice');
     await controller.revoke({ token: tok }, req());
     await expect(issuer.verifyJwt(tok)).rejects.toThrow(/revoked/);
-  });
-
-  // Suppress lint warning about an unused sweeper import in the test setup.
-  it('sweeper class is importable in tests', () => {
-    expect(AuthSweeperService).toBeDefined();
   });
 
   // ── authorization gate ───────────────────────────────────────────────

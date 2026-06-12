@@ -87,9 +87,12 @@ describe('TokenIssuer', () => {
     expect(decoded.sub).toBe(did);
     expect(decoded.acdp.registry).toBe('cp.test');
     expect(decoded.acdp.key_id).toBe(`${did}#key-1`);
-    expect(decoded.jti).toBeTruthy();
-    // Unlisted agent gets the default tenant claim.
-    expect(decoded.tenant).toBe('default');
+    // jti is randomBytes(12) base64url-encoded → 16 url-safe chars.
+    expect(decoded.jti).toMatch(/^[A-Za-z0-9_-]{16}$/);
+    // An unlisted agent resolves to the reserved `default` tenant, which the
+    // AuthGuard rejects when asserted — so the token must carry NO tenant
+    // claim (untenanted access is reachable only via the claim's absence).
+    expect(decoded.tenant).toBeUndefined();
   });
 
   it('stamps the agent\'s tenant claim from TENANT_AGENTS', async () => {
@@ -182,6 +185,23 @@ describe('TokenIssuer', () => {
         keyId: 'k',
         nonce: ch.nonce,
         expiresAt: ch.expiresAt,
+        algorithm: 'ed25519',
+        signature: signChallenge(ch.signingInput),
+      }),
+    ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('rejects a tampered expiresAt that disagrees with the challenge', async () => {
+    const ch = await issuer.issueChallenge(did);
+    await expect(
+      issuer.issueToken({
+        agentDid: did,
+        keyId: 'k',
+        nonce: ch.nonce,
+        // The signed challenge bound a specific expiresAt; submitting a
+        // different value must be rejected (and the signature over the
+        // original input would no longer match anyway).
+        expiresAt: ch.expiresAt + 999,
         algorithm: 'ed25519',
         signature: signChallenge(ch.signingInput),
       }),
@@ -335,7 +355,7 @@ describe('TokenIssuer', () => {
     expect(snap[0].row.decision).toBe('mint');
     expect(snap[0].row.sub).toBe(did);
     expect(snap[0].row.signerIp).toBe('10.0.0.1');
-    expect(snap[0].row.jti).toBeTruthy();
+    expect(snap[0].row.jti).toMatch(/^[A-Za-z0-9_-]{16}$/);
   });
 
   it('writes reject_alg when an unsupported algorithm is used', async () => {

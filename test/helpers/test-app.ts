@@ -52,6 +52,36 @@ export interface TestAppOptions {
    * explicitly for the rare strict-mode-without-bindings case.
    */
   requireTenant?: boolean;
+  /**
+   * Turn the control plane into an IdP (TOKEN_ISSUANCE_ENABLED=true) so the
+   * `/auth/challenge` + `/auth/token` + `/auth/jwks` routes mount. `jwtSecret`
+   * must be ≥ 32 bytes (HS256). `pinnedKeys` is the raw `CONTROL_PLANE_PINNED_KEYS`
+   * value (`did=<base64-ed25519-pub>`); `authority` becomes the JWT `iss`.
+   */
+  /**
+   * `TENANT_QUOTAS` value (e.g. `default:publish=2/min`). Drives QuotaGuard's
+   * per-tenant per-action windowed counters. Cleared when unset.
+   */
+  tenantQuotas?: string;
+  tokenIssuance?: {
+    jwtSecret: string;
+    authority?: string;
+    pinnedKeys?: string;
+    /**
+     * `TENANT_AGENTS` value (`tenant:did,...`). When set, minted tokens carry
+     * the mapped tenant claim instead of the reserved `default`, and strict
+     * tenant mode is auto-enabled (tenant bindings fail startup otherwise).
+     */
+    tenantAgents?: string;
+    /**
+     * JWT signing algorithm. `HS256` (default) uses `jwtSecret`; `EdDSA` uses
+     * `privateKeyPem` (a PEM-encoded Ed25519 private key) and publishes the
+     * public half at `/.well-known/jwks.json`.
+     */
+    signingAlg?: 'HS256' | 'EdDSA';
+    /** PEM-encoded Ed25519 private key — required when signingAlg is EdDSA. */
+    privateKeyPem?: string;
+  };
 }
 
 /**
@@ -83,7 +113,11 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
   // fail-fast). Auto-enable it for any multi-tenant test app; allow an explicit
   // opt-in otherwise. Clear it when neither applies so env doesn't leak across
   // suites (process.env is mutated in place).
-  if (tenantApiKeys.length > 0 || opts.requireTenant) {
+  if (
+    tenantApiKeys.length > 0 ||
+    opts.requireTenant ||
+    opts.tokenIssuance?.tenantAgents
+  ) {
     process.env.AUTH_REQUIRE_TENANT = 'true';
   } else {
     delete process.env.AUTH_REQUIRE_TENANT;
@@ -110,6 +144,38 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
     process.env.DOMAIN_PACKS = opts.domainPacks;
   } else {
     delete process.env.DOMAIN_PACKS;
+  }
+  if (opts.tenantQuotas) {
+    process.env.TENANT_QUOTAS = opts.tenantQuotas;
+  } else {
+    delete process.env.TENANT_QUOTAS;
+  }
+  // IdP / token-issuance wiring. Set (or clear, so it doesn't leak across
+  // suites) the env the auth.module reads at boot to mount the issuance routes.
+  if (opts.tokenIssuance) {
+    process.env.TOKEN_ISSUANCE_ENABLED = 'true';
+    process.env.JWT_SECRET = opts.tokenIssuance.jwtSecret;
+    process.env.JWT_AUTHORITY = opts.tokenIssuance.authority ?? 'cp.test';
+    process.env.CONTROL_PLANE_PINNED_KEYS = opts.tokenIssuance.pinnedKeys ?? '';
+    process.env.JWT_SIGNING_ALG = opts.tokenIssuance.signingAlg ?? 'HS256';
+    if (opts.tokenIssuance.privateKeyPem) {
+      process.env.JWT_PRIVATE_KEY_PEM = opts.tokenIssuance.privateKeyPem;
+    } else {
+      delete process.env.JWT_PRIVATE_KEY_PEM;
+    }
+    if (opts.tokenIssuance.tenantAgents) {
+      process.env.TENANT_AGENTS = opts.tokenIssuance.tenantAgents;
+    } else {
+      delete process.env.TENANT_AGENTS;
+    }
+  } else {
+    delete process.env.TOKEN_ISSUANCE_ENABLED;
+    delete process.env.JWT_SECRET;
+    delete process.env.JWT_AUTHORITY;
+    delete process.env.CONTROL_PLANE_PINNED_KEYS;
+    delete process.env.JWT_SIGNING_ALG;
+    delete process.env.JWT_PRIVATE_KEY_PEM;
+    delete process.env.TENANT_AGENTS;
   }
 
   // Clear Prometheus registry — prevents duplicate-metric errors across suites.

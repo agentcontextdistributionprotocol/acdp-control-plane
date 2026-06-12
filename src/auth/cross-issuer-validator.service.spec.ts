@@ -41,9 +41,19 @@ function mint(
   );
 }
 
-function makeValidator(opts: { peers?: ConstructorParameters<typeof TrustedIssuerRegistry>[0] } = {}) {
+function makeValidator(
+  opts: {
+    peers?: ConstructorParameters<typeof TrustedIssuerRegistry>[0];
+    revocations?: { isRevoked: jest.Mock };
+  } = {},
+) {
   const registry = new TrustedIssuerRegistry(opts.peers ?? []);
-  return new CrossIssuerValidator(fakeConfig(), registry, fakeSigning());
+  return new CrossIssuerValidator(
+    fakeConfig(),
+    registry,
+    fakeSigning(),
+    (opts.revocations as any) ?? null,
+  );
 }
 
 describe('CrossIssuerValidator', () => {
@@ -137,6 +147,24 @@ describe('CrossIssuerValidator', () => {
     // jsonwebtoken refuses to sign without iss in our shape, so build by hand:
     const tok = jwt.sign({ sub: 'x', jti: 'j', iat: 0, exp: 99999999999 }, LOCAL_SECRET);
     await expect(v.verify(tok)).rejects.toThrow(/missing iss/);
+  });
+
+  describe('revocation check (applies to every issuer)', () => {
+    it('rejects a token whose jti is revoked locally', async () => {
+      const revocations = { isRevoked: jest.fn().mockResolvedValue(true) };
+      const v = makeValidator({ revocations });
+      const tok = mint(LOCAL_ISS, LOCAL_SECRET, { jti: 'jti-revoked' });
+      await expect(v.verify(tok)).rejects.toThrow(/revoked/);
+      expect(revocations.isRevoked).toHaveBeenCalledWith('jti-revoked');
+    });
+
+    it('accepts a token whose jti is NOT revoked', async () => {
+      const revocations = { isRevoked: jest.fn().mockResolvedValue(false) };
+      const v = makeValidator({ revocations });
+      const claims = await v.verify(mint(LOCAL_ISS, LOCAL_SECRET));
+      expect(claims.iss).toBe(LOCAL_ISS);
+      expect(revocations.isRevoked).toHaveBeenCalled();
+    });
   });
 
   it('cross-issuer round-trip: peer-A issues, validator with peer-A in trust accepts', async () => {

@@ -96,6 +96,20 @@ describe('CapabilityService', () => {
     expect(repo.rows).toHaveLength(1);
   });
 
+  it('maps a malformed capability URN to BadRequestException (400, not a 500)', async () => {
+    const declaredAt = new Date().toISOString();
+    await expect(
+      svc.declare({
+        agentDid: DID,
+        capabilityUri: 'not-a-urn',
+        declaredAtIso: declaredAt,
+        keyId: 'k',
+        algorithm: 'ed25519',
+        signature: 'AAA=',
+      }),
+    ).rejects.toThrow(BadRequestException);
+  });
+
   it('rejects an unsupported algorithm', async () => {
     const declaredAt = new Date().toISOString();
     await expect(

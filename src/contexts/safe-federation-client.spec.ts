@@ -129,4 +129,67 @@ describe('SafeFederationClient', () => {
       FederationFetchError,
     );
   });
+
+  it('rejects a redirect with no Location header', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(resp({ status: 302 }));
+    const client = new SafeFederationClient(loopbackPolicy, fetchMock as unknown as typeof fetch);
+
+    await expect(client.get('https://localhost/contexts/x')).rejects.toMatchObject({
+      code: 'REDIRECT',
+    });
+  });
+
+  it('rejects a redirect whose Location is an unparseable URL', async () => {
+    // A scheme-relative target with a space cannot resolve against the base URL.
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(resp({ status: 302, headers: { location: 'http://[bad' } }));
+    const client = new SafeFederationClient(loopbackPolicy, fetchMock as unknown as typeof fetch);
+
+    await expect(client.get('https://localhost/contexts/x')).rejects.toMatchObject({
+      code: 'REDIRECT',
+    });
+  });
+
+  it('rejects after exceeding the redirect limit (same-authority loop)', async () => {
+    // Always redirect back to a same-authority target → never terminates,
+    // so the hop counter trips the MAX_REDIRECTS guard.
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(resp({ status: 302, headers: { location: 'https://localhost/again' } }));
+    const client = new SafeFederationClient(loopbackPolicy, fetchMock as unknown as typeof fetch);
+
+    await expect(client.get('https://localhost/contexts/x')).rejects.toMatchObject({
+      code: 'REDIRECT',
+    });
+    // initial + MAX_REDIRECTS (3) follows = 4 fetches before giving up.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('rejects an oversized body by actual bytes when Content-Length is absent', async () => {
+    const big = 'x'.repeat(1024 * 1024 + 1);
+    const fetchMock = jest.fn().mockResolvedValue(resp({ status: 200, body: big }));
+    const client = new SafeFederationClient(loopbackPolicy, fetchMock as unknown as typeof fetch);
+
+    await expect(client.get('https://localhost/contexts/x')).rejects.toMatchObject({
+      code: 'BODY_TOO_LARGE',
+    });
+  });
+
+  it('rejects at DNS time when no resolved address passes the policy (SSRF)', async () => {
+    const fetchMock = jest.fn();
+    // A policy that lets the scheme/IP-literal gate pass but fails DNS resolution.
+    const dnsFailPolicy = {
+      checkUrl: () => undefined,
+      checkResolvedHost: async () => {
+        throw new Error('resolved to a blocked address');
+      },
+    } as unknown as SsrfPolicy;
+    const client = new SafeFederationClient(dnsFailPolicy, fetchMock as unknown as typeof fetch);
+
+    await expect(client.get('https://internal.example/x')).rejects.toMatchObject({
+      code: 'SSRF',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
