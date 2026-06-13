@@ -3,6 +3,10 @@ import { AppConfigService } from '../config/app-config.service';
 import { Run } from '../db/schema';
 import { BanditRouter } from '../routing/bandit-router.service';
 import { ContextEventRepository } from '../storage/context-event.repository';
+import {
+  ReceiptAuditRepository,
+  RunTrustSummary,
+} from '../storage/receipt-audit.repository';
 import { ListRunsOptions, RunRepository } from '../storage/run.repository';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 
@@ -14,6 +18,7 @@ export class RunsService {
     private readonly runRepo: RunRepository,
     private readonly config: AppConfigService,
     private readonly contextEventRepo: ContextEventRepository,
+    private readonly receiptAuditRepo: ReceiptAuditRepository,
     private readonly bandit: BanditRouter,
   ) {}
 
@@ -29,6 +34,20 @@ export class RunsService {
 
   async getOrThrow(runId: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Run> {
     return this.runRepo.findByIdOrThrow(runId, tenantId);
+  }
+
+  /**
+   * Run detail with receipt-audit trust flags (ACDP 0.2.0). `trust` is null
+   * until the audit sweep has produced at least one verdict for this run —
+   * a 0.1.0 deployment's response shape is unchanged in substance.
+   */
+  async getDetail(
+    runId: string,
+    tenantId: string = DEFAULT_TENANT_ID,
+  ): Promise<Run & { trust: RunTrustSummary | null }> {
+    const run = await this.runRepo.findByIdOrThrow(runId, tenantId);
+    const trust = await this.receiptAuditRepo.summarizeByRun(runId, tenantId);
+    return { ...run, trust };
   }
 
   /** True if `runId` belongs to a tenant other than `tenantId`. */

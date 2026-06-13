@@ -38,6 +38,20 @@ export interface AcdpWebhookEvent {
   run_id?: string;
   created_at?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * ACDP 0.2.0 (RFC-ACDP-0010): "sha256:<64-hex>" fingerprint of the producer
+   * key the registry actually verified at publish time. Only set by registries
+   * minting receipts; absent on 0.1.0 traffic.
+   */
+  key_fingerprint?: string;
+  /**
+   * ACDP 0.2.0 (RFC-ACDP-0010): the full signed registry receipt object
+   * ({ registry_did, ctx_id, lineage_id, origin_registry, created_at,
+   * content_hash, key_fingerprint, signature }). Kept as an open record —
+   * the receipt is a closed schema OWNED by the SDK; the control plane never
+   * re-implements its parse/verify (see src/audit/receipt-verify.ts).
+   */
+  registry_receipt?: Record<string, unknown>;
   [k: string]: unknown;
 }
 
@@ -51,6 +65,9 @@ export interface AcdpStreamEvent {
   contextType?: string;
   registryAuthority: string;
   derivedFrom: string[];
+  /** ACDP 0.2.0 trust signals — additive; SSE consumers tolerate unknowns. */
+  keyFingerprint?: string;
+  receiptPresent?: boolean;
 }
 
 /** Lineage DAG result. */

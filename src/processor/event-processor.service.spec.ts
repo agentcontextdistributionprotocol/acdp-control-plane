@@ -3,7 +3,28 @@ import { EventProcessorService } from './event-processor.service';
 function mockInstrumentation() {
   return {
     eventsIngestedTotal: { inc: jest.fn() },
+    publishReceiptsTotal: { inc: jest.fn() },
+    producerDidMethodTotal: { inc: jest.fn() },
   } as any;
+}
+
+/** A registry receipt as embedded in 0.2.0 context_published events. */
+function makeReceipt(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    registry_did: 'did:web:reg.example',
+    ctx_id: 'acdp://reg/c1',
+    lineage_id: 'lin-1',
+    origin_registry: 'reg.example',
+    created_at: '2026-01-01T00:00:00.000Z',
+    content_hash: 'sha256:' + 'a'.repeat(64),
+    key_fingerprint: 'sha256:' + 'b'.repeat(64),
+    signature: {
+      algorithm: 'ed25519',
+      key_id: 'did:web:reg.example#receipt-key-1',
+      value: 'c2ln',
+    },
+    ...overrides,
+  };
 }
 
 function makePayload(overrides: Partial<Record<string, unknown>> = {}) {
@@ -31,6 +52,7 @@ describe('EventProcessorService', () => {
   let registryRepo: any;
   let streamHub: any;
   let webhookService: any;
+  let instrumentation: any;
   let processor: EventProcessorService;
 
   beforeEach(() => {
@@ -44,6 +66,7 @@ describe('EventProcessorService', () => {
       publishGlobal: jest.fn(),
     };
     webhookService = { fireEvent: jest.fn().mockResolvedValue(undefined) };
+    instrumentation = mockInstrumentation();
 
     processor = new EventProcessorService(
       ceRepo,
@@ -52,7 +75,7 @@ describe('EventProcessorService', () => {
       agentRepo,
       registryRepo,
       streamHub,
-      mockInstrumentation(),
+      instrumentation,
       webhookService,
     );
   });
@@ -211,5 +234,78 @@ describe('EventProcessorService', () => {
     const arg = ceRepo.create.mock.calls[0][0];
     expect(typeof arg.eventTs).toBe('string');
     expect(arg.eventTs.length).toBeGreaterThan(0);
+  });
+
+  // ── ACDP 0.2.0 trust & hardening (RFC-ACDP-0010) ────────────────────────
+
+  describe('0.2.0 trust metadata', () => {
+    const fp = 'sha256:' + 'b'.repeat(64);
+
+    it('persists key_fingerprint + receipt_present and keeps the receipt in rawPayload', async () => {
+      const payload = makePayload({
+        key_fingerprint: fp,
+        registry_receipt: makeReceipt(),
+      });
+      await processor.process(payload, 'run-1');
+      const arg = ceRepo.create.mock.calls[0][0];
+      expect(arg.keyFingerprint).toBe(fp);
+      expect(arg.receiptPresent).toBe(true);
+      // The full receipt survives verbatim in the raw payload (open schema).
+      expect(arg.rawPayload.registry_receipt).toEqual(makeReceipt());
+    });
+
+    it('treats 0.1.0 events (no trust fields) as fingerprint-less, receipt-less', async () => {
+      await processor.process(makePayload(), 'run-1');
+      const arg = ceRepo.create.mock.calls[0][0];
+      expect(arg.keyFingerprint).toBeNull();
+      expect(arg.receiptPresent).toBe(false);
+    });
+
+    it('passes the trust signals through the SSE projection unchanged', async () => {
+      await processor.process(
+        makePayload({ key_fingerprint: fp, registry_receipt: makeReceipt() }),
+        'run-1',
+      );
+      const streamed = streamHub.publishGlobal.mock.calls[0][0];
+      expect(streamed.keyFingerprint).toBe(fp);
+      expect(streamed.receiptPresent).toBe(true);
+    });
+
+    it('omits the trust signals from SSE when the event has none (additive shape)', async () => {
+      await processor.process(makePayload(), 'run-1');
+      const streamed = streamHub.publishGlobal.mock.calls[0][0];
+      expect(streamed).not.toHaveProperty('keyFingerprint');
+      expect(streamed.receiptPresent).toBe(false);
+    });
+
+    it('counts receipt coverage per registry and the producer DID-method mix', async () => {
+      await processor.process(
+        makePayload({ registry_receipt: makeReceipt() }),
+        'run-1',
+      );
+      expect(instrumentation.publishReceiptsTotal.inc).toHaveBeenCalledWith({
+        registry_authority: 'reg.example',
+        receipt: 'present',
+      });
+      expect(instrumentation.producerDidMethodTotal.inc).toHaveBeenCalledWith({
+        method: 'did:web',
+      });
+    });
+
+    it('handles a did:key producer end-to-end as an opaque string', async () => {
+      // Realistic shape: did:key:z + base58btc(multicodec 0xed01 + 32 bytes).
+      const didKey = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
+      await processor.process(
+        makePayload({ agent_id: didKey, ctx_id: 'acdp://reg/c-dk', event_id: undefined }),
+        'run-dk',
+      );
+      const arg = ceRepo.create.mock.calls[0][0];
+      expect(arg.agentId).toBe(didKey);
+      expect(agentRepo.upsert).toHaveBeenCalledWith(didKey, 'reg.example', 'default');
+      expect(streamHub.publishGlobal.mock.calls[0][0].agentId).toBe(didKey);
+      expect(instrumentation.producerDidMethodTotal.inc).toHaveBeenCalledWith({
+        method: 'did:key',
+      });
+    });
   });
 });

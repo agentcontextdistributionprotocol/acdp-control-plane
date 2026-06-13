@@ -46,6 +46,14 @@ export class EventProcessorService {
     const eventTs = String(payload.created_at ?? new Date().toISOString());
     const runId = runIdOverride ?? payload.run_id;
     const fingerprint = this.dedupKey(payload, runId, eventId);
+    // ACDP 0.2.0 trust metadata (RFC-ACDP-0010) — additive, absent on 0.1.0
+    // traffic. The full receipt object stays verbatim in rawPayload; only the
+    // two queryable signals are lifted into columns.
+    const keyFingerprint =
+      typeof payload.key_fingerprint === 'string' ? payload.key_fingerprint : undefined;
+    const receiptPresent =
+      payload.registry_receipt !== null &&
+      typeof payload.registry_receipt === 'object';
 
     // 1. Persist raw event. Idempotent: a registry retry with the same
     //    fingerprint is skipped (create() returns null on conflict) so we
@@ -65,6 +73,8 @@ export class EventProcessorService {
       registryAuthority,
       scenarioId: scenarioId ?? null,
       fingerprint,
+      keyFingerprint: keyFingerprint ?? null,
+      receiptPresent,
       rawPayload: payload as unknown as Record<string, unknown>,
     });
     if (created === null) {
@@ -73,6 +83,18 @@ export class EventProcessorService {
     }
 
     this.instrumentation.eventsIngestedTotal.inc({ event_type: eventType });
+
+    // Trust-signal metrics (ACDP 0.2.0): receipt coverage per registry and
+    // the producer DID-method mix, both scoped to publish events.
+    if (eventType === 'context_published') {
+      this.instrumentation.publishReceiptsTotal.inc({
+        registry_authority: registryAuthority || 'unknown',
+        receipt: receiptPresent ? 'present' : 'absent',
+      });
+      this.instrumentation.producerDidMethodTotal.inc({
+        method: didMethodOf(agentId),
+      });
+    }
 
     // 2. Run correlation — upsert run record
     if (runId) {
@@ -117,6 +139,11 @@ export class EventProcessorService {
       contextType,
       registryAuthority,
       derivedFrom,
+      // ACDP 0.2.0 trust signals pass through unchanged (additive — SSE
+      // consumers tolerate unknown members). receiptPresent only carries
+      // meaning on publishes, so it is omitted elsewhere.
+      ...(keyFingerprint ? { keyFingerprint } : {}),
+      ...(eventType === 'context_published' ? { receiptPresent } : {}),
     };
     if (runId) this.streamHub.publishToRun(runId, streamEvent, tenantId);
     this.streamHub.publishGlobal(streamEvent, tenantId);
@@ -165,4 +192,15 @@ export class EventProcessorService {
     const meta = payload.metadata as Record<string, unknown> | undefined;
     return (meta?.['scenario_id'] ?? payload.scenario_id) as string | undefined;
   }
+}
+
+/**
+ * Classify an agent DID by method for the producer-mix metric. did:key agent
+ * ids (ACDP 0.2.0 workstream C) are long opaque strings with no domain — they
+ * are never parsed beyond this prefix check anywhere in the control plane.
+ */
+function didMethodOf(agentId: string): 'did:web' | 'did:key' | 'other' {
+  if (agentId.startsWith('did:web:')) return 'did:web';
+  if (agentId.startsWith('did:key:')) return 'did:key';
+  return 'other';
 }

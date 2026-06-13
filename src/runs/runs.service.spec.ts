@@ -4,6 +4,7 @@ describe('RunsService', () => {
   let runRepo: any;
   let config: any;
   let contextEventRepo: any;
+  let receiptAuditRepo: any;
   let bandit: any;
   let svc: RunsService;
   let originalFetch: typeof fetch;
@@ -17,8 +18,15 @@ describe('RunsService', () => {
     };
     config = { playgroundUrl: '' };
     contextEventRepo = { listByRun: jest.fn().mockResolvedValue([]) };
+    receiptAuditRepo = { summarizeByRun: jest.fn().mockResolvedValue(null) };
     bandit = { recordReward: jest.fn() };
-    svc = new RunsService(runRepo, config, contextEventRepo as any, bandit as any);
+    svc = new RunsService(
+      runRepo,
+      config,
+      contextEventRepo as any,
+      receiptAuditRepo as any,
+      bandit as any,
+    );
 
     originalFetch = global.fetch;
     fetchMock = jest.fn();
@@ -50,6 +58,33 @@ describe('RunsService', () => {
     const run = await svc.getOrThrow('r-1');
     expect(run).toEqual({ runId: 'r-1' });
     expect(runRepo.findByIdOrThrow).toHaveBeenCalledWith('r-1', 'default');
+  });
+
+  it('getDetail attaches the receipt-audit trust summary (null when unaudited)', async () => {
+    runRepo.findByIdOrThrow.mockResolvedValue({ runId: 'r-1' });
+    await expect(svc.getDetail('r-1')).resolves.toEqual({ runId: 'r-1', trust: null });
+
+    const summary = {
+      audited: 3,
+      verified: 2,
+      structural: 0,
+      noReceipt: 0,
+      errors: 0,
+      flagged: [
+        {
+          eventId: 'e-3',
+          ctxId: 'acdp://reg/c3',
+          status: 'discrepancy',
+          discrepancies: ['receipt_invalid: signature check failed'],
+        },
+      ],
+    };
+    receiptAuditRepo.summarizeByRun.mockResolvedValue(summary);
+    await expect(svc.getDetail('r-1', 't-1')).resolves.toEqual({
+      runId: 'r-1',
+      trust: summary,
+    });
+    expect(receiptAuditRepo.summarizeByRun).toHaveBeenCalledWith('r-1', 't-1');
   });
 
   it('records a bandit reward per participating agent on completion', async () => {

@@ -56,9 +56,12 @@ export class RunsController {
 
   @Get(':runId')
   @CheckPolicy('run.read')
-  @ApiOperation({ summary: 'Fetch a single run.' })
+  @ApiOperation({
+    summary:
+      'Fetch a single run. Includes a `trust` member (receipt-audit verdicts + discrepancy flags) once audit mode has examined the run; null otherwise.',
+  })
   async getRun(@Param('runId') runId: string, @Req() req: TenantedRequest) {
-    return this.runsService.getOrThrow(runId, tenantOf(req));
+    return this.runsService.getDetail(runId, tenantOf(req));
   }
 
   @Get(':runId/lineage')

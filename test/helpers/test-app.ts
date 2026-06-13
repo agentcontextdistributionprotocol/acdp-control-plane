@@ -136,6 +136,9 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
     delete process.env.AUTH_ADMIN_API_KEYS;
   }
   process.env.WEBHOOK_SECRET = webhookSecret;
+  // Receipt audit stays off in the harness (its sweep would race tests);
+  // suites that exercise it call ReceiptAuditService.sweep() directly.
+  delete process.env.RECEIPT_AUDIT_ENABLED;
   process.env.OTEL_ENABLED = 'false';
   process.env.LOG_LEVEL = 'warn';
   process.env.PLAYGROUND_URL = '';

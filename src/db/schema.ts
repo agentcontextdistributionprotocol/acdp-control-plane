@@ -37,6 +37,13 @@ export const contextEvents = pgTable(
     // Holds either the registry's `evt:<event_id>` (REG-P2-6, retry-stable)
     // or a 32-char content-hash fallback; widened to 80 in migration 0011.
     fingerprint: varchar('fingerprint', { length: 80 }),
+    // ACDP 0.2.0 trust metadata (RFC-ACDP-0010, migration 0014). Both are
+    // additive: 0.1.0 registries simply never set them. `keyFingerprint` is
+    // the "sha256:<64-hex>" of the producer key the registry verified at
+    // publish time; `receiptPresent` records whether the event carried a
+    // `registry_receipt` (the receipt itself stays in rawPayload verbatim).
+    keyFingerprint: varchar('key_fingerprint', { length: 80 }),
+    receiptPresent: boolean('receipt_present').notNull().default(false),
     rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>().notNull(),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' })
       .notNull()
@@ -320,6 +327,41 @@ export const issuanceLedger = pgTable(
   }),
 );
 
+// Receipt-audit verdicts (ACDP 0.2.0 second-observer mode, migration 0014).
+// One row per audited context_published event. `eventArrivedAt` (when this
+// control plane first persisted the event) vs the receipt's claimed
+// `receiptCreatedAt` is the backdating-detection window.
+export const receiptAudits = pgTable(
+  'receipt_audits',
+  {
+    eventId: uuid('event_id').primaryKey(),
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    runId: varchar('run_id', { length: 255 }),
+    ctxId: text('ctx_id'),
+    registryAuthority: varchar('registry_authority', { length: 255 }).notNull(),
+    status: varchar('status', { length: 32 }).notNull(),
+    discrepancies: jsonb('discrepancies').$type<string[]>().notNull().default([]),
+    receiptCreatedAt: timestamp('receipt_created_at', {
+      withTimezone: true,
+      mode: 'string',
+    }),
+    eventArrivedAt: timestamp('event_arrived_at', {
+      withTimezone: true,
+      mode: 'string',
+    }),
+    skewMs: bigint('skew_ms', { mode: 'number' }),
+    checkedAt: timestamp('checked_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    runIdx: index('ra_run_idx').on(t.runId),
+    statusIdx: index('ra_status_idx').on(t.status),
+    tenantIdx: index('ra_tenant_idx').on(t.tenantId),
+    registryIdx: index('ra_registry_idx').on(t.registryAuthority),
+  }),
+);
+
 export type ContextEvent = typeof contextEvents.$inferSelect;
 export type NewContextEvent = typeof contextEvents.$inferInsert;
 export type Run = typeof runs.$inferSelect;
@@ -342,3 +384,5 @@ export type AgentCapability = typeof agentCapabilities.$inferSelect;
 export type NewAgentCapability = typeof agentCapabilities.$inferInsert;
 export type IssuanceLedgerEntry = typeof issuanceLedger.$inferSelect;
 export type NewIssuanceLedgerEntry = typeof issuanceLedger.$inferInsert;
+export type ReceiptAudit = typeof receiptAudits.$inferSelect;
+export type NewReceiptAudit = typeof receiptAudits.$inferInsert;
