@@ -11,6 +11,7 @@ jest.mock('./receipt-verify', () => ({
   verifyReceipt: jest.fn(),
   fingerprintEd25519B64: jest.fn(),
   verifyBodyOffline: jest.fn(),
+  explainHashMismatch: jest.fn().mockReturnValue(null),
 }));
 
 import { ReceiptAuditService } from './receipt-audit.service';
