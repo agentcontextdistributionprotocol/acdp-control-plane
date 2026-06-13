@@ -17,10 +17,13 @@
  *   3. **Cryptographic verification** (when the installed `acdp` SDK carries
  *      the receipt API — feature-detected, see receipt-verify.ts): fetch the
  *      context through the SSRF-gated federation client, independently
- *      recompute the body hash, resolve the registry's receipt key from its
+ *      recompute the body hash (a mismatch is enriched with the SDK's
+ *      divergence diagnosis), resolve the registry's receipt key from its
  *      did:web document, resolve the producer key (did:web via the resolver;
  *      did:key bodies verify fully offline), and run the SDK's
- *      `verifyReceipt` cross-checks + Ed25519 signature check.
+ *      `verifyReceipt` cross-checks + Ed25519 signature check. Receipts are
+ *      Ed25519-only (registry + SDK); a receipt declaring any other signature
+ *      algorithm is rejected as non-conformant.
  *
  * Verdicts land in `receipt_audits` (PK = event id, idempotent) and surface
  * per run via GET /runs/:runId (`trust` member) and the
@@ -52,6 +55,7 @@ import { ReceiptAuditRepository } from '../storage/receipt-audit.repository';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
 import { RegistryRepository } from '../storage/registry.repository';
 import {
+  explainHashMismatch,
   fingerprintEd25519B64,
   sdkSupportsReceipts,
   verifyBodyOffline,
@@ -63,6 +67,16 @@ import { RegistryProfileService } from './registry-profile.service';
 const ADVISORY_LOCK_KEY = 'acdp-cp-receipt-audit';
 /** Tolerated forward clock skew before `created_at` postdating is flagged. */
 const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
+/**
+ * The only registry receipt signature algorithm the protocol + SDK support.
+ * Registries sign receipts with Ed25519 exclusively (the registry config
+ * rejects any other receipt seed and serves an `Ed25519VerificationKey2020`
+ * DID document), and the SDK's `verifyReceipt` verifies Ed25519 only. A
+ * receipt declaring any other algorithm is non-conformant — surfaced as an
+ * `error` verdict with an accurate note rather than a misleading resolution
+ * failure.
+ */
+const RECEIPT_SIG_ALG = 'ed25519';
 
 interface Verdict {
   status:
@@ -344,7 +358,12 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     }
     const hashCheck = verifyContentHash(bodyJson, echoedHash);
     if (!hashCheck.ok) {
-      flags.push(`content_hash_mismatch: ${hashCheck.reason}`);
+      // Enrich the flag with the SDK's divergence diagnosis so an operator can
+      // tell a genuine tamper from a benign canonicalization divergence (e.g.
+      // acdp_version omitted-vs-explicit). Best-effort, bounded length.
+      const diagnosis = explainHashMismatch(bodyJson, echoedHash);
+      const detail = diagnosis ? ` [${diagnosis.slice(0, 300)}]` : '';
+      flags.push(`content_hash_mismatch: ${hashCheck.reason}${detail}`);
       return notRun;
     }
 
@@ -364,6 +383,18 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
       flags.push('receipt_invalid: signature.key_id missing');
       return notRun;
     }
+    // Registries MUST sign receipts with Ed25519 (RFC-ACDP-0010); the SDK's
+    // verifyReceipt verifies Ed25519 only. Reject any other declared algorithm
+    // up front with an accurate note, rather than resolving as ed25519 and
+    // surfacing a confusing downgrade/alg-mismatch resolution failure.
+    const receiptAlg = strOf(sig?.['algorithm']);
+    if (receiptAlg && receiptAlg !== RECEIPT_SIG_ALG) {
+      notes.push(
+        `unverified: receipt signature algorithm '${receiptAlg}' is unsupported — ` +
+          `registries MUST sign receipts with ${RECEIPT_SIG_ALG} (RFC-ACDP-0010)`,
+      );
+      return notRun;
+    }
     if (AcdpDid.stripFragment(receiptKeyId) !== `did:web:${ev.registryAuthority}`) {
       flags.push(
         `receipt_key_foreign_did: '${receiptKeyId}' is not a key of 'did:web:${ev.registryAuthority}'`,
@@ -376,7 +407,7 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     let registryKeyB64: string;
     let historical: boolean;
     try {
-      const resolved = await this.didResolver.resolveReceiptKey(receiptKeyId, 'ed25519');
+      const resolved = await this.didResolver.resolveReceiptKey(receiptKeyId, RECEIPT_SIG_ALG);
       registryKeyB64 = resolved.publicKeyB64;
       historical = resolved.historical;
     } catch (err) {
@@ -410,8 +441,12 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
    *   fingerprint cross-check; the receipt's own fingerprint is then passed
    *   through (making that one verifyReceipt check an internal-consistency
    *   check rather than an independent one).
-   * - ecdsa-p256 producers: the binding exposes no P-256 fingerprint helper
-   *   yet, so the receipt's claim is passed through (consistency-only).
+   * - ecdsa-p256 producers: a conformant receipts-mode registry never emits
+   *   one (P-256 producers exist only in playground mode, which the registry
+   *   makes mutually exclusive with receipts), and the SDK exposes no P-256
+   *   fingerprint helper — so if a P-256 producer fingerprint ever appears it
+   *   signals a non-conformant registry, and the receipt's claim is passed
+   *   through (consistency-only) with a note rather than failing the audit.
    *
    * Returns null when verification cannot proceed (note already appended).
    */
@@ -445,7 +480,9 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     }
     if (algorithm !== 'ed25519') {
       notes.push(
-        `unverified: producer algorithm '${algorithm}' has no fingerprint helper in the SDK — receipt fingerprint passed through`,
+        `unverified: producer algorithm '${algorithm}' is unexpected in a receipts-mode ` +
+          `event (Ed25519/did:key only) and the SDK has no P-256 fingerprint helper — ` +
+          `receipt fingerprint passed through`,
       );
       return claimedFp;
     }

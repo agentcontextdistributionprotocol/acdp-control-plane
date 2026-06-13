@@ -26,6 +26,7 @@ interface ReceiptCapableVerifier {
   ): boolean;
   fingerprintEd25519B64(publicKeyB64: string): string;
   verifyBodyOffline(bodyJson: string): boolean;
+  explainHashMismatch(bodyJson: string, expectedHash: string): string;
 }
 
 const verifier = AcdpVerifier as unknown as Partial<ReceiptCapableVerifier>;
@@ -109,6 +110,24 @@ export function verifyBodyOffline(bodyJson: string): VerifyOutcome {
     return { ok: true };
   } catch (e) {
     return { ok: false, reason: errMsg(e) };
+  }
+}
+
+/**
+ * Diagnose a `content_hash` mismatch — the SDK probes the known
+ * cross-implementation divergence patterns (`acdp_version` omitted vs
+ * explicit, null-vs-absent optionals, sub-millisecond timestamps) and names
+ * the matching one. Used ONLY to enrich an already-flagged discrepancy so an
+ * operator can tell a genuine tamper from a benign canonicalization
+ * divergence — never to accept a body. Returns `null` when the SDK lacks the
+ * helper or the diagnosis itself throws (best-effort).
+ */
+export function explainHashMismatch(bodyJson: string, expectedHash: string): string | null {
+  if (typeof verifier.explainHashMismatch !== 'function') return null;
+  try {
+    return verifier.explainHashMismatch(bodyJson, expectedHash);
+  } catch {
+    return null;
   }
 }
 

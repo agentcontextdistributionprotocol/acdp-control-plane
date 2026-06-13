@@ -11,10 +11,12 @@ jest.mock('./receipt-verify', () => ({
   verifyReceipt: jest.fn().mockReturnValue({ ok: true }),
   fingerprintEd25519B64: jest.fn(),
   verifyBodyOffline: jest.fn().mockReturnValue({ ok: true }),
+  explainHashMismatch: jest.fn().mockReturnValue(null),
 }));
 
 import { ReceiptAuditService } from './receipt-audit.service';
 import {
+  explainHashMismatch,
   fingerprintEd25519B64,
   verifyBodyOffline,
   verifyContentHash,
@@ -96,6 +98,7 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
     (verifyReceipt as jest.Mock).mockReturnValue({ ok: true });
     (verifyBodyOffline as jest.Mock).mockReturnValue({ ok: true });
     (fingerprintEd25519B64 as jest.Mock).mockReturnValue(FP);
+    (explainHashMismatch as jest.Mock).mockReturnValue(null);
 
     registryRepo = {
       findByAuthority: jest
@@ -219,6 +222,44 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
     const verdict = await svc.auditEvent(makeEvent());
     expect(verdict.status).toBe('discrepancy');
     expect(verdict.discrepancies.join('\n')).toContain('content_hash_mismatch');
+    expect(verifyReceipt).not.toHaveBeenCalled();
+  });
+
+  it('enriches a content_hash_mismatch with the SDK divergence diagnosis', async () => {
+    (verifyContentHash as jest.Mock).mockReturnValue({
+      ok: false,
+      reason: 'content_hash mismatch',
+    });
+    (explainHashMismatch as jest.Mock).mockReturnValue(
+      'acdp_version omitted-vs-explicit divergence',
+    );
+    const verdict = await svc.auditEvent(makeEvent());
+    expect(verdict.status).toBe('discrepancy');
+    const flag = verdict.discrepancies.find((d) => d.startsWith('content_hash_mismatch'));
+    expect(flag).toContain('acdp_version omitted-vs-explicit divergence');
+  });
+
+  it('rejects a receipt signed with a non-ed25519 algorithm as non-conformant', async () => {
+    const ev = makeEvent({
+      rawPayload: {
+        type: 'context_published',
+        registry_receipt: makeReceipt({
+          signature: {
+            algorithm: 'ecdsa-p256',
+            key_id: `did:web:${AUTHORITY}#receipt-key-1`,
+            value: 'c2ln',
+          },
+        }),
+      },
+    });
+    const verdict = await svc.auditEvent(ev);
+    // Non-conformance is environmental (can't verify), not a dishonesty flag.
+    expect(verdict.status).toBe('error');
+    expect(verdict.discrepancies.join('\n')).toContain(
+      "receipt signature algorithm 'ecdsa-p256' is unsupported",
+    );
+    // We stop before resolving a key or calling verifyReceipt.
+    expect(didResolver.resolveReceiptKey).not.toHaveBeenCalled();
     expect(verifyReceipt).not.toHaveBeenCalled();
   });
 

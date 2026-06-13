@@ -1,5 +1,6 @@
 import { AcdpCanonicalizer, AcdpProducer, AcdpVerifier } from 'acdp';
 import {
+  explainHashMismatch,
   fingerprintEd25519B64,
   sdkSupportsReceipts,
   verifyBodyOffline,
@@ -37,6 +38,14 @@ describe('receipt-verify (SDK feature detection)', () => {
   it('verifyContentHash (available since 0.1.0) maps SDK throws to {ok:false}', () => {
     const out = verifyContentHash('{"not":"a body"}', 'sha256:' + 'a'.repeat(64));
     expect(out.ok).toBe(false);
+  });
+
+  it('explainHashMismatch returns a non-empty diagnosis on a real mismatch, never throws', () => {
+    // Best-effort diagnostic: a string when the SDK has the helper, null when
+    // not — either way it must not throw into the audit path.
+    const out = explainHashMismatch('{"a":1}', 'sha256:' + 'a'.repeat(64));
+    expect(out === null || typeof out === 'string').toBe(true);
+    if (out !== null) expect(out.length).toBeGreaterThan(0);
   });
 
   // ── Golden path with the real SDK (acdp 0.4.0+) ────────────────────────
