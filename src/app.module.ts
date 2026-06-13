@@ -6,8 +6,11 @@ import { AgentsController } from './agents/agents.controller';
 import { CapabilityController } from './agents/capability.controller';
 import { CapabilityRepository } from './agents/capability.repository';
 import { CapabilityService } from './agents/capability.service';
+import { ReceiptAuditService } from './audit/receipt-audit.service';
+import { RegistryProfileService } from './audit/registry-profile.service';
 import { AuthGuard } from './auth/auth.guard';
 import { AuthModule } from './auth/auth.module';
+import { DidWebResolverService } from './auth/did-web/did-web-resolver.service';
 import { PinnedKeysAdminController } from './auth/pinned-keys-admin.controller';
 import { PinnedKeysModule } from './auth/pinned-keys.module';
 import { ThrottleByUserGuard } from './auth/throttle-by-user.guard';
@@ -44,6 +47,7 @@ import { LineageEdgeRepository } from './storage/lineage-edge.repository';
 import { DataRetentionService } from './retention/data-retention.service';
 import { BanditRouter } from './routing/bandit-router.service';
 import { RoutingController } from './routing/routing.controller';
+import { ReceiptAuditRepository } from './storage/receipt-audit.repository';
 import { RegistryEnrollmentRepository } from './storage/registry-enrollment.repository';
 import { RegistryRepository } from './storage/registry.repository';
 import { RunRepository } from './storage/run.repository';
@@ -131,6 +135,7 @@ import { WebhookService } from './webhooks/webhook.service';
     CapabilityService,
     RegistryRepository,
     RegistryEnrollmentRepository,
+    ReceiptAuditRepository,
     WebhookRepository,
     WebhookDeliveryRepository,
 
@@ -143,6 +148,13 @@ import { WebhookService } from './webhooks/webhook.service';
     DashboardService,
     WebhookService,
     DataRetentionService,
+    // Receipt audit mode (ACDP 0.2.0, RFC-ACDP-0010) — config-gated sweeper.
+    // Gets its OWN DidWebResolverService instance (AuthModule doesn't export
+    // its provider; the resolver's deps are all @Optional so the bare class
+    // token instantiates with the production SSRF policy + default fetcher).
+    DidWebResolverService,
+    RegistryProfileService,
+    ReceiptAuditService,
     {
       provide: BanditRouter,
       inject: [AppConfigService],

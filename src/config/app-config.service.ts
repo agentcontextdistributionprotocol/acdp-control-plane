@@ -217,6 +217,16 @@ export class AppConfigService implements OnModuleInit {
   readonly throttleTtlMs = readNumber('THROTTLE_TTL_MS', 60000);
   readonly throttleLimit = readNumber('THROTTLE_LIMIT', 200);
 
+  // Receipt audit mode (ACDP 0.2.0, RFC-ACDP-0010). When enabled, a
+  // background sweep cross-checks registry receipts on ingested publish
+  // events — structural checks always; full signature verification when the
+  // installed `acdp` SDK carries the receipt API (feature-detected). See
+  // `src/audit/receipt-audit.service.ts`.
+  readonly receiptAuditEnabled = readBoolean('RECEIPT_AUDIT_ENABLED', false);
+  readonly receiptAuditIntervalSeconds = readNumber('RECEIPT_AUDIT_INTERVAL_SECONDS', 300);
+  readonly receiptAuditBatchSize = readNumber('RECEIPT_AUDIT_BATCH_SIZE', 50);
+  readonly receiptAuditLookbackHours = readNumber('RECEIPT_AUDIT_LOOKBACK_HOURS', 24);
+
   // Data retention
   readonly dataRetentionEnabled = readBoolean('DATA_RETENTION_ENABLED', false);
   readonly dataRetentionTtlDays = readNumber('DATA_RETENTION_TTL_DAYS', 30);
@@ -303,6 +313,17 @@ export class AppConfigService implements OnModuleInit {
 
     if (this.dataRetentionEnabled && this.dataRetentionTtlDays < 1) {
       throw new Error('DATA_RETENTION_TTL_DAYS must be >= 1 when retention is enabled');
+    }
+
+    if (this.receiptAuditEnabled) {
+      if (this.receiptAuditIntervalSeconds < 5) {
+        throw new Error(
+          'RECEIPT_AUDIT_INTERVAL_SECONDS must be >= 5 when receipt audit is enabled',
+        );
+      }
+      if (this.receiptAuditBatchSize < 1) {
+        throw new Error('RECEIPT_AUDIT_BATCH_SIZE must be >= 1 when receipt audit is enabled');
+      }
     }
 
     if (this.dbPoolMax < 2) {

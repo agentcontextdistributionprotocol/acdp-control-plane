@@ -39,6 +39,26 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['reason'] as const,
   });
 
+  // ── ACDP 0.2.0 trust signals (RFC-ACDP-0010) ──────────────────────────
+
+  readonly publishReceiptsTotal = new client.Counter({
+    name: 'acdp_publish_receipts_total',
+    help: 'context_published events by registry and registry-receipt presence',
+    labelNames: ['registry_authority', 'receipt'] as const,
+  });
+
+  readonly producerDidMethodTotal = new client.Counter({
+    name: 'acdp_producer_did_method_total',
+    help: 'context_published events by producer DID method (did:web / did:key / other)',
+    labelNames: ['method'] as const,
+  });
+
+  readonly receiptAuditsTotal = new client.Counter({
+    name: 'acdp_receipt_audits_total',
+    help: 'Receipt-audit verdicts by status (second-observer mode)',
+    labelNames: ['status'] as const,
+  });
+
   onModuleInit(): void {
     client.collectDefaultMetrics();
   }

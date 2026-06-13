@@ -36,6 +36,8 @@ export class DashboardService {
       recentRuns,
       byScenario,
       byRegistry,
+      receiptCoverage,
+      didMethods,
     ] = await Promise.all([
       this.database.db
         .select({ n: count() })
@@ -84,6 +86,34 @@ export class DashboardService {
         ORDER BY event_count DESC
         LIMIT 10
       `),
+      // ACDP 0.2.0: registry-receipt coverage per registry (RFC-ACDP-0010).
+      this.database.db.execute(sql`
+        SELECT registry_authority,
+               count(*)::int AS publish_count,
+               count(*) FILTER (WHERE receipt_present)::int AS receipt_count
+        FROM context_events
+        WHERE tenant_id = ${tenantId}
+          AND event_type = 'context_published'
+          AND event_ts > now() - interval '${sql.raw(interval)}'
+        GROUP BY registry_authority
+        ORDER BY publish_count DESC
+        LIMIT 10
+      `),
+      // ACDP 0.2.0: producer DID-method mix (did:web vs did:key).
+      this.database.db.execute(sql`
+        SELECT CASE
+                 WHEN agent_id LIKE 'did:web:%' THEN 'did:web'
+                 WHEN agent_id LIKE 'did:key:%' THEN 'did:key'
+                 ELSE 'other'
+               END AS method,
+               count(*)::int AS publish_count
+        FROM context_events
+        WHERE tenant_id = ${tenantId}
+          AND event_type = 'context_published'
+          AND event_ts > now() - interval '${sql.raw(interval)}'
+        GROUP BY 1
+        ORDER BY publish_count DESC
+      `),
     ]);
 
     return {
@@ -94,6 +124,8 @@ export class DashboardService {
       recentRuns,
       byScenario: byScenario.rows,
       byRegistry: byRegistry.rows,
+      receiptCoverage: receiptCoverage.rows,
+      didMethods: didMethods.rows,
     };
   }
 }

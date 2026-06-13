@@ -21,6 +21,7 @@ export async function truncateAll(pool?: Pool): Promise<void> {
             webhook_deliveries,
             webhooks,
             lineage_edges,
+            receipt_audits,
             context_events,
             agents,
             registries,
