@@ -20,3 +20,14 @@ export interface ResolvedKey {
    */
   publicKeyB64: string;
 }
+
+/**
+ * A resolved registry **receipt** signing key (RFC-ACDP-0010 §9). Same
+ * raw-bytes shape as {@link ResolvedKey} plus the lifecycle signal: a
+ * retired receipt key (retained in `verificationMethod` but no longer in
+ * `assertionMethod`) resolves with `historical: true` — the receipt still
+ * verifies, but as *historically authorized* rather than current.
+ */
+export interface ResolvedReceiptKey extends ResolvedKey {
+  historical: boolean;
+}

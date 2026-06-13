@@ -110,10 +110,18 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
       }),
     };
     didResolver = {
+      // Producer key (did:web): strict assertionMethod gate.
       resolveKey: jest.fn().mockResolvedValue({
+        keyId: 'did:web:agent.example#key-1',
+        algorithm: 'ed25519',
+        publicKeyB64: 'cHJvZHVjZXJrZXk=',
+      }),
+      // Registry receipt key: RFC-ACDP-0010 §9 lifecycle, carries `historical`.
+      resolveReceiptKey: jest.fn().mockResolvedValue({
         keyId: `did:web:${AUTHORITY}#receipt-key-1`,
         algorithm: 'ed25519',
         publicKeyB64: 'cmVnaXN0cnlrZXk=',
+        historical: false,
       }),
     };
     svc = new ReceiptAuditService(
@@ -144,9 +152,15 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
     );
     // Hash independently recomputed before the echoed string is trusted.
     expect(verifyContentHash).toHaveBeenCalledWith(JSON.stringify(makeBody()), BODY_HASH);
-    // Producer key resolved from ITS did:web document, then fingerprinted.
+    // Producer key resolved from ITS did:web document (strict gate), fingerprinted.
     expect(didResolver.resolveKey).toHaveBeenCalledWith(
       'did:web:agent.example#key-1',
+      'ed25519',
+    );
+    // Registry receipt key resolved through the §9 lifecycle path, NOT the
+    // strict producer path.
+    expect(didResolver.resolveReceiptKey).toHaveBeenCalledWith(
+      `did:web:${AUTHORITY}#receipt-key-1`,
       'ed25519',
     );
     // Receipt verified against the registry key and the recomputed inputs.
@@ -157,6 +171,34 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
       BODY_HASH,
       FP,
     );
+  });
+
+  it('reports verified_historical when the receipt key is retired (§9 lifecycle)', async () => {
+    didResolver.resolveReceiptKey.mockResolvedValue({
+      keyId: `did:web:${AUTHORITY}#receipt-key-1`,
+      algorithm: 'ed25519',
+      publicKeyB64: 'cmVnaXN0cnlrZXk=',
+      historical: true, // rotated out of assertionMethod, kept in verificationMethod
+    });
+    const verdict = await svc.auditEvent(makeEvent());
+    expect(verdict.status).toBe('verified_historical');
+    expect(verdict.discrepancies).toEqual([]);
+    // verifyReceipt still runs — the receipt is cryptographically valid.
+    expect(verifyReceipt).toHaveBeenCalled();
+  });
+
+  it('records an error verdict when a retired key is gone from verificationMethod entirely', async () => {
+    // The §9 helper fails closed (key_not_found) when full removal — the
+    // registry's compromise-revocation signal — has happened.
+    didResolver.resolveReceiptKey.mockRejectedValue(
+      Object.assign(new Error('PICK: key_not_found: ...'), { code: 'key_not_found' }),
+    );
+    const verdict = await svc.auditEvent(makeEvent());
+    expect(verdict.status).toBe('error');
+    expect(verdict.discrepancies.join('\n')).toContain(
+      'unverified: registry receipt key resolution failed',
+    );
+    expect(verifyReceipt).not.toHaveBeenCalled();
   });
 
   it('flags a tampered receipt the SDK rejects (acceptance-criteria negative)', async () => {
@@ -215,9 +257,11 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
     const verdict = await svc.auditEvent(makeEvent({ agentId: didKey }));
     expect(verdict.status).toBe('verified');
     expect(verifyBodyOffline).toHaveBeenCalledWith(JSON.stringify(body));
-    // Only the REGISTRY receipt key is resolved; the producer needs no DID doc.
-    expect(didResolver.resolveKey).toHaveBeenCalledTimes(1);
-    expect(didResolver.resolveKey).toHaveBeenCalledWith(
+    // did:key producer needs no DID-document resolution at all; only the
+    // registry receipt key is resolved (via the §9 lifecycle path).
+    expect(didResolver.resolveKey).not.toHaveBeenCalled();
+    expect(didResolver.resolveReceiptKey).toHaveBeenCalledTimes(1);
+    expect(didResolver.resolveReceiptKey).toHaveBeenCalledWith(
       `did:web:${AUTHORITY}#receipt-key-1`,
       'ed25519',
     );
@@ -246,13 +290,7 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
   });
 
   it('returns an error verdict when the registry receipt key cannot be resolved', async () => {
-    didResolver.resolveKey
-      .mockResolvedValueOnce({
-        keyId: 'did:web:agent.example#key-1',
-        algorithm: 'ed25519',
-        publicKeyB64: 'cHJvZHVjZXJrZXk=',
-      })
-      .mockRejectedValueOnce(new Error('registry did.json 404'));
+    didResolver.resolveReceiptKey.mockRejectedValue(new Error('registry did.json 404'));
     const verdict = await svc.auditEvent(makeEvent());
     expect(verdict.status).toBe('error');
     expect(verdict.discrepancies.join('\n')).toContain(

@@ -33,7 +33,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { AcdpDid, AcdpDidDocument } from 'acdp';
-import { ResolvedKey } from './did-document';
+import { ResolvedKey, ResolvedReceiptKey } from './did-document';
 import { SsrfPolicy, SsrfPolicyError } from './ssrf-guard';
 
 const MAX_BODY_BYTES = 64 * 1024;        // RFC-ACDP-0006 §7.3
@@ -188,6 +188,56 @@ export class DidWebResolverService implements OnModuleDestroy {
         keyId: k.keyId,
         algorithm: k.algorithm as 'ed25519' | 'ecdsa-p256',
         publicKeyB64: k.publicKeyB64,
+      };
+    } catch (e) {
+      throw new DidResolutionError('PICK', bindingErrDetail(e));
+    }
+  }
+
+  /**
+   * Resolve a registry **receipt** signing key, applying the
+   * RFC-ACDP-0010 §9 lifecycle instead of the `assertionMethod` gate
+   * (`AcdpDidDocument.receiptKeyForAlgorithm`): a retired receipt key
+   * retained in `verificationMethod` still resolves — with
+   * `historical: true` — so a receipt signed before a key rotation stays
+   * verifiable as *historically authorized*. A key gone from
+   * `verificationMethod` entirely still fails closed (the registry's
+   * compromise-revocation signal).
+   *
+   * This is the ONLY caller that relaxes the assertionMethod gate, and
+   * only for the registry's receipt key. Producer keys and auth
+   * challenges resolve through {@link resolveKey} (publish-time
+   * authorization still requires `assertionMethod`).
+   */
+  async resolveReceiptKey(
+    didUrl: string,
+    requestedAlg: 'ed25519' | 'ecdsa-p256',
+  ): Promise<ResolvedReceiptKey> {
+    const did = AcdpDid.stripFragment(didUrl);
+    let url: string;
+    try {
+      url = AcdpDid.webToUrl(did);
+    } catch (e) {
+      throw new DidResolutionError('URL', bindingErrDetail(e));
+    }
+
+    try {
+      this.ssrf.checkUrl(url);
+    } catch (e) {
+      throw new DidResolutionError(
+        'SSRF',
+        e instanceof SsrfPolicyError ? e.message : String(e),
+      );
+    }
+
+    const doc = await this.resolveDocument(did, url);
+    try {
+      const k = doc.receiptKeyForAlgorithm(didUrl, requestedAlg);
+      return {
+        keyId: k.keyId,
+        algorithm: k.algorithm as 'ed25519' | 'ecdsa-p256',
+        publicKeyB64: k.publicKeyB64,
+        historical: k.historical,
       };
     } catch (e) {
       throw new DidResolutionError('PICK', bindingErrDetail(e));
