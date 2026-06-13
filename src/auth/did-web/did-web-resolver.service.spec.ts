@@ -191,6 +191,55 @@ describe('DidWebResolverService', () => {
       code: 'PICK',
     });
   });
+
+  // ── resolveReceiptKey: RFC-ACDP-0010 §9 lifecycle ───────────────────────
+  describe('resolveReceiptKey', () => {
+    // A registry receipt key kept in verificationMethod but rotated out of
+    // assertionMethod (the §9 retirement state).
+    function retiredKeyDoc(): unknown {
+      return {
+        id: DID,
+        verificationMethod: [
+          {
+            id: KEY_ID,
+            controller: DID,
+            type: 'Ed25519VerificationKey2020',
+            publicKeyMultibase: ED25519_MB,
+          },
+        ],
+        assertionMethod: [], // rotated out — no longer current
+      };
+    }
+
+    it('resolves a current receipt key with historical=false', async () => {
+      const fetcher = new StubFetcher(() => jsonResp(goodDoc()));
+      const svc = new DidWebResolverService(new TestSsrfPolicy(), fetcher);
+      const key = await svc.resolveReceiptKey(KEY_ID, 'ed25519');
+      expect(key.keyId).toBe(KEY_ID);
+      expect(key.historical).toBe(false);
+      expect(Buffer.from(key.publicKeyB64, 'base64').length).toBe(32);
+    });
+
+    it('resolves a retired (verificationMethod-only) key with historical=true', async () => {
+      const fetcher = new StubFetcher(() => jsonResp(retiredKeyDoc()));
+      const svc = new DidWebResolverService(new TestSsrfPolicy(), fetcher);
+      const key = await svc.resolveReceiptKey(KEY_ID, 'ed25519');
+      expect(key.historical).toBe(true);
+      // Still a usable key — the receipt verifies, just as historically authorized.
+      expect(key.keyId).toBe(KEY_ID);
+      expect(Buffer.from(key.publicKeyB64, 'base64').length).toBe(32);
+    });
+
+    it('fails closed (PICK) when the key is gone from verificationMethod entirely', async () => {
+      const fetcher = new StubFetcher(() =>
+        jsonResp({ id: DID, verificationMethod: [], assertionMethod: [] }),
+      );
+      const svc = new DidWebResolverService(new TestSsrfPolicy(), fetcher);
+      await expect(svc.resolveReceiptKey(KEY_ID, 'ed25519')).rejects.toMatchObject({
+        code: 'PICK',
+      });
+    });
+  });
 });
 
 describe('DefaultDidFetcher', () => {

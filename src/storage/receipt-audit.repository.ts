@@ -14,6 +14,12 @@ import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 export interface RunTrustSummary {
   audited: number;
   verified: number;
+  /**
+   * Receipts that verified against a *retired* registry key (RFC-ACDP-0010
+   * §9 historically authorized) — cryptographically valid, but signed by a
+   * key since rotated out of `assertionMethod`.
+   */
+  verifiedHistorical: number;
   structural: number;
   noReceipt: number;
   errors: number;
@@ -83,6 +89,7 @@ export class ReceiptAuditRepository {
     return {
       audited: rows.length,
       verified: byStatus('verified'),
+      verifiedHistorical: byStatus('verified_historical'),
       structural: byStatus('structural'),
       noReceipt: byStatus('no_receipt'),
       errors: byStatus('error'),

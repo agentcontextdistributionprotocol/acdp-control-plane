@@ -26,16 +26,20 @@
  * per run via GET /runs/:runId (`trust` member) and the
  * `acdp_receipt_audits_total{status}` metric.
  *
- * Statuses: `verified` (full crypto), `structural` (checks passed but
- * signature verification unavailable/incomplete), `discrepancy` (≥1 trust
- * flag), `no_receipt` (absent, registry doesn't advertise the profile — or
- * its capabilities were unreadable), `error` (audit could not complete).
+ * Statuses: `verified` (full crypto), `verified_historical` (full crypto, but
+ * the receipt was signed by a *retired* registry key — retained in
+ * `verificationMethod`, no longer in `assertionMethod` — so it is
+ * RFC-ACDP-0010 §9 historically authorized rather than current), `structural`
+ * (checks passed but signature verification unavailable/incomplete),
+ * `discrepancy` (≥1 trust flag), `no_receipt` (absent, registry doesn't
+ * advertise the profile — or its capabilities were unreadable), `error`
+ * (audit could not complete).
  *
- * Known limitation: the binding's `keyForAlgorithm` enforces
- * `assertionMethod` membership, so a receipt signed by a *retired* registry
- * key (verificationMethod-only per the RFC-ACDP-0010 lifecycle) resolves as
- * an error verdict, not a discrepancy — the historical-key audit path needs
- * an SDK helper that relaxes the assertionMethod gate for receipts.
+ * Retired registry receipt keys are resolved through
+ * `DidWebResolverService.resolveReceiptKey` (the SDK's
+ * `receiptKeyForAlgorithm`, RFC-ACDP-0010 §9 lifecycle) — a key rotated out
+ * of `assertionMethod` still verifies, as `verified_historical`. A key gone
+ * from `verificationMethod` entirely still fails closed.
  */
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { AcdpDid } from 'acdp';
@@ -61,11 +65,28 @@ const ADVISORY_LOCK_KEY = 'acdp-cp-receipt-audit';
 const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
 
 interface Verdict {
-  status: 'verified' | 'structural' | 'discrepancy' | 'no_receipt' | 'error';
+  status:
+    | 'verified'
+    | 'verified_historical'
+    | 'structural'
+    | 'discrepancy'
+    | 'no_receipt'
+    | 'error';
   /** Trust flags (registry dishonesty signals) + `unverified:`-prefixed notes. */
   discrepancies: string[];
   receiptCreatedAt: string | null;
   skewMs: number | null;
+}
+
+/** Outcome of the cryptographic verification phase. */
+interface CryptoOutcome {
+  /** True when every signature/cross-check actually executed and passed. */
+  ran: boolean;
+  /**
+   * True when the receipt verified against a *retired* registry key
+   * (RFC-ACDP-0010 §9 historically authorized). Only meaningful when `ran`.
+   */
+  historical: boolean;
 }
 
 @Injectable()
@@ -241,15 +262,17 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     }
 
     // ── Cryptographic verification ─────────────────────────────────────────
-    const cryptoRan = await this.verifyCryptographically(ev, receipt, flags, notes);
+    const crypto = await this.verifyCryptographically(ev, receipt, flags, notes);
 
     const status: Verdict['status'] =
       flags.length > 0
         ? 'discrepancy'
         : notes.length > 0
           ? 'error'
-          : cryptoRan
-            ? 'verified'
+          : crypto.ran
+            ? crypto.historical
+              ? 'verified_historical'
+              : 'verified'
             : 'structural';
     return {
       status,
@@ -260,20 +283,23 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Run the SDK's full receipt verification. Returns true only when every
-   * cryptographic check actually executed and passed; environmental
-   * failures append an `unverified:` note, dishonesty appends a flag.
+   * Run the SDK's full receipt verification. `ran` is true only when every
+   * cryptographic check actually executed and passed; `historical` reports
+   * whether the registry receipt key was a retired (verificationMethod-only)
+   * key. Environmental failures append an `unverified:` note, dishonesty
+   * appends a flag.
    */
   private async verifyCryptographically(
     ev: ContextEvent,
     receipt: Record<string, unknown>,
     flags: string[],
     notes: string[],
-  ): Promise<boolean> {
-    if (!sdkSupportsReceipts()) return false;
+  ): Promise<CryptoOutcome> {
+    const notRun: CryptoOutcome = { ran: false, historical: false };
+    if (!sdkSupportsReceipts()) return notRun;
     if (!ev.ctxId) {
       notes.push('unverified: event has no ctx_id to fetch');
-      return false;
+      return notRun;
     }
 
     const registry = await this.registryRepo.findByAuthority(
@@ -282,7 +308,7 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     );
     if (!registry?.baseUrl) {
       notes.push(`unverified: no base_url known for '${ev.registryAuthority}'`);
-      return false;
+      return notRun;
     }
 
     // Fetch the FullContext through the SSRF gate (public-only, no creds).
@@ -292,19 +318,19 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
       const resp = await this.federationClient.get(url);
       if (resp.status < 200 || resp.status >= 300) {
         notes.push(`unverified: context fetch returned HTTP ${resp.status}`);
-        return false;
+        return notRun;
       }
       const full = JSON.parse(resp.body) as { body?: unknown };
       if (full.body === null || typeof full.body !== 'object') {
         notes.push('unverified: retrieval response has no body member');
-        return false;
+        return notRun;
       }
       body = full.body as Record<string, unknown>;
     } catch (err) {
       notes.push(
         `unverified: context fetch failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return false;
+      return notRun;
     }
 
     // Independently recompute the body hash. On success the echoed string is
@@ -314,18 +340,18 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     const echoedHash = strOf(body['content_hash']);
     if (!echoedHash) {
       notes.push('unverified: retrieved body has no content_hash');
-      return false;
+      return notRun;
     }
     const hashCheck = verifyContentHash(bodyJson, echoedHash);
     if (!hashCheck.ok) {
       flags.push(`content_hash_mismatch: ${hashCheck.reason}`);
-      return false;
+      return notRun;
     }
 
     // Producer key fingerprint — resolved INDEPENDENTLY of the registry's
     // claim wherever possible (that independence is the audit's value).
     const producerFp = await this.resolveProducerFingerprint(ev, body, receipt, flags, notes);
-    if (producerFp === null) return false;
+    if (producerFp === null) return notRun;
 
     // Registry receipt key: must belong to the source registry's did:web
     // identity; resolved from its DID document via the shared resolver.
@@ -336,23 +362,28 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     const receiptKeyId = strOf(sig?.['key_id']);
     if (!receiptKeyId) {
       flags.push('receipt_invalid: signature.key_id missing');
-      return false;
+      return notRun;
     }
     if (AcdpDid.stripFragment(receiptKeyId) !== `did:web:${ev.registryAuthority}`) {
       flags.push(
         `receipt_key_foreign_did: '${receiptKeyId}' is not a key of 'did:web:${ev.registryAuthority}'`,
       );
-      return false;
+      return notRun;
     }
+    // Registry receipt key uses the RFC-ACDP-0010 §9 lifecycle (NOT the
+    // assertionMethod gate): a key rotated out of assertionMethod but kept in
+    // verificationMethod still verifies — reported as historically authorized.
     let registryKeyB64: string;
+    let historical: boolean;
     try {
-      const resolved = await this.didResolver.resolveKey(receiptKeyId, 'ed25519');
+      const resolved = await this.didResolver.resolveReceiptKey(receiptKeyId, 'ed25519');
       registryKeyB64 = resolved.publicKeyB64;
+      historical = resolved.historical;
     } catch (err) {
       notes.push(
         `unverified: registry receipt key resolution failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return false;
+      return notRun;
     }
 
     const result = verifyReceipt(
@@ -364,9 +395,9 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     );
     if (!result.ok) {
       flags.push(`receipt_invalid: ${result.reason}`);
-      return false;
+      return notRun;
     }
-    return true;
+    return { ran: true, historical };
   }
 
   /**
