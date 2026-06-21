@@ -66,6 +66,52 @@ export class RunRepository {
       .where(and(eq(runs.runId, runId), eq(runs.tenantId, tenantId)));
   }
 
+  /**
+   * Record a run's start from the playground's `/runs/started` notification.
+   * Unlike {@link upsertFromEvent} (driven by registry webhooks, which never
+   * carry the scenario), this knows the authoritative `scenarioId`.
+   *
+   * If the run row doesn't exist yet, insert it in 'running' state. If it was
+   * already created by an earlier ingest event — where the scenario could only
+   * be 'unknown' — enrich it with the real scenario / startedAt / inputs
+   * WITHOUT clobbering contexts_count or registries accumulated by ingest.
+   */
+  async recordStart(
+    runId: string,
+    scenarioId: string,
+    startedAt?: string,
+    inputs?: Record<string, unknown>,
+    tenantId: string = DEFAULT_TENANT_ID,
+  ): Promise<void> {
+    const existing = await this.database.db
+      .select({ runId: runs.runId })
+      .from(runs)
+      .where(and(eq(runs.runId, runId), eq(runs.tenantId, tenantId)))
+      .limit(1);
+
+    if (existing.length === 0) {
+      await this.database.db.insert(runs).values({
+        runId,
+        tenantId,
+        scenarioId,
+        status: 'running',
+        ...(startedAt ? { startedAt } : {}),
+        ...(inputs ? { inputs } : {}),
+      });
+      return;
+    }
+
+    await this.database.db
+      .update(runs)
+      .set({
+        scenarioId,
+        ...(startedAt ? { startedAt } : {}),
+        ...(inputs ? { inputs } : {}),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(and(eq(runs.runId, runId), eq(runs.tenantId, tenantId)));
+  }
+
   async markComplete(
     runId: string,
     status: string,

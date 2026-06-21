@@ -2,28 +2,40 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   MessageEvent,
   NotFoundException,
   Param,
   Post,
   Query,
+  RawBodyRequest,
   Req,
   Sse,
+  UnauthorizedException,
   ValidationPipe,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
 import { Observable } from 'rxjs';
+import { Public } from '../auth/public.decorator';
 import { AppConfigService } from '../config/app-config.service';
 import { LineageDag } from '../contracts/acdp';
 import { ListEventsQueryDto } from '../dto/list-events-query.dto';
 import { ListRunsQueryDto } from '../dto/list-runs-query.dto';
 import { RunCompleteDto } from '../dto/run-complete.dto';
+import { RunStartedDto } from '../dto/run-started.dto';
 import { StreamHubService } from '../events/stream-hub.service';
+import { verifyWebhookSignature } from '../ingest/hmac';
 import { CheckPolicy } from '../policy/check-policy.decorator';
 import { ContextEventRepository } from '../storage/context-event.repository';
 import { LineageEdgeRepository } from '../storage/lineage-edge.repository';
-import { tenantOf, TenantedRequest } from '../tenant/request-tenant';
+import {
+  assertNotReservedTenant,
+  tenantOf,
+  TenantedRequest,
+} from '../tenant/request-tenant';
+import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { RunsService } from './runs.service';
 
 @ApiTags('runs')
@@ -152,16 +164,76 @@ export class RunsController {
     });
   }
 
-  @Post(':runId/complete')
+  @Post('started')
+  @Public()
   @HttpCode(204)
-  @CheckPolicy('run.start')
-  @ApiOperation({ summary: 'Playground notifies that the run is complete.' })
+  @ApiOperation({
+    summary:
+      'Playground notifies that a run has started (records scenario attribution). Authenticated by HMAC-SHA256.',
+  })
+  async markStarted(
+    @Req() req: RawBodyRequest<Request>,
+    @Body(new ValidationPipe({ transform: true, whitelist: true }))
+    body: RunStartedDto,
+    @Headers('x-acdp-signature') signature?: string,
+    @Headers('x-tenant-id') tenantHeader?: string,
+  ): Promise<void> {
+    this.verifyWebhookOrThrow(req, signature);
+    await this.runsService.recordStart(
+      body.run_id,
+      body.scenario_id,
+      body.started_at,
+      body.inputs,
+      this.tenantFromHeader(tenantHeader),
+    );
+  }
+
+  @Post(':runId/complete')
+  @Public()
+  @HttpCode(204)
+  @ApiOperation({
+    summary:
+      'Playground notifies that the run is complete. Authenticated by HMAC-SHA256.',
+  })
   async markComplete(
+    @Req() req: RawBodyRequest<Request>,
     @Param('runId') runId: string,
     @Body(new ValidationPipe({ transform: true, whitelist: true }))
     body: RunCompleteDto,
-    @Req() req: TenantedRequest,
+    @Headers('x-acdp-signature') signature?: string,
+    @Headers('x-tenant-id') tenantHeader?: string,
   ): Promise<void> {
-    await this.runsService.markComplete(runId, body.status, body.result, tenantOf(req));
+    this.verifyWebhookOrThrow(req, signature);
+    await this.runsService.markComplete(
+      runId,
+      body.status,
+      body.result,
+      this.tenantFromHeader(tenantHeader),
+    );
+  }
+
+  // The playground authenticates run-notify calls the same way it signs
+  // registry webhooks it forwards to /ingest/acdp: an HMAC-SHA256 of the raw
+  // body in `X-ACDP-Signature`, with NO bearer token. These routes are
+  // therefore `@Public()` (skipping the api-key AuthGuard) and verify the
+  // shared WEBHOOK_SECRET here, mirroring IngestController.
+  private verifyWebhookOrThrow(
+    req: RawBodyRequest<Request>,
+    signature?: string,
+  ): void {
+    const raw = req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
+    if (!verifyWebhookSignature(raw, signature ?? '', this.config.webhookSecret)) {
+      throw new UnauthorizedException('Invalid webhook signature');
+    }
+  }
+
+  // Tenant attribution for HMAC-authenticated notifications: the playground
+  // stamps `X-Tenant-Id` for tenant-bound scenarios; everything else lands in
+  // the default bucket. `default` may never be asserted explicitly (reserved).
+  private tenantFromHeader(tenantHeader?: string): string {
+    const tenant = tenantHeader?.trim();
+    if (!tenant) return DEFAULT_TENANT_ID;
+    assertNotReservedTenant(tenant, 'X-Tenant-Id header');
+    return tenant;
   }
 }

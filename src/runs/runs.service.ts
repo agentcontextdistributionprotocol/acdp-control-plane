@@ -58,6 +58,21 @@ export class RunsService {
     return this.runRepo.existsForOtherTenant(runId, tenantId);
   }
 
+  /**
+   * Record a run's start (scenario attribution) from the playground's
+   * HMAC-authenticated `/runs/started` notification. Idempotent: safe to call
+   * before or after the first ingest event creates the run row.
+   */
+  async recordStart(
+    runId: string,
+    scenarioId: string,
+    startedAt?: string,
+    inputs?: Record<string, unknown>,
+    tenantId: string = DEFAULT_TENANT_ID,
+  ): Promise<void> {
+    await this.runRepo.recordStart(runId, scenarioId, startedAt, inputs, tenantId);
+  }
+
   async markComplete(
     runId: string,
     status: 'completed' | 'failed' | 'cancelled',
