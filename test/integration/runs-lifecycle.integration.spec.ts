@@ -46,10 +46,11 @@ describe('Run lifecycle (integration)', () => {
     const runId = 'run-lc-2';
     await ctx.client.ingest(event(), { runId, secret: SECRET });
 
-    const completeRes = await ctx.client.markRunComplete(runId, {
-      status: 'completed',
-      result: { answer: 42 },
-    });
+    const completeRes = await ctx.client.markRunComplete(
+      runId,
+      { status: 'completed', result: { answer: 42 } },
+      { secret: SECRET },
+    );
     expect(completeRes.status).toBe(204);
 
     const run = (await ctx.client.getRun(runId)) as Record<string, unknown>;
@@ -58,11 +59,59 @@ describe('Run lifecycle (integration)', () => {
     expect(run.completedAt).not.toBeNull();
   });
 
+  it('POST /runs/started attributes the scenario, overriding the ingest "unknown" fallback', async () => {
+    const runId = 'run-lc-started';
+    // The first ingest event creates the run with scenario_id='unknown'
+    // (registry webhooks don't carry the scenario).
+    await ctx.client.ingest(event({ scenario_id: undefined }), { runId, secret: SECRET });
+    const before = (await ctx.client.getRun(runId)) as Record<string, unknown>;
+    expect(before.scenarioId).toBe('unknown');
+
+    const startedRes = await ctx.client.markRunStarted(
+      { run_id: runId, scenario_id: 's1_single_publish', inputs: { topic: 'demo' } },
+      { secret: SECRET },
+    );
+    expect(startedRes.status).toBe(204);
+
+    const after = (await ctx.client.getRun(runId)) as Record<string, unknown>;
+    expect(after.scenarioId).toBe('s1_single_publish');
+    // Enrichment must not clobber ingest-accumulated counters.
+    expect(after.contextsCount).toBe(1);
+  });
+
+  it('POST /runs/started creates the run when it notifies before any ingest event', async () => {
+    const runId = 'run-lc-started-first';
+    const startedRes = await ctx.client.markRunStarted(
+      { run_id: runId, scenario_id: 's3_fanout' },
+      { secret: SECRET },
+    );
+    expect(startedRes.status).toBe(204);
+
+    const run = (await ctx.client.getRun(runId)) as Record<string, unknown>;
+    expect(run.scenarioId).toBe('s3_fanout');
+    expect(run.status).toBe('running');
+  });
+
+  it('rejects run-notify calls with a bad / missing HMAC signature (401)', async () => {
+    const runId = 'run-lc-badsig';
+    await ctx.client.ingest(event(), { runId, secret: SECRET });
+
+    const badSig = await ctx.client.markRunComplete(
+      runId,
+      { status: 'completed' },
+      { signatureOverride: 'sha256=deadbeef' },
+    );
+    expect(badSig.status).toBe(401);
+
+    const noSig = await ctx.client.markRunStarted({ run_id: runId, scenario_id: 'x' });
+    expect(noSig.status).toBe(401);
+  });
+
   it('GET /runs filters by status and scenarioId, paginates', async () => {
     await ctx.client.ingest(event({ scenario_id: 'a' }), { runId: 'r-a-1', secret: SECRET });
     await ctx.client.ingest(event({ scenario_id: 'a' }), { runId: 'r-a-2', secret: SECRET });
     await ctx.client.ingest(event({ scenario_id: 'b' }), { runId: 'r-b-1', secret: SECRET });
-    await ctx.client.markRunComplete('r-a-1', { status: 'completed' });
+    await ctx.client.markRunComplete('r-a-1', { status: 'completed' }, { secret: SECRET });
 
     const byScenario = (await ctx.client.listRuns({ scenarioId: 'a' })) as {
       data: unknown[];

@@ -69,11 +69,44 @@ export class TestClient {
     return this.requestJson('GET', `/runs/${encodeURIComponent(runId)}/events`, { query });
   }
 
+  /**
+   * Notify a run start. HMAC-authenticated like {@link ingest}: signs the body
+   * with `secret` and attaches `x-acdp-signature`.
+   */
+  async markRunStarted(
+    payload: { run_id: string; scenario_id: string; started_at?: string; inputs?: Record<string, unknown> },
+    opts: { secret?: string; signatureOverride?: string; tenantId?: string } = {},
+  ) {
+    return this.signedRunPost('/runs/started', payload, opts);
+  }
+
   async markRunComplete(
     runId: string,
     body: { status: 'completed' | 'failed' | 'cancelled'; result?: Record<string, unknown> },
+    opts: { secret?: string; signatureOverride?: string; tenantId?: string } = {},
   ) {
-    return this.requestRaw('POST', `/runs/${encodeURIComponent(runId)}/complete`, { body });
+    return this.signedRunPost(`/runs/${encodeURIComponent(runId)}/complete`, body, opts);
+  }
+
+  /**
+   * Shared helper for the HMAC-authenticated run-notify routes (mirrors how
+   * the playground signs the calls it makes to the control plane).
+   */
+  private async signedRunPost(
+    path: string,
+    payload: Record<string, unknown>,
+    opts: { secret?: string; signatureOverride?: string; tenantId?: string },
+  ) {
+    const body = JSON.stringify(payload);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (opts.tenantId) headers['x-tenant-id'] = opts.tenantId;
+    if (opts.signatureOverride !== undefined) {
+      headers['x-acdp-signature'] = opts.signatureOverride;
+    } else if (opts.secret) {
+      const sig = createHmac('sha256', opts.secret).update(body).digest('hex');
+      headers['x-acdp-signature'] = `sha256=${sig}`;
+    }
+    return this.requestRaw('POST', path, { rawBody: body, headers });
   }
 
   // ── Events ────────────────────────────────────────────────────
