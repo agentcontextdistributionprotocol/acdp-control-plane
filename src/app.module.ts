@@ -6,6 +6,8 @@ import { AgentsController } from './agents/agents.controller';
 import { CapabilityController } from './agents/capability.controller';
 import { CapabilityRepository } from './agents/capability.repository';
 import { CapabilityService } from './agents/capability.service';
+import { CheckpointWitnessPollerService } from './audit/checkpoint-witness.service';
+import { LogInclusionAuditService } from './audit/log-inclusion-audit.service';
 import { ReceiptAuditService } from './audit/receipt-audit.service';
 import { RegistryProfileService } from './audit/registry-profile.service';
 import { AuthGuard } from './auth/auth.guard';
@@ -48,6 +50,8 @@ import { LineageEdgeRepository } from './storage/lineage-edge.repository';
 import { DataRetentionService } from './retention/data-retention.service';
 import { BanditRouter } from './routing/bandit-router.service';
 import { RoutingController } from './routing/routing.controller';
+import { LogInclusionAuditRepository } from './storage/log-inclusion-audit.repository';
+import { LogWitnessRepository } from './storage/log-witness.repository';
 import { ReceiptAuditRepository } from './storage/receipt-audit.repository';
 import { RegistryEnrollmentRepository } from './storage/registry-enrollment.repository';
 import { RegistryRepository } from './storage/registry.repository';
@@ -138,6 +142,8 @@ import { WebhookService } from './webhooks/webhook.service';
     RegistryRepository,
     RegistryEnrollmentRepository,
     ReceiptAuditRepository,
+    LogWitnessRepository,
+    LogInclusionAuditRepository,
     WebhookRepository,
     WebhookDeliveryRepository,
 
@@ -157,6 +163,12 @@ import { WebhookService } from './webhooks/webhook.service';
     DidWebResolverService,
     RegistryProfileService,
     ReceiptAuditService,
+    // ACDP 0.3.0 Tier 3 (RFC-ACDP-0012): transparency-log checkpoint witness
+    // + receipt↔log inclusion cross-check. Both config-gated sweepers, same
+    // shared SSRF-gated federation client / DID resolver / profile probe as
+    // the receipt audit.
+    CheckpointWitnessPollerService,
+    LogInclusionAuditService,
     {
       provide: BanditRouter,
       inject: [AppConfigService],

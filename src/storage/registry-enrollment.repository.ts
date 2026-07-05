@@ -66,6 +66,18 @@ export class RegistryEnrollmentRepository {
       .orderBy(desc(registryEnrollments.updatedAt));
   }
 
+  /**
+   * All ENABLED enrollments across every tenant — background pollers (the
+   * checkpoint witness) iterate these; each row carries its own tenantId.
+   */
+  async listAllEnabled(): Promise<RegistryEnrollment[]> {
+    return this.database.db
+      .select()
+      .from(registryEnrollments)
+      .where(eq(registryEnrollments.enabled, true))
+      .orderBy(registryEnrollments.authority);
+  }
+
   /** Count of all enrollments — used to decide whether enrollment is in effect. */
   async count(): Promise<number> {
     const rows = await this.database.db

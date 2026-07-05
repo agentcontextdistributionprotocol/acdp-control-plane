@@ -139,6 +139,10 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
   // Receipt audit stays off in the harness (its sweep would race tests);
   // suites that exercise it call ReceiptAuditService.sweep() directly.
   delete process.env.RECEIPT_AUDIT_ENABLED;
+  // Same for the Tier-3 transparency-log sweeps: suites drive
+  // CheckpointWitnessPollerService.sweep() / LogInclusionAuditService.sweep().
+  delete process.env.LOG_WITNESS_ENABLED;
+  delete process.env.LOG_INCLUSION_AUDIT_ENABLED;
   process.env.OTEL_ENABLED = 'false';
   process.env.LOG_LEVEL = 'warn';
   process.env.PLAYGROUND_URL = '';

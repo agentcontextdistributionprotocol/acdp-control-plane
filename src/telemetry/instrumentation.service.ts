@@ -59,6 +59,26 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['status'] as const,
   });
 
+  // ── ACDP 0.3.0 Tier 3 transparency-log witness (RFC-ACDP-0012) ────────
+
+  readonly logWitnessChecksTotal = new client.Counter({
+    name: 'acdp_log_witness_checks_total',
+    help: 'Checkpoint-witness passes by result (witnessed / alert / error)',
+    labelNames: ['result'] as const,
+  });
+
+  readonly logWitnessAlertsTotal = new client.Counter({
+    name: 'acdp_log_witness_alerts_total',
+    help: 'Transparency-log witness alerts by reason (root rewrite, split view, ...)',
+    labelNames: ['reason'] as const,
+  });
+
+  readonly logInclusionAuditsTotal = new client.Counter({
+    name: 'acdp_log_inclusion_audits_total',
+    help: 'Receipt-vs-log inclusion cross-check verdicts by status',
+    labelNames: ['status'] as const,
+  });
+
   onModuleInit(): void {
     client.collectDefaultMetrics();
   }
