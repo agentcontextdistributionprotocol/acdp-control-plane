@@ -33,6 +33,7 @@ export class DashboardService {
       totalRuns,
       totalContexts,
       totalAgents,
+      retractedContexts,
       recentRuns,
       byScenario,
       byRegistry,
@@ -62,6 +63,19 @@ export class DashboardService {
             gt(contextEvents.eventTs, cutoff),
           ),
         ),
+      // ACDP 0.3.0 (RFC-ACDP-0013): of the contexts published in the window,
+      // how many are CURRENTLY retracted. DISTINCT because retraction is
+      // per-context while totalContexts counts publish events.
+      this.database.db.execute(sql`
+        SELECT count(DISTINCT ce.ctx_id)::int AS n
+        FROM context_events ce
+        JOIN context_lifecycle cl
+          ON cl.tenant_id = ce.tenant_id AND cl.ctx_id = ce.ctx_id
+        WHERE ce.tenant_id = ${tenantId}
+          AND ce.event_type = 'context_published'
+          AND ce.event_ts > now() - interval '${sql.raw(interval)}'
+          AND cl.retracted
+      `),
       this.database.db
         .select()
         .from(runs)
@@ -116,10 +130,20 @@ export class DashboardService {
       `),
     ]);
 
+    const contexts = Number(totalContexts[0]?.n ?? 0);
+    const retracted = Number(
+      (retractedContexts.rows[0] as { n?: number } | undefined)?.n ?? 0,
+    );
+
     return {
       window,
       totalRuns: Number(totalRuns[0]?.n ?? 0),
-      totalContexts: Number(totalContexts[0]?.n ?? 0),
+      // Publish events in the window — unchanged for existing consumers.
+      totalContexts: contexts,
+      // ACDP 0.3.0 lifecycle tiles: currently-retracted contexts from the
+      // window, and the net-live remainder (published − currently retracted).
+      totalRetracted: retracted,
+      totalContextsLive: contexts - retracted,
       totalAgents: Number(totalAgents[0]?.n ?? 0),
       recentRuns,
       byScenario: byScenario.rows,

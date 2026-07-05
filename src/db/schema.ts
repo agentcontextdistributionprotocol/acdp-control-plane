@@ -90,6 +90,43 @@ export const runs = pgTable(
   }),
 );
 
+// Per-context lifecycle projection (ACDP 0.3.0, RFC-ACDP-0013 retract /
+// republish; migration 0015). There is no contexts table — lineage DAG nodes
+// are derived at query time from the append-only context_events log — so the
+// CURRENT retraction state gets its own keyed projection instead of mutating
+// event rows (which may not even exist: a retract can arrive for a context
+// whose publish this control plane never saw, or that retention already
+// swept). One row per (tenant, ctx_id); transitions are last-write-wins by
+// the lifecycle event's own timestamp (`last_event_at`) so replays and
+// out-of-order deliveries are idempotent.
+export const contextLifecycle = pgTable(
+  'context_lifecycle',
+  {
+    ctxId: text('ctx_id').notNull(),
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    lineageId: text('lineage_id'),
+    // Current state: true between a retract and a subsequent republish.
+    retracted: boolean('retracted').notNull().default(false),
+    // Most recent transition timestamps (history lives in context_events /
+    // the registry's registry_state.lifecycle_events, not here).
+    retractedAt: timestamp('retracted_at', { withTimezone: true, mode: 'string' }),
+    republishedAt: timestamp('republished_at', { withTimezone: true, mode: 'string' }),
+    // DID + optional reason of the LAST applied transition (console tooltips).
+    actor: text('actor'),
+    reason: text('reason'),
+    // Event-time of the last applied transition — the idempotence guard.
+    lastEventAt: timestamp('last_event_at', { withTimezone: true, mode: 'string' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.tenantId, t.ctxId] }),
+    retractedIdx: index('cl_retracted_idx').on(t.retracted),
+    lineageIdx: index('cl_lineage_idx').on(t.lineageId),
+  }),
+);
+
 // Lineage adjacency: to_ctx_id DERIVES FROM from_ctx_id.
 export const lineageEdges = pgTable(
   'lineage_edges',
@@ -367,6 +404,8 @@ export type NewContextEvent = typeof contextEvents.$inferInsert;
 export type Run = typeof runs.$inferSelect;
 export type NewRun = typeof runs.$inferInsert;
 export type LineageEdge = typeof lineageEdges.$inferSelect;
+export type ContextLifecycle = typeof contextLifecycle.$inferSelect;
+export type NewContextLifecycle = typeof contextLifecycle.$inferInsert;
 export type Agent = typeof agents.$inferSelect;
 export type Registry = typeof registries.$inferSelect;
 export type RegistryEnrollment = typeof registryEnrollments.$inferSelect;

@@ -9,6 +9,8 @@ interface Overview {
   window: string;
   totalRuns: number;
   totalContexts: number;
+  totalRetracted: number;
+  totalContextsLive: number;
   totalAgents: number;
   recentRuns: Array<{ runId: string }>;
   byScenario: Array<{ scenario_id: string; run_count: number }>;
@@ -86,6 +88,47 @@ describe('Dashboard overview (integration)', () => {
     expect(reg1?.event_count).toBe(2);
   });
 
+  it('counts currently-retracted contexts and the net-live remainder (ACDP 0.3.0)', async () => {
+    await seed();
+    // Retract run-2's context, then verify the tiles split published vs live.
+    await ctx.client.requestRaw('POST', '/ingest/acdp', {
+      body: {
+        type: 'context_retracted',
+        ctx_id: 'acdp://reg-2.example/run-2',
+        lineage_id: 'lin-run-2',
+        actor: 'did:web:b.example',
+        event_id: 'lc-dash-1',
+        reason: 'bad data',
+        at: new Date().toISOString(),
+        registry_authority: 'reg-2.example',
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    let body = await ctx.client.requestJson<Overview>('GET', '/dashboard/overview');
+    expect(body.totalContexts).toBe(3); // publish events, unchanged
+    expect(body.totalRetracted).toBe(1);
+    expect(body.totalContextsLive).toBe(2);
+
+    // Republish restores the context to the live count.
+    await ctx.client.requestRaw('POST', '/ingest/acdp', {
+      body: {
+        type: 'context_republished',
+        ctx_id: 'acdp://reg-2.example/run-2',
+        lineage_id: 'lin-run-2',
+        actor: 'did:web:b.example',
+        event_id: 'lc-dash-2',
+        at: new Date(Date.now() + 1000).toISOString(),
+        registry_authority: 'reg-2.example',
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    body = await ctx.client.requestJson<Overview>('GET', '/dashboard/overview');
+    expect(body.totalRetracted).toBe(0);
+    expect(body.totalContextsLive).toBe(3);
+  });
+
   it('honors the window query parameter', async () => {
     await seed();
     const body = await ctx.client.requestJson<Overview>('GET', '/dashboard/overview', {
@@ -99,6 +142,8 @@ describe('Dashboard overview (integration)', () => {
     const body = await ctx.client.requestJson<Overview>('GET', '/dashboard/overview');
     expect(body.totalRuns).toBe(0);
     expect(body.totalContexts).toBe(0);
+    expect(body.totalRetracted).toBe(0);
+    expect(body.totalContextsLive).toBe(0);
     expect(body.totalAgents).toBe(0);
     expect(body.recentRuns).toEqual([]);
     expect(body.byScenario).toEqual([]);

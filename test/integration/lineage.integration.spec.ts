@@ -98,6 +98,98 @@ describe('Lineage DAG (integration)', () => {
     expect(dag.edges).toEqual([]);
   });
 
+  // ── ACDP 0.3.0 lifecycle (RFC-ACDP-0013 retract / republish) ────────────
+
+  function lifecycleEvent(
+    type: 'context_retracted' | 'context_republished',
+    ctxId: string,
+    at: string,
+    eventId: string,
+  ) {
+    // Flattened wire shape: no agent_id / created_at; `actor`, `event_id`
+    // (actor-minted lifecycle id) and `at` instead.
+    return {
+      type,
+      ctx_id: ctxId,
+      lineage_id: 'lin-1',
+      actor: 'did:web:agent-a.example',
+      event_id: eventId,
+      reason: 'test retraction',
+      at,
+      registry_authority: 'registry-a.example',
+    };
+  }
+
+  it('flags retracted DAG nodes and clears the flag on republish (mark-not-delete)', async () => {
+    const runId = 'run-lineage-retract';
+    await ctx.client.ingest(event('acdp://registry-a/r1', []), { runId, secret: SECRET });
+    await ctx.client.ingest(event('acdp://registry-a/r2', ['acdp://registry-a/r1']), {
+      runId,
+      secret: SECRET,
+    });
+
+    const retract = lifecycleEvent(
+      'context_retracted',
+      'acdp://registry-a/r2',
+      new Date().toISOString(),
+      'lc-evt-1',
+    );
+    await ctx.client.ingest(retract, { secret: SECRET });
+    // Exact replay (same event_id) — dedup keeps everything single-shot.
+    await ctx.client.ingest(retract, { secret: SECRET });
+
+    let dag = (await ctx.client.getLineage(runId)) as {
+      nodes: Array<{ ctxId: string; retracted: boolean }>;
+      edges: unknown[];
+    };
+    // The retracted node STAYS in the DAG, flagged.
+    expect(dag.nodes.length).toBe(2);
+    expect(dag.edges.length).toBe(1);
+    const byId = new Map(dag.nodes.map((n) => [n.ctxId, n.retracted]));
+    expect(byId.get('acdp://registry-a/r1')).toBe(false);
+    expect(byId.get('acdp://registry-a/r2')).toBe(true);
+
+    await ctx.client.ingest(
+      lifecycleEvent(
+        'context_republished',
+        'acdp://registry-a/r2',
+        new Date(Date.now() + 1000).toISOString(),
+        'lc-evt-2',
+      ),
+      { secret: SECRET },
+    );
+
+    dag = (await ctx.client.getLineage(runId)) as typeof dag;
+    expect(dag.nodes.every((n) => n.retracted === false)).toBe(true);
+  });
+
+  it('ignores stale out-of-order lifecycle deliveries (timestamp-guarded)', async () => {
+    const runId = 'run-lineage-ooo';
+    await ctx.client.ingest(event('acdp://registry-a/o1', []), { runId, secret: SECRET });
+
+    const t1 = '2026-01-01T00:00:00.000Z';
+    const t2 = '2026-01-02T00:00:00.000Z';
+    await ctx.client.ingest(
+      lifecycleEvent('context_retracted', 'acdp://registry-a/o1', t1, 'lc-ooo-1'),
+      { secret: SECRET },
+    );
+    await ctx.client.ingest(
+      lifecycleEvent('context_republished', 'acdp://registry-a/o1', t2, 'lc-ooo-2'),
+      { secret: SECRET },
+    );
+    // A stale re-transmission of the ORIGINAL retract under a fresh delivery
+    // id must not regress the newer republished state.
+    await ctx.client.ingest(
+      lifecycleEvent('context_retracted', 'acdp://registry-a/o1', t1, 'lc-ooo-3'),
+      { secret: SECRET },
+    );
+
+    const dag = (await ctx.client.getLineage(runId)) as {
+      nodes: Array<{ ctxId: string; retracted: boolean }>;
+    };
+    expect(dag.nodes[0].retracted).toBe(false);
+  });
+
   it('does not duplicate lineage edges when the same event is re-ingested', async () => {
     const runId = 'run-lineage-dedup';
     const ev = event('acdp://registry-a/c2', ['acdp://registry-a/c1']);

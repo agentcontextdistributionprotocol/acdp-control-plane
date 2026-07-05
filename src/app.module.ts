@@ -43,6 +43,7 @@ import { RunsController } from './runs/runs.controller';
 import { RunsService } from './runs/runs.service';
 import { AgentRepository } from './storage/agent.repository';
 import { ContextEventRepository } from './storage/context-event.repository';
+import { ContextLifecycleRepository } from './storage/context-lifecycle.repository';
 import { LineageEdgeRepository } from './storage/lineage-edge.repository';
 import { DataRetentionService } from './retention/data-retention.service';
 import { BanditRouter } from './routing/bandit-router.service';
@@ -130,6 +131,7 @@ import { WebhookService } from './webhooks/webhook.service';
     ContextEventRepository,
     RunRepository,
     LineageEdgeRepository,
+    ContextLifecycleRepository,
     AgentRepository,
     CapabilityRepository,
     CapabilityService,

@@ -1,9 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { AcdpStreamEvent, AcdpWebhookEvent } from '../contracts/acdp';
+import {
+  ACDP_EVENT_CONTEXT_PUBLISHED,
+  ACDP_EVENT_CONTEXT_REPUBLISHED,
+  ACDP_EVENT_CONTEXT_RETRACTED,
+  AcdpStreamEvent,
+  AcdpWebhookEvent,
+} from '../contracts/acdp';
 import { StreamHubService } from '../events/stream-hub.service';
 import { AgentRepository } from '../storage/agent.repository';
 import { ContextEventRepository } from '../storage/context-event.repository';
+import { ContextLifecycleRepository } from '../storage/context-lifecycle.repository';
 import { LineageEdgeRepository } from '../storage/lineage-edge.repository';
 import { RegistryRepository } from '../storage/registry.repository';
 import { RunRepository } from '../storage/run.repository';
@@ -19,6 +26,7 @@ export class EventProcessorService {
     private readonly contextEventRepo: ContextEventRepository,
     private readonly runRepo: RunRepository,
     private readonly lineageRepo: LineageEdgeRepository,
+    private readonly lifecycleRepo: ContextLifecycleRepository,
     private readonly agentRepo: AgentRepository,
     private readonly registryRepo: RegistryRepository,
     private readonly streamHub: StreamHubService,
@@ -43,7 +51,10 @@ export class EventProcessorService {
     const derivedFrom = payload.derived_from ?? [];
     const registryAuthority = String(payload.registry_authority ?? '');
     const scenarioId = this.extractScenarioId(payload);
-    const eventTs = String(payload.created_at ?? new Date().toISOString());
+    // Publishes timestamp themselves with `created_at`; lifecycle (retract /
+    // republish) and retrieve/search events use `at` (RFC-ACDP-0013 wire
+    // shape). Fall through in that order before defaulting to arrival time.
+    const eventTs = String(payload.created_at ?? payload.at ?? new Date().toISOString());
     const runId = runIdOverride ?? payload.run_id;
     const fingerprint = this.dedupKey(payload, runId, eventId);
     // ACDP 0.2.0 trust metadata (RFC-ACDP-0010) — additive, absent on 0.1.0
@@ -86,7 +97,7 @@ export class EventProcessorService {
 
     // Trust-signal metrics (ACDP 0.2.0): receipt coverage per registry and
     // the producer DID-method mix, both scoped to publish events.
-    if (eventType === 'context_published') {
+    if (eventType === ACDP_EVENT_CONTEXT_PUBLISHED) {
       this.instrumentation.publishReceiptsTotal.inc({
         registry_authority: registryAuthority || 'unknown',
         receipt: receiptPresent ? 'present' : 'absent',
@@ -107,10 +118,33 @@ export class EventProcessorService {
     }
 
     // 3. Lineage edges — one per derived_from entry on context_published
-    if (eventType === 'context_published' && ctxId && derivedFrom.length > 0) {
+    if (eventType === ACDP_EVENT_CONTEXT_PUBLISHED && ctxId && derivedFrom.length > 0) {
       for (const fromCtxId of derivedFrom) {
         await this.lineageRepo.upsert({ fromCtxId, toCtxId: ctxId, runId, tenantId });
       }
+    }
+
+    // 3b. Lifecycle projection (ACDP 0.3.0, RFC-ACDP-0013): retract marks
+    //     the context, republish unmarks it. Exact replays never reach here
+    //     (dedup above); the repository additionally guards on the event's
+    //     own timestamp so re-ingest under a fresh event_id and out-of-order
+    //     deliveries stay idempotent. Everything else about these events
+    //     (dedup, persistence, SSE, outbound webhooks) rides the same
+    //     generic path every event type takes.
+    const isRetract = eventType === ACDP_EVENT_CONTEXT_RETRACTED;
+    const isRepublish = eventType === ACDP_EVENT_CONTEXT_REPUBLISHED;
+    const actor = typeof payload.actor === 'string' ? payload.actor : undefined;
+    const reason = typeof payload.reason === 'string' ? payload.reason : undefined;
+    if ((isRetract || isRepublish) && ctxId) {
+      await this.lifecycleRepo.applyTransition({
+        ctxId,
+        tenantId,
+        lineageId,
+        retracted: isRetract,
+        at: eventTs,
+        actor,
+        reason,
+      });
     }
 
     // 4. Agent registry
@@ -143,7 +177,10 @@ export class EventProcessorService {
       // consumers tolerate unknown members). receiptPresent only carries
       // meaning on publishes, so it is omitted elsewhere.
       ...(keyFingerprint ? { keyFingerprint } : {}),
-      ...(eventType === 'context_published' ? { receiptPresent } : {}),
+      ...(eventType === ACDP_EVENT_CONTEXT_PUBLISHED ? { receiptPresent } : {}),
+      // ACDP 0.3.0 lifecycle signals (retract/republish) — additive too.
+      ...(actor ? { actor } : {}),
+      ...(reason ? { reason } : {}),
     };
     if (runId) this.streamHub.publishToRun(runId, streamEvent, tenantId);
     this.streamHub.publishGlobal(streamEvent, tenantId);

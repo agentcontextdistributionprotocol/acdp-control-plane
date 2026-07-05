@@ -44,10 +44,29 @@ function makePayload(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+/** A lifecycle event as flattened on the wire (RFC-ACDP-0013 §6). */
+function makeLifecyclePayload(
+  type: 'context_retracted' | 'context_republished',
+  overrides: Partial<Record<string, unknown>> = {},
+) {
+  return {
+    type,
+    ctx_id: 'acdp://reg/c1',
+    lineage_id: 'lin-1',
+    actor: 'did:web:agent.example',
+    event_id: 'lc-evt-1',
+    reason: 'superseded by corrected analysis',
+    at: '2026-01-02T00:00:00Z',
+    registry_authority: 'reg.example',
+    ...overrides,
+  };
+}
+
 describe('EventProcessorService', () => {
   let ceRepo: any;
   let runRepo: any;
   let lineageRepo: any;
+  let lifecycleRepo: any;
   let agentRepo: any;
   let registryRepo: any;
   let streamHub: any;
@@ -59,6 +78,7 @@ describe('EventProcessorService', () => {
     ceRepo = { create: jest.fn().mockResolvedValue({}) };
     runRepo = { upsertFromEvent: jest.fn().mockResolvedValue(undefined) };
     lineageRepo = { upsert: jest.fn().mockResolvedValue(undefined) };
+    lifecycleRepo = { applyTransition: jest.fn().mockResolvedValue(undefined) };
     agentRepo = { upsert: jest.fn().mockResolvedValue(undefined) };
     registryRepo = { upsert: jest.fn().mockResolvedValue(undefined) };
     streamHub = {
@@ -72,6 +92,7 @@ describe('EventProcessorService', () => {
       ceRepo,
       runRepo,
       lineageRepo,
+      lifecycleRepo,
       agentRepo,
       registryRepo,
       streamHub,
@@ -306,6 +327,85 @@ describe('EventProcessorService', () => {
       expect(instrumentation.producerDidMethodTotal.inc).toHaveBeenCalledWith({
         method: 'did:key',
       });
+    });
+  });
+
+  // ── ACDP 0.3.0 lifecycle (RFC-ACDP-0013 retract / republish) ────────────
+
+  describe('0.3.0 lifecycle events', () => {
+    it('context_retracted marks the lifecycle projection with the event fields', async () => {
+      await processor.process(makeLifecyclePayload('context_retracted') as any, 'run-1');
+      expect(lifecycleRepo.applyTransition).toHaveBeenCalledTimes(1);
+      expect(lifecycleRepo.applyTransition).toHaveBeenCalledWith({
+        ctxId: 'acdp://reg/c1',
+        tenantId: 'default',
+        lineageId: 'lin-1',
+        retracted: true,
+        at: '2026-01-02T00:00:00Z',
+        actor: 'did:web:agent.example',
+        reason: 'superseded by corrected analysis',
+      });
+    });
+
+    it('context_republished unmarks the lifecycle projection', async () => {
+      await processor.process(
+        makeLifecyclePayload('context_republished', { reason: undefined }) as any,
+        'run-1',
+      );
+      expect(lifecycleRepo.applyTransition).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ctxId: 'acdp://reg/c1',
+          retracted: false,
+          reason: undefined,
+        }),
+      );
+    });
+
+    it('keeps the generic pipeline intact for lifecycle events (persist, SSE, webhooks)', async () => {
+      await processor.process(makeLifecyclePayload('context_retracted') as any, 'run-1');
+      // Persisted with the wire type and the event's own `at` timestamp.
+      expect(ceRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: 'context_retracted',
+          eventTs: '2026-01-02T00:00:00Z',
+          ctxId: 'acdp://reg/c1',
+        }),
+      );
+      // SSE passthrough (type-agnostic hub) with lifecycle signals attached.
+      const streamed = streamHub.publishGlobal.mock.calls[0][0];
+      expect(streamed.type).toBe('context_retracted');
+      expect(streamed.actor).toBe('did:web:agent.example');
+      expect(streamed.reason).toBe('superseded by corrected analysis');
+      // Outbound webhooks fire like any other event.
+      expect(webhookService.fireEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'context_retracted' }),
+        'default',
+      );
+      // No lineage edges, no agent upsert (lifecycle events carry no agent_id).
+      expect(lineageRepo.upsert).not.toHaveBeenCalled();
+      expect(agentRepo.upsert).not.toHaveBeenCalled();
+    });
+
+    it('replayed lifecycle events (dedup hit) never reach the projection', async () => {
+      ceRepo.create.mockResolvedValueOnce(null);
+      await processor.process(makeLifecyclePayload('context_retracted') as any, 'run-1');
+      expect(lifecycleRepo.applyTransition).not.toHaveBeenCalled();
+      expect(streamHub.publishGlobal).not.toHaveBeenCalled();
+      expect(webhookService.fireEvent).not.toHaveBeenCalled();
+    });
+
+    it('non-lifecycle and unknown event types never touch the projection', async () => {
+      await processor.process(makePayload(), 'run-1');
+      await processor.process(makePayload({ type: 'context_archived' }), 'run-1');
+      expect(lifecycleRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    it('skips the projection when a lifecycle event has no ctx_id', async () => {
+      await processor.process(
+        makeLifecyclePayload('context_retracted', { ctx_id: undefined }) as any,
+        'run-1',
+      );
+      expect(lifecycleRepo.applyTransition).not.toHaveBeenCalled();
     });
   });
 });
