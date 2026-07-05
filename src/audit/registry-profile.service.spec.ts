@@ -1,4 +1,8 @@
-import { RegistryProfileService, RECEIPTS_PROFILE } from './registry-profile.service';
+import {
+  RegistryProfileService,
+  RECEIPTS_PROFILE,
+  TRANSPARENCY_LOG_PROFILE,
+} from './registry-profile.service';
 
 describe('RegistryProfileService', () => {
   let registryRepo: any;
@@ -60,5 +64,25 @@ describe('RegistryProfileService', () => {
     await svc.advertisesReceipts('reg.example', 'tenant-b');
     expect(federationClient.get).toHaveBeenCalledTimes(2);
     expect(svc.cacheSize()).toBe(2);
+  });
+
+  it('detects the transparency-log profile (RFC-ACDP-0012 §11) off the same probe', async () => {
+    federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        acdp_version: '0.3.0',
+        profiles: ['acdp-registry-core', RECEIPTS_PROFILE, TRANSPARENCY_LOG_PROFILE],
+      }),
+    });
+    await expect(svc.advertisesTransparencyLog('reg.example', 'default')).resolves.toBe(true);
+    // Both questions answered from ONE cached probe.
+    await expect(svc.advertisesReceipts('reg.example', 'default')).resolves.toBe(true);
+    expect(federationClient.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('a receipts-only 0.2.0 registry does not advertise the log', async () => {
+    await expect(svc.advertisesTransparencyLog('reg.example', 'default')).resolves.toBe(false);
+    await expect(svc.advertisesReceipts('reg.example', 'default')).resolves.toBe(true);
   });
 });

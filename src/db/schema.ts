@@ -8,6 +8,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -399,6 +400,104 @@ export const receiptAudits = pgTable(
   }),
 );
 
+// Transparency-log checkpoint witness (ACDP 0.3.0 Tier 3, RFC-ACDP-0012,
+// migration 0016). Every checkpoint (signed tree head) this control plane has
+// witnessed, verbatim — the forensic anchors §13/§15 call for. Witness/monitor
+// role only: cosigning is the reserved RFC-ACDP-0009 §2.12 work.
+export const logWitnessCheckpoints = pgTable(
+  'log_witness_checkpoints',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    registryAuthority: varchar('registry_authority', { length: 255 }).notNull(),
+    logId: text('log_id').notNull(),
+    treeSize: bigint('tree_size', { mode: 'number' }).notNull(),
+    rootHash: varchar('root_hash', { length: 80 }).notNull(),
+    // Registry-asserted evaluation time from the checkpoint itself (§6).
+    timestamp: timestamp('timestamp', { withTimezone: true, mode: 'string' }).notNull(),
+    rawCheckpoint: jsonb('raw_checkpoint').$type<Record<string, unknown>>().notNull(),
+    witnessedAt: timestamp('witnessed_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+    signatureValid: boolean('signature_valid').notNull(),
+    // §9.2 verdict vs the previously witnessed head of the same log_id;
+    // NULL for the first witnessed checkpoint of a log.
+    consistencyOk: boolean('consistency_ok'),
+  },
+  (t) => ({
+    // Dedupes re-fetches of the same head; two rows sharing (log_id,
+    // tree_size) with different root_hash are split-view evidence.
+    uniqueHead: uniqueIndex('log_witness_checkpoints_log_id_tree_size_root_hash_key').on(
+      t.logId,
+      t.treeSize,
+      t.rootHash,
+    ),
+    authorityIdx: index('lwc_authority_idx').on(t.registryAuthority),
+    tenantIdx: index('lwc_tenant_idx').on(t.tenantId),
+    logSizeIdx: index('lwc_log_size_idx').on(t.logId, t.treeSize),
+  }),
+);
+
+// Per-registry witness cursor + alert state. The cursor advances ONLY on a
+// fully verified sweep step; on any failure it holds so the retained root
+// stays available as the §9.2 first_root for the next consistency demand.
+export const logWitnessCursors = pgTable(
+  'log_witness_cursors',
+  {
+    registryAuthority: varchar('registry_authority', { length: 255 }).notNull(),
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    logId: text('log_id'),
+    lastWitnessedSize: bigint('last_witnessed_size', { mode: 'number' }),
+    lastRootHash: varchar('last_root_hash', { length: 80 }),
+    // Environmental (transport/resolution) failures since the last success;
+    // dishonesty signals set the alert fields instead.
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    alerted: boolean('alerted').notNull().default(false),
+    lastAlertReason: varchar('last_alert_reason', { length: 64 }),
+    lastAlertDetail: jsonb('last_alert_detail').$type<Record<string, unknown>>(),
+    lastAlertAt: timestamp('last_alert_at', { withTimezone: true, mode: 'string' }),
+    lastSuccessAt: timestamp('last_success_at', { withTimezone: true, mode: 'string' }),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.tenantId, t.registryAuthority] }),
+    alertedIdx: index('lwcur_alerted_idx').on(t.alerted),
+  }),
+);
+
+// Receipt ↔ log inclusion cross-check verdicts (RFC-ACDP-0012 §9.1). A
+// PARALLEL table to receipt_audits (not new columns on it): audit rows are
+// sealed once (PK = event id, on-conflict-do-nothing), and §9.3 requires the
+// receipt verdict and log verdict to stay independent — a later log verdict
+// must not mutate a sealed receipt verdict row.
+export const logInclusionAudits = pgTable(
+  'log_inclusion_audits',
+  {
+    eventId: uuid('event_id').primaryKey(),
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    runId: varchar('run_id', { length: 255 }),
+    ctxId: text('ctx_id'),
+    registryAuthority: varchar('registry_authority', { length: 255 }).notNull(),
+    logId: text('log_id'),
+    leafIndex: bigint('leaf_index', { mode: 'number' }),
+    treeSize: bigint('tree_size', { mode: 'number' }),
+    // included | invalid_proof | not_logged | no_log | error
+    status: varchar('status', { length: 32 }).notNull(),
+    detail: jsonb('detail').$type<string[]>().notNull().default([]),
+    checkedAt: timestamp('checked_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    statusIdx: index('lia_status_idx').on(t.status),
+    tenantIdx: index('lia_tenant_idx').on(t.tenantId),
+    registryIdx: index('lia_registry_idx').on(t.registryAuthority),
+    runIdx: index('lia_run_idx').on(t.runId),
+  }),
+);
+
 export type ContextEvent = typeof contextEvents.$inferSelect;
 export type NewContextEvent = typeof contextEvents.$inferInsert;
 export type Run = typeof runs.$inferSelect;
@@ -425,3 +524,9 @@ export type IssuanceLedgerEntry = typeof issuanceLedger.$inferSelect;
 export type NewIssuanceLedgerEntry = typeof issuanceLedger.$inferInsert;
 export type ReceiptAudit = typeof receiptAudits.$inferSelect;
 export type NewReceiptAudit = typeof receiptAudits.$inferInsert;
+export type LogWitnessCheckpoint = typeof logWitnessCheckpoints.$inferSelect;
+export type NewLogWitnessCheckpoint = typeof logWitnessCheckpoints.$inferInsert;
+export type LogWitnessCursor = typeof logWitnessCursors.$inferSelect;
+export type NewLogWitnessCursor = typeof logWitnessCursors.$inferInsert;
+export type LogInclusionAudit = typeof logInclusionAudits.$inferSelect;
+export type NewLogInclusionAudit = typeof logInclusionAudits.$inferInsert;

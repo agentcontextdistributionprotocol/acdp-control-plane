@@ -39,6 +39,7 @@ export class DashboardService {
       byRegistry,
       receiptCoverage,
       didMethods,
+      logWitness,
     ] = await Promise.all([
       this.database.db
         .select({ n: count() })
@@ -128,6 +129,20 @@ export class DashboardService {
         GROUP BY 1
         ORDER BY publish_count DESC
       `),
+      // ACDP 0.3.0 Tier 3: transparency-log witness tiles (RFC-ACDP-0012) —
+      // how many distinct logs this control plane is witnessing, and how many
+      // registries currently sit in an alerted state (root rewrite, split
+      // view, regression, reset). Not window-scoped: witness state is a
+      // current posture, not an event stream.
+      this.database.db.execute(sql`
+        SELECT
+          (SELECT count(DISTINCT log_id)::int
+             FROM log_witness_checkpoints
+            WHERE tenant_id = ${tenantId}) AS witnessed_logs,
+          (SELECT count(*)::int
+             FROM log_witness_cursors
+            WHERE tenant_id = ${tenantId} AND alerted) AS active_alerts
+      `),
     ]);
 
     const contexts = Number(totalContexts[0]?.n ?? 0);
@@ -150,6 +165,15 @@ export class DashboardService {
       byRegistry: byRegistry.rows,
       receiptCoverage: receiptCoverage.rows,
       didMethods: didMethods.rows,
+      // ACDP 0.3.0 Tier 3 (RFC-ACDP-0012): checkpoint-witness posture.
+      logWitness: {
+        witnessedLogs: Number(
+          (logWitness.rows[0] as { witnessed_logs?: number } | undefined)?.witnessed_logs ?? 0,
+        ),
+        activeAlerts: Number(
+          (logWitness.rows[0] as { active_alerts?: number } | undefined)?.active_alerts ?? 0,
+        ),
+      },
     };
   }
 }

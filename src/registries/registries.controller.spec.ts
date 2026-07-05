@@ -5,6 +5,7 @@ import { TenantedRequest } from '../tenant/request-tenant';
 describe('RegistriesController.enroll', () => {
   const enrollmentRepo = { upsert: jest.fn(), list: jest.fn() };
   const registryRepo = { list: jest.fn() };
+  const logWitnessRepo = { getCursor: jest.fn(), latestForAuthority: jest.fn() };
   let controller: RegistriesController;
 
   beforeEach(() => {
@@ -17,6 +18,7 @@ describe('RegistriesController.enroll', () => {
     controller = new RegistriesController(
       registryRepo as never,
       enrollmentRepo as never,
+      logWitnessRepo as never,
     );
   });
 

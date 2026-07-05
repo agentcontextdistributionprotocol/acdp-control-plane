@@ -227,6 +227,33 @@ export class AppConfigService implements OnModuleInit {
   readonly receiptAuditBatchSize = readNumber('RECEIPT_AUDIT_BATCH_SIZE', 50);
   readonly receiptAuditLookbackHours = readNumber('RECEIPT_AUDIT_LOOKBACK_HOURS', 24);
 
+  // Transparency-log checkpoint witness (ACDP 0.3.0 Tier 3, RFC-ACDP-0012).
+  // When enabled, a background sweep polls GET /log/checkpoint on every
+  // enrolled registry advertising `acdp-registry-transparency-log`, verifies
+  // the checkpoint signature and the §9.2 consistency proof against the
+  // last-witnessed head, and alerts on any dishonesty signal (root rewrite,
+  // split view, tree-size regression, log reset). See
+  // `src/audit/checkpoint-witness.service.ts`.
+  readonly logWitnessEnabled = readBoolean('LOG_WITNESS_ENABLED', false);
+  readonly logWitnessIntervalSeconds = readNumber('LOG_WITNESS_INTERVAL_SECONDS', 300);
+  // Per-registry opt-out: authorities listed here are never witnessed.
+  readonly logWitnessExcludeAuthorities = readStringList('LOG_WITNESS_EXCLUDE_AUTHORITIES');
+
+  // Receipt ↔ log inclusion cross-check (RFC-ACDP-0012 §9.1): for stored
+  // publish events with receipts from log-advertising registries, fetch
+  // GET /log/proof?ctx_id=… and verify inclusion against a verified
+  // checkpoint. Knobs mirror RECEIPT_AUDIT_*.
+  readonly logInclusionAuditEnabled = readBoolean('LOG_INCLUSION_AUDIT_ENABLED', false);
+  readonly logInclusionAuditIntervalSeconds = readNumber(
+    'LOG_INCLUSION_AUDIT_INTERVAL_SECONDS',
+    300,
+  );
+  readonly logInclusionAuditBatchSize = readNumber('LOG_INCLUSION_AUDIT_BATCH_SIZE', 50);
+  readonly logInclusionAuditLookbackHours = readNumber(
+    'LOG_INCLUSION_AUDIT_LOOKBACK_HOURS',
+    24,
+  );
+
   // Data retention
   readonly dataRetentionEnabled = readBoolean('DATA_RETENTION_ENABLED', false);
   readonly dataRetentionTtlDays = readNumber('DATA_RETENTION_TTL_DAYS', 30);
@@ -323,6 +350,25 @@ export class AppConfigService implements OnModuleInit {
       }
       if (this.receiptAuditBatchSize < 1) {
         throw new Error('RECEIPT_AUDIT_BATCH_SIZE must be >= 1 when receipt audit is enabled');
+      }
+    }
+
+    if (this.logWitnessEnabled && this.logWitnessIntervalSeconds < 5) {
+      throw new Error(
+        'LOG_WITNESS_INTERVAL_SECONDS must be >= 5 when the checkpoint witness is enabled',
+      );
+    }
+
+    if (this.logInclusionAuditEnabled) {
+      if (this.logInclusionAuditIntervalSeconds < 5) {
+        throw new Error(
+          'LOG_INCLUSION_AUDIT_INTERVAL_SECONDS must be >= 5 when the inclusion audit is enabled',
+        );
+      }
+      if (this.logInclusionAuditBatchSize < 1) {
+        throw new Error(
+          'LOG_INCLUSION_AUDIT_BATCH_SIZE must be >= 1 when the inclusion audit is enabled',
+        );
       }
     }
 

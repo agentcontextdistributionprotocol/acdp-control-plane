@@ -118,6 +118,14 @@ export interface AcdpStreamEvent {
   /** ACDP 0.3.0 lifecycle — set on retract/republish events only. */
   actor?: string;
   reason?: string;
+  /**
+   * ACDP 0.3.0 Tier 3 (RFC-ACDP-0012): set on `log_witness_alert` system
+   * events — the transparency-log instantiation the alert concerns. On those
+   * events `agentId` carries the registry's did:web DID (the accused party),
+   * `reason` the alert-taxonomy value, and `runId`/`ctxId` are absent
+   * (witness alerts are registry-scoped, not run-scoped). Additive.
+   */
+  logId?: string;
 }
 
 /** Lineage DAG result. */
