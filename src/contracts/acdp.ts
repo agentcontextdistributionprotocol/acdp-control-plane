@@ -7,6 +7,25 @@
 
 export type RunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
+/**
+ * Canonical registry event-type strings (the JSON `type` field).
+ *
+ * Wire-name note (verified against acdp-registry-rs): the registry's
+ * `WebhookEvent` enum is `#[serde(tag = "type", rename_all = "snake_case")]`,
+ * so the JSON body carries UNDERSCORED names (`context_published`,
+ * `context_retracted`, ...). The dotted forms (`context.retracted`) exist only
+ * in the registry's `X-ACDP-Event` HTTP header and its log lines — the control
+ * plane never keys off that header, so no ingest normalization is needed: the
+ * wire form and the canonical form below are identical.
+ */
+export const ACDP_EVENT_CONTEXT_PUBLISHED = 'context_published';
+export const ACDP_EVENT_CONTEXT_RETRIEVED = 'context_retrieved';
+/** ACDP 0.3.0 lifecycle (RFC-ACDP-0013 §6): formal retraction, mark-not-delete. */
+export const ACDP_EVENT_CONTEXT_RETRACTED = 'context_retracted';
+/** ACDP 0.3.0 lifecycle (RFC-ACDP-0013 §6): a prior retraction was reversed. */
+export const ACDP_EVENT_CONTEXT_REPUBLISHED = 'context_republished';
+export const ACDP_EVENT_SEARCH_EXECUTED = 'search_executed';
+
 /** Raw inbound webhook event (as posted by a registry). */
 export interface AcdpWebhookEvent {
   /**
@@ -52,6 +71,34 @@ export interface AcdpWebhookEvent {
    * re-implements its parse/verify (see src/audit/receipt-verify.ts).
    */
   registry_receipt?: Record<string, unknown>;
+  /**
+   * ACDP 0.3.0 lifecycle (RFC-ACDP-0013): retract/republish (and
+   * retrieve/search) events timestamp themselves with `at` instead of
+   * `created_at` (which only publishes carry).
+   */
+  at?: string;
+  /**
+   * ACDP 0.3.0 lifecycle: DID of the party performing a retract/republish
+   * (the producer for endpoint-submitted lifecycle events). NOTE: on
+   * retract/republish events the flattened wire body's `event_id` is the
+   * actor-minted lifecycle event id (RFC 9562 UUID) — still retry-stable, so
+   * it remains a valid dedup fallback when `X-ACDP-Event-Id` is absent.
+   */
+  actor?: string;
+  /** ACDP 0.3.0 lifecycle: optional human-readable explanation from the signed event. */
+  reason?: string;
+  /**
+   * ACDP 0.3.0: context status if a registry ever attaches it to an event
+   * (mirrors `registry_state.status` on retrieval, e.g. `retracted`).
+   * Tolerated, not required — current registries do not send it.
+   */
+  status?: string;
+  /**
+   * ACDP 0.3.0: mirror of `registry_state.lifecycle_events` if a registry
+   * attaches the history to an event. Open records (schema owned by the
+   * registry); tolerated, not required.
+   */
+  lifecycle_events?: Array<Record<string, unknown>>;
   [k: string]: unknown;
 }
 
@@ -68,6 +115,9 @@ export interface AcdpStreamEvent {
   /** ACDP 0.2.0 trust signals — additive; SSE consumers tolerate unknowns. */
   keyFingerprint?: string;
   receiptPresent?: boolean;
+  /** ACDP 0.3.0 lifecycle — set on retract/republish events only. */
+  actor?: string;
+  reason?: string;
 }
 
 /** Lineage DAG result. */
@@ -80,6 +130,12 @@ export interface LineageDag {
     visibility: string | null;
     registryAuthority: string;
     step: number;
+    /**
+     * ACDP 0.3.0 (RFC-ACDP-0013): true when the context is CURRENTLY
+     * retracted (a later republish clears it). Mark-not-delete: the node
+     * stays in the DAG.
+     */
+    retracted: boolean;
   }>;
   edges: Array<{ from: string; to: string }>;
 }

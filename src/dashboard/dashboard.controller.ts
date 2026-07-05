@@ -12,7 +12,7 @@ export class DashboardController {
   @Get('overview')
   @ApiOperation({
     summary:
-      'KPIs and chart data: totalRuns, totalContexts, totalAgents, recentRuns, byScenario, byRegistry.',
+      'KPIs and chart data: totalRuns, totalContexts, totalRetracted, totalContextsLive, totalAgents, recentRuns, byScenario, byRegistry.',
   })
   async getOverview(
     @Query(new ValidationPipe({ transform: true, whitelist: true }))

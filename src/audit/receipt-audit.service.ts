@@ -3,7 +3,10 @@
  * independent SECOND OBSERVER of registry claims.
  *
  * A background sweep picks up recently ingested `context_published` events
- * that have no audit verdict yet and, for each one:
+ * that have no audit verdict yet. (Publish-only by design: the registry's
+ * ACDP 0.3.0 lifecycle events — `context_retracted` / `context_republished` —
+ * carry no `registry_receipt` on the wire, so there is nothing to audit on
+ * them; see ReceiptAuditRepository.findUnauditedPublishes.) For each one:
  *
  *   1. **Coverage** — if the registry advertises the `acdp-registry-receipts`
  *      profile but the event carried no receipt, that is a discrepancy (a

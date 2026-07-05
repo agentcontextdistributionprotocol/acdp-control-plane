@@ -20,7 +20,7 @@ import { Request } from 'express';
 import { Observable } from 'rxjs';
 import { Public } from '../auth/public.decorator';
 import { AppConfigService } from '../config/app-config.service';
-import { LineageDag } from '../contracts/acdp';
+import { ACDP_EVENT_CONTEXT_PUBLISHED, LineageDag } from '../contracts/acdp';
 import { ListEventsQueryDto } from '../dto/list-events-query.dto';
 import { ListRunsQueryDto } from '../dto/list-runs-query.dto';
 import { RunCompleteDto } from '../dto/run-complete.dto';
@@ -29,6 +29,7 @@ import { StreamHubService } from '../events/stream-hub.service';
 import { verifyWebhookSignature } from '../ingest/hmac';
 import { CheckPolicy } from '../policy/check-policy.decorator';
 import { ContextEventRepository } from '../storage/context-event.repository';
+import { ContextLifecycleRepository } from '../storage/context-lifecycle.repository';
 import { LineageEdgeRepository } from '../storage/lineage-edge.repository';
 import {
   assertNotReservedTenant,
@@ -45,6 +46,7 @@ export class RunsController {
     private readonly runsService: RunsService,
     private readonly contextEventRepo: ContextEventRepository,
     private readonly lineageRepo: LineageEdgeRepository,
+    private readonly lifecycleRepo: ContextLifecycleRepository,
     private readonly streamHub: StreamHubService,
     private readonly config: AppConfigService,
   ) {}
@@ -90,16 +92,24 @@ export class RunsController {
       this.contextEventRepo.listByRun(runId, tenantId),
       this.lineageRepo.listByRun(runId, tenantId),
     ]);
-    const nodes = events
-      .filter((e) => e.eventType === 'context_published')
-      .map((e, i) => ({
-        ctxId: e.ctxId,
-        agentId: e.agentId,
-        contextType: e.contextType,
-        visibility: e.visibility,
-        registryAuthority: e.registryAuthority,
-        step: i + 1,
-      }));
+    const published = events.filter(
+      (e) => e.eventType === ACDP_EVENT_CONTEXT_PUBLISHED,
+    );
+    // ACDP 0.3.0 (RFC-ACDP-0013): retraction is mark-not-delete — the node
+    // stays in the DAG, flagged with its CURRENT lifecycle state.
+    const retractedSet = await this.lifecycleRepo.retractedSetOf(
+      published.map((e) => e.ctxId).filter((id): id is string => id !== null),
+      tenantId,
+    );
+    const nodes = published.map((e, i) => ({
+      ctxId: e.ctxId,
+      agentId: e.agentId,
+      contextType: e.contextType,
+      visibility: e.visibility,
+      registryAuthority: e.registryAuthority,
+      step: i + 1,
+      retracted: e.ctxId !== null && retractedSet.has(e.ctxId),
+    }));
     return {
       runId,
       nodes,

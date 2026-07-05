@@ -55,6 +55,13 @@ export class ReceiptAuditRepository {
    * have no audit verdict yet, oldest-first, across all tenants — the sweep
    * is a background process like retention; each verdict row carries the
    * event's own tenant.
+   *
+   * Deliberately publish-only: the registry's ACDP 0.3.0 lifecycle events
+   * (`context_retracted` / `context_republished`) carry NO registry_receipt
+   * on the wire (acdp-registry-types `WebhookEvent`: only the
+   * ContextPublished variant has the field), so there is nothing to audit on
+   * them. TODO(ACDP 0.3.0 Tier 3): widen this filter if registries start
+   * minting receipts for lifecycle transitions.
    */
   async findUnauditedPublishes(sinceIso: string, limit: number): Promise<ContextEvent[]> {
     const rows = await this.database.db
