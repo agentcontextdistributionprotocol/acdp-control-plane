@@ -498,6 +498,58 @@ export const logInclusionAudits = pgTable(
   }),
 );
 
+// Transparency-log witness COSIGNATURES (ACDP 0.4.0, RFC-ACDP-0015,
+// migration 0017). When the checkpoint witness verifies a checkpoint's
+// signature AND its §7 consistency obligation against the retained head, it
+// MINTS a signed acdp-log-cosignature over the observed
+// {log_id, tree_size, root_hash, timestamp} tuple with the witness's OWN key
+// and stores it here — the cosign half of the RFC-ACDP-0009 §2.12 ecosystem
+// that log_witness_checkpoints (detect-only) left unspecified. A checkpoint
+// that FAILS the obligation is NEVER cosigned (that refusal is the point). One
+// cosignature per observed tuple: UNIQUE(witness_id, log_id, tree_size,
+// root_hash) makes re-observation idempotent (RFC-ACDP-0015 §4/§7).
+export const logCosignatures = pgTable(
+  'log_cosignatures',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    // The witness's OWN DID (RFC-ACDP-0015 §4 witness_id) — this CP's witness
+    // identity, distinct from any registry_did.
+    witnessId: text('witness_id').notNull(),
+    registryAuthority: varchar('registry_authority', { length: 255 }).notNull(),
+    logId: text('log_id').notNull(),
+    treeSize: bigint('tree_size', { mode: 'number' }).notNull(),
+    rootHash: varchar('root_hash', { length: 80 }).notNull(),
+    // Registry-CLAIMED checkpoint time, copied verbatim (§4). The witness copies
+    // it; witnessed_at is what the witness attests.
+    timestamp: timestamp('timestamp', { withTimezone: true, mode: 'string' }).notNull(),
+    // The witness-clock observation time bound into the signed object (§4).
+    witnessedAt: timestamp('witnessed_at', { withTimezone: true, mode: 'string' }).notNull(),
+    keyId: text('key_id').notNull(),
+    cosignatureHash: varchar('cosignature_hash', { length: 80 }).notNull(),
+    signatureValue: text('signature_value').notNull(),
+    // The full signed acdp-log-cosignature object, verbatim — what GET
+    // /log/witness serves (§6.2).
+    cosignature: jsonb('cosignature').$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    // Idempotent per observed tuple for a given witness: re-observing the same
+    // head keeps the first cosignature (RFC-ACDP-0015 §4/§7).
+    uniqueCosig: uniqueIndex('log_cosignatures_witness_log_size_root_key').on(
+      t.witnessId,
+      t.logId,
+      t.treeSize,
+      t.rootHash,
+    ),
+    logSizeIdx: index('lcs_log_size_idx').on(t.logId, t.treeSize),
+    tenantIdx: index('lcs_tenant_idx').on(t.tenantId),
+    authorityIdx: index('lcs_authority_idx').on(t.registryAuthority),
+  }),
+);
+
 export type ContextEvent = typeof contextEvents.$inferSelect;
 export type NewContextEvent = typeof contextEvents.$inferInsert;
 export type Run = typeof runs.$inferSelect;
@@ -530,3 +582,5 @@ export type LogWitnessCursor = typeof logWitnessCursors.$inferSelect;
 export type NewLogWitnessCursor = typeof logWitnessCursors.$inferInsert;
 export type LogInclusionAudit = typeof logInclusionAudits.$inferSelect;
 export type NewLogInclusionAudit = typeof logInclusionAudits.$inferInsert;
+export type LogCosignature = typeof logCosignatures.$inferSelect;
+export type NewLogCosignature = typeof logCosignatures.$inferInsert;

@@ -56,11 +56,14 @@ import { DatabaseService } from '../db/database.service';
 import { DidWebResolverService } from '../auth/did-web/did-web-resolver.service';
 import { ErrorCode } from '../errors/error-codes';
 import { StreamHubService } from '../events/stream-hub.service';
+import { LogCosignatureRepository } from '../storage/log-cosignature.repository';
 import { LogWitnessRepository } from '../storage/log-witness.repository';
 import { RegistryEnrollmentRepository } from '../storage/registry-enrollment.repository';
 import { RegistryRepository } from '../storage/registry.repository';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
 import { WebhookService } from '../webhooks/webhook.service';
+import { WitnessSigningService } from '../witness/witness-signing.service';
+import { mintCosignature } from './cosign';
 import {
   checkpointTimestampOk,
   LogCheckpoint,
@@ -110,6 +113,10 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     private readonly instrumentation: InstrumentationService,
     private readonly streamHub: StreamHubService,
     private readonly webhookService: WebhookService,
+    // ACDP 0.4.0 (RFC-ACDP-0015): the cosign layer. Both are no-ops when
+    // WITNESS_COSIGNING_ENABLED=false — the witness stays detect-only.
+    private readonly witnessSigning: WitnessSigningService,
+    private readonly cosignatureRepo: LogCosignatureRepository,
   ) {}
 
   onModuleInit(): void {
@@ -126,7 +133,8 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     this.logger.log(
       `checkpoint witness enabled: interval=${this.config.logWitnessIntervalSeconds}s ` +
         `excluded=[${this.config.logWitnessExcludeAuthorities.join(',')}] ` +
-        `verification=${sdkHasLogSurface() ? 'acdp-binding (native §9.2 fold)' : 'host (§5/§9 over SDK JCS + Ed25519; binding predates the log API)'}`,
+        `verification=${sdkHasLogSurface() ? 'acdp-binding (native §9.2 fold)' : 'host (§5/§9 over SDK JCS + Ed25519; binding predates the log API)'} ` +
+        `cosigning=${this.witnessSigning.enabled ? `on (RFC-ACDP-0015, witness_id=${this.witnessSigning.witnessId})` : 'off (detect-only)'}`,
     );
     void this.sweep().catch((err) =>
       this.logger.warn(`initial log-witness sweep failed: ${msgOf(err)}`),
@@ -284,6 +292,10 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     if (prior === null) {
       // First witnessed checkpoint of this registry: nothing to compare —
       // consistency_ok stays NULL. This head becomes the retained anchor.
+      // RFC-ACDP-0015 §7: a witness's first observation of a log anchors but
+      // proves no consistency; its signature IS verified (step 1), so it may be
+      // cosigned — the anti-rewrite guarantee accrues from the SECOND
+      // observation onward.
       await this.persistCheckpointSafe(tenantId, authority, checkpoint, true, null);
       await this.witnessRepo.advanceCursor({
         tenantId,
@@ -292,6 +304,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         treeSize: checkpoint.tree_size,
         rootHash: checkpoint.root_hash,
       });
+      await this.cosignSafe(tenantId, authority, checkpoint);
       this.instrumentation.logWitnessChecksTotal.inc({ result: 'witnessed' });
       this.logger.log(
         `witnessed first checkpoint of '${checkpoint.log_id}' at size ${checkpoint.tree_size}`,
@@ -334,7 +347,9 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         });
       }
       // Unchanged head re-signed with a fresh timestamp — a liveness signal
-      // (§6). Nothing new to prove; touch the cursor's success clock.
+      // (§6). Nothing new to prove; touch the cursor's success clock. The tuple
+      // is unchanged, so the cosignature is idempotent (RFC-ACDP-0015 §4/§7 —
+      // we retain the first per tuple rather than re-mint a liveness copy).
       await this.witnessRepo.advanceCursor({
         tenantId,
         authority,
@@ -342,6 +357,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         treeSize: checkpoint.tree_size,
         rootHash: checkpoint.root_hash,
       });
+      await this.cosignSafe(tenantId, authority, checkpoint);
       this.instrumentation.logWitnessChecksTotal.inc({ result: 'witnessed' });
       return { authority, status: 'witnessed' };
     }
@@ -425,11 +441,83 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       treeSize: checkpoint.tree_size,
       rootHash: checkpoint.root_hash,
     });
+    // §7 obligation discharged (signature valid AND consistency from the
+    // retained head verified) — only NOW may we cosign.
+    await this.cosignSafe(tenantId, authority, checkpoint);
     this.instrumentation.logWitnessChecksTotal.inc({ result: 'witnessed' });
     this.logger.log(
       `witnessed '${checkpoint.log_id}' ${prior.size}→${checkpoint.tree_size} (consistency verified)`,
     );
     return { authority, status: 'witnessed' };
+  }
+
+  /**
+   * RFC-ACDP-0015 §4–§5/§7 step 3 — MINT and persist a cosignature for a
+   * checkpoint that has just passed the §7 obligation (signature valid, and
+   * consistency from the retained head verified or this being the first
+   * observation). No-op when cosigning is disabled — the witness stays
+   * detect-only. A checkpoint that FAILED the obligation never reaches here:
+   * every failure path raises an alert and returns before the cosign call,
+   * which is the entire point of witnessing.
+   *
+   * Idempotent per (witness_id, log_id, tree_size, root_hash): re-observing the
+   * same head keeps the first cosignature. Never throws — a cosign failure must
+   * not stall the detect sweep.
+   */
+  private async cosignSafe(
+    tenantId: string,
+    authority: string,
+    checkpoint: LogCheckpoint,
+  ): Promise<void> {
+    const signer = this.witnessSigning.signer;
+    if (!this.witnessSigning.enabled || signer === null) return;
+    try {
+      // witnessed_at: the witness-clock observation time, canonical ms RFC 3339
+      // (toISOString is always ms-precision — RFC-ACDP-0001 §5.3).
+      const witnessedAt = new Date().toISOString();
+      const minted = mintCosignature(
+        {
+          log_id: checkpoint.log_id,
+          tree_size: checkpoint.tree_size,
+          root_hash: checkpoint.root_hash,
+          timestamp: checkpoint.timestamp,
+        },
+        witnessedAt,
+        signer,
+      );
+      if (!minted.ok) {
+        this.instrumentation.logCosignaturesTotal.inc({ result: 'error' });
+        this.logger.warn(`cosignature mint failed for '${authority}': ${minted.reason}`);
+        return;
+      }
+      const cosig = minted.cosignature;
+      const row = await this.cosignatureRepo.record({
+        tenantId,
+        witnessId: cosig.witness_id,
+        registryAuthority: authority,
+        logId: cosig.witnessed_checkpoint.log_id,
+        treeSize: cosig.witnessed_checkpoint.tree_size,
+        rootHash: cosig.witnessed_checkpoint.root_hash,
+        timestamp: cosig.witnessed_checkpoint.timestamp,
+        witnessedAt: cosig.witnessed_at,
+        keyId: cosig.signature.key_id,
+        cosignatureHash: minted.cosignatureHash,
+        signatureValue: cosig.signature.value,
+        cosignature: cosig as unknown as Record<string, unknown>,
+      });
+      this.instrumentation.logCosignaturesTotal.inc({
+        result: row === null ? 'duplicate' : 'minted',
+      });
+      if (row !== null) {
+        this.logger.log(
+          `cosigned '${cosig.witnessed_checkpoint.log_id}' at size ` +
+            `${cosig.witnessed_checkpoint.tree_size} (${minted.cosignatureHash})`,
+        );
+      }
+    } catch (err) {
+      this.instrumentation.logCosignaturesTotal.inc({ result: 'error' });
+      this.logger.warn(`failed to persist cosignature for '${authority}': ${msgOf(err)}`);
+    }
   }
 
   /** §9.3 step 3: both the log_id and the signing key must belong to the source authority. */
