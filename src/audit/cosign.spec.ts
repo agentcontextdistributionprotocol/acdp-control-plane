@@ -17,16 +17,22 @@
 import { createHash, createPrivateKey, KeyObject } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { AcdpCanonicalizer } from 'acdp';
+import { AcdpCanonicalizer, AcdpVerifier } from 'acdp';
 import {
   cosignatureFreshnessOk,
   cosignatureHash,
   mintCosignature,
+  nativeMintCosignature,
+  nativeVerifyCosignature,
   nodeWitnessSigner,
   parseCosignature,
+  sdkHasCosignatureSurface,
+  tsMintCosignature,
+  tsVerifyCosignature,
   verifyCosignature,
   type WitnessedCheckpoint,
 } from './cosign';
+import type { LogCheckpoint } from './log-verify';
 
 // ── Fixture loading (ACDP_SPEC_DIR, graceful skip) ───────────────────────
 
@@ -232,3 +238,167 @@ describeGolden('RFC-ACDP-0015 golden parity (wit-001..004 over log-001)', () => 
     expect(verifyCosignature(parsed.cosignature, witnessBPubB64).ok).toBe(true);
   });
 });
+
+// ── Native-vs-host parity (fixtures required) ────────────────────────────
+//
+// The conformance gate that JUSTIFIES routing the RFC-ACDP-0015 mint/verify
+// through the `acdp` binding (0.7.0+, `sdkHasCosignatureSurface()`): the SAME
+// wit-001 (mint), wit-001/wit-004 (verify) and wit-003 (quorum) golden inputs
+// run through BOTH the native binding path AND the host TS §5 construction, and
+// the bytes/verdicts MUST be identical. If they ever diverge the swap is unsafe
+// and this fails loudly. Skips gracefully without the spec checkout.
+
+/** The full log-001 §6 checkpoint the wit-* tuples chain to (native verify anchor). */
+function log001Checkpoint(): LogCheckpoint {
+  return load('log-001-leaf-and-root-golden.json').vectors[0].expected.log_checkpoint as LogCheckpoint;
+}
+
+describeGolden('RFC-ACDP-0015 native-vs-host parity (mint / verify / quorum)', () => {
+  it('the environment carries the native cosignature surface (0.7.0+)', () => {
+    // This suite only runs with the fixtures present (the monorepo checkout),
+    // where the pinned binding is 0.7.0 — so the native surface MUST exist,
+    // otherwise the switch-over silently stayed on the TS fallback.
+    expect(sdkHasCosignatureSurface()).toBe(true);
+  });
+
+  it('wit-001 MINT: native and host produce BYTE-IDENTICAL cosignatures (== golden)', () => {
+    const fixture = load('wit-001-cosignature-golden.json');
+    const kp = fixture.witness_test_keypair;
+    const unsigned = fixture.vectors[0].cosignature_unsigned;
+    const expected = fixture.vectors[0].expected;
+    const signer = signerFromSeed(kp.private_seed_hex, unsigned.witness_id, kp.key_id);
+
+    const native = nativeMintCosignature(unsigned.witnessed_checkpoint, unsigned.witnessed_at, signer);
+    const host = tsMintCosignature(unsigned.witnessed_checkpoint, unsigned.witnessed_at, signer);
+    expect(native.ok).toBe(true);
+    expect(host.ok).toBe(true);
+    if (!native.ok || !host.ok) return;
+
+    // The whole justification: the two paths emit the same bytes as each other,
+    // and both equal the pinned golden (canonical hash + Ed25519 signature).
+    expect(native.cosignatureHash).toBe(host.cosignatureHash);
+    expect(native.cosignature.signature.value).toBe(host.cosignature.signature.value);
+    expect(native.cosignature).toEqual(host.cosignature);
+    expect(native.cosignatureHash).toBe(expected.cosignature_hash);
+    expect(native.cosignature.signature.value).toBe(expected.signature_value_base64);
+    expect(native.cosignature).toEqual(expected.log_cosignature);
+
+    // And the public dispatcher (mintCosignature) engages native for this signer.
+    const dispatched = mintCosignature(unsigned.witnessed_checkpoint, unsigned.witnessed_at, signer);
+    expect(dispatched.ok).toBe(true);
+    if (!dispatched.ok) return;
+    expect(dispatched.cosignature).toEqual(expected.log_cosignature);
+  });
+
+  it('wit-001 VERIFY: native and host both accept the valid cosignature', () => {
+    const fixture = load('wit-001-cosignature-golden.json');
+    const kp = fixture.witness_test_keypair;
+    const cosig = fixture.vectors[0].expected.log_cosignature;
+    const witnessPubB64 = b64FromHex(kp.public_key_hex);
+    const checkpoint = log001Checkpoint();
+
+    const native = nativeVerifyCosignature(cosig, witnessPubB64, checkpoint);
+    const host = tsVerifyCosignature(cosig, witnessPubB64);
+    expect(native).toEqual({ ok: true });
+    expect(host).toEqual({ ok: true });
+    expect(native).toEqual(host);
+    // The dispatcher routes native when handed the full checkpoint.
+    expect(verifyCosignature(cosig, witnessPubB64, checkpoint)).toEqual({ ok: true });
+  });
+
+  it('wit-004 VERIFY: native and host both REJECT the wrong-key signature', () => {
+    const fixture = load('wit-004-cosignature-key-mismatch.json');
+    const cosig = fixture.cosignature;
+    const checkpoint = log001Checkpoint();
+    const witnessAPubB64 = b64FromHex(fixture.witness_did_document.assertion_method_key_public_hex);
+
+    const native = nativeVerifyCosignature(cosig, witnessAPubB64, checkpoint);
+    const host = tsVerifyCosignature(cosig, witnessAPubB64);
+    expect(native.ok).toBe(false);
+    expect(host.ok).toBe(false);
+
+    // Under the (wrong) signer's own key the signature bytes DO check out, so
+    // both paths accept — the failure above is purely the key binding, and the
+    // two paths agree on both verdicts.
+    const witnessBPubB64 = b64FromHex(fixture.wrong_signer_key_public_hex);
+    expect(nativeVerifyCosignature(cosig, witnessBPubB64, checkpoint).ok).toBe(true);
+    expect(tsVerifyCosignature(cosig, witnessBPubB64).ok).toBe(true);
+  });
+
+  it('wit-003 QUORUM: native evaluateWitnessQuorum agrees with the host distinct-witness count', () => {
+    const fixture = load('wit-003-quorum-verification.json');
+    const q = fixture.expected_quorum;
+    const checkpoint = log001Checkpoint();
+
+    const cosignatures: unknown[] = [];
+    const didDocs: Record<string, unknown> = {};
+    const trusted: string[] = [];
+    const hostWitnessIds = new Set<string>();
+    // The witness clock: past both witnesses' witnessed_at so §8 step 5 passes.
+    const now = '2026-07-04T12:03:05.000Z';
+
+    for (const vector of fixture.vectors) {
+      const kp = vector.witness_test_keypair;
+      const unsigned = vector.cosignature_unsigned;
+      const witnessId = unsigned.witness_id as string;
+      const keyId = `${witnessId}#witness-key-1`;
+      const signer = signerFromSeed(kp.private_seed_hex, witnessId, keyId);
+      const minted = mintCosignature(unsigned.witnessed_checkpoint, unsigned.witnessed_at, signer);
+      expect(minted.ok).toBe(true);
+      if (!minted.ok) return;
+      cosignatures.push(minted.cosignature);
+      trusted.push(witnessId);
+      hostWitnessIds.add(witnessId);
+      const pubMultibase = mintedDidDoc(witnessId, keyId, kp.public_key_hex);
+      didDocs[witnessId] = pubMultibase;
+    }
+
+    const report = JSON.parse(
+      AcdpVerifier.evaluateWitnessQuorum(
+        JSON.stringify(cosignatures),
+        JSON.stringify(checkpoint),
+        JSON.stringify(trusted),
+        JSON.stringify(didDocs),
+        JSON.stringify({ min_witnesses: q.witnessed_count }),
+        now,
+      ),
+    ) as { witnessed_count: number; meets_quorum: boolean; failures: unknown[] };
+
+    // Native report and the host distinct-witness count agree, and both equal
+    // the pinned golden quorum size.
+    expect(report.failures).toHaveLength(0);
+    expect(report.witnessed_count).toBe(hostWitnessIds.size);
+    expect(report.witnessed_count).toBe(q.witnessed_count);
+    expect(report.meets_quorum).toBe(true);
+  });
+});
+
+/** A minimal resolvable witness DID document for `evaluateWitnessQuorum` (§9). */
+function mintedDidDoc(witnessId: string, keyId: string, publicKeyHex: string): Record<string, unknown> {
+  const raw = Buffer.from(publicKeyHex, 'hex');
+  const prefixed = Buffer.concat([Buffer.from([0xed, 0x01]), raw]);
+  const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  let x = BigInt('0x' + (prefixed.toString('hex') || '0'));
+  let mb = '';
+  while (x > 0n) {
+    mb = alphabet[Number(x % 58n)] + mb;
+    x /= 58n;
+  }
+  for (const b of prefixed) {
+    if (b === 0) mb = alphabet[0] + mb;
+    else break;
+  }
+  return {
+    '@context': ['https://www.w3.org/ns/did/v1'],
+    id: witnessId,
+    verificationMethod: [
+      {
+        id: keyId,
+        type: 'Ed25519VerificationKey2020',
+        controller: witnessId,
+        publicKeyMultibase: 'z' + mb,
+      },
+    ],
+    assertionMethod: [keyId],
+  };
+}

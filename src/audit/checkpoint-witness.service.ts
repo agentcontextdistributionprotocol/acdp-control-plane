@@ -63,7 +63,7 @@ import { RegistryRepository } from '../storage/registry.repository';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
 import { WebhookService } from '../webhooks/webhook.service';
 import { WitnessSigningService } from '../witness/witness-signing.service';
-import { mintCosignature } from './cosign';
+import { mintCosignature, sdkHasCosignatureSurface } from './cosign';
 import {
   checkpointTimestampOk,
   LogCheckpoint,
@@ -134,7 +134,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       `checkpoint witness enabled: interval=${this.config.logWitnessIntervalSeconds}s ` +
         `excluded=[${this.config.logWitnessExcludeAuthorities.join(',')}] ` +
         `verification=${sdkHasLogSurface() ? 'acdp-binding (native §9.2 fold)' : 'host (§5/§9 over SDK JCS + Ed25519; binding predates the log API)'} ` +
-        `cosigning=${this.witnessSigning.enabled ? `on (RFC-ACDP-0015, witness_id=${this.witnessSigning.witnessId})` : 'off (detect-only)'}`,
+        `cosigning=${
+          this.witnessSigning.enabled
+            ? `on (RFC-ACDP-0015, witness_id=${this.witnessSigning.witnessId}, ` +
+              `mint=${sdkHasCosignatureSurface() ? 'acdp-binding (native §5 buildWitnessCosignature)' : 'host (§5 over SDK JCS + Ed25519; binding predates the cosignature API)'})`
+            : 'off (detect-only)'
+        }`,
     );
     void this.sweep().catch((err) =>
       this.logger.warn(`initial log-witness sweep failed: ${msgOf(err)}`),

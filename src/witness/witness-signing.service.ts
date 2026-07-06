@@ -36,7 +36,12 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import { AppConfigService } from '../config/app-config.service';
-import { nodeWitnessSigner, type LogCosignature, type WitnessSigner } from '../audit/cosign';
+import {
+  nodeWitnessSigner,
+  sdkHasCosignatureSurface,
+  type LogCosignature,
+  type WitnessSigner,
+} from '../audit/cosign';
 
 /** did:web or did:key — the shape RFC-ACDP-0015 §4 allows for witness_id. */
 const WITNESS_DID_RE = /^did:(web:[a-zA-Z0-9.%:-]+|key:z[1-9A-HJ-NP-Za-km-z]+)$/;
@@ -134,7 +139,8 @@ export class WitnessSigningService {
     this.signer = nodeWitnessSigner(witnessId, keyId, priv);
     this.logger.log(
       `witness cosigning enabled: witness_id=${witnessId} key_id=${keyId} ` +
-        `pubkey=${this.publicKeyB64}`,
+        `pubkey=${this.publicKeyB64} ` +
+        `mint=${sdkHasCosignatureSurface() ? 'acdp-binding (native RFC-ACDP-0015 §5)' : 'host TS (§5 fallback; binding predates the cosignature API)'}`,
     );
   }
 
