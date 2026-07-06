@@ -47,12 +47,12 @@ import { InstrumentationService } from '../telemetry/instrumentation.service';
 import {
   buildLogLeaf,
   checkpointTimestampOk,
-  leafHash,
   logIdRegistryDid,
   parseCheckpoint,
   parseInclusionProof,
+  sdkHasLogSurface,
   verifyCheckpointSignature,
-  verifyInclusionPath,
+  verifyInclusion,
 } from './log-verify';
 import { RegistryProfileService, TRANSPARENCY_LOG_PROFILE } from './registry-profile.service';
 
@@ -97,7 +97,8 @@ export class LogInclusionAuditService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(
       `log-inclusion audit enabled: interval=${this.config.logInclusionAuditIntervalSeconds}s ` +
         `batch=${this.config.logInclusionAuditBatchSize} ` +
-        `lookback=${this.config.logInclusionAuditLookbackHours}h`,
+        `lookback=${this.config.logInclusionAuditLookbackHours}h ` +
+        `verification=${sdkHasLogSurface() ? 'acdp-binding (native §9.1 fold)' : 'host (§5/§9 over SDK JCS + Ed25519; binding predates the log API)'}`,
     );
     void this.sweep().catch((err) =>
       this.logger.warn(`initial log-inclusion audit sweep failed: ${msgOf(err)}`),
@@ -309,17 +310,8 @@ export class LogInclusionAuditService implements OnModuleInit, OnModuleDestroy {
     }
 
     // ── §9.1 steps 2, 5, 6: hash the reconstructed leaf, fold, compare ───
-    const leafH = leafHash(leafBuild.leaf);
-    if (leafH === null) {
-      return verdict('error', ['unverified: reconstructed leaf could not be canonicalized']);
-    }
-    const fold = verifyInclusionPath(
-      proof.leaf_index,
-      proof.tree_size,
-      leafH,
-      proof.inclusion_path,
-      checkpoint.root_hash,
-    );
+    // Native binding (acdp 0.6.0+) when present; host arithmetic otherwise.
+    const fold = verifyInclusion(proof, checkpoint, leafBuild.leaf);
     if (!fold.ok) {
       return verdict('invalid_proof', [`${ErrorCode.INVALID_LOG_PROOF}: ${fold.reason}`], proof);
     }
