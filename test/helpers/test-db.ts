@@ -26,6 +26,7 @@ export async function truncateAll(pool?: Pool): Promise<void> {
             log_inclusion_audits,
             log_witness_checkpoints,
             log_witness_cursors,
+            log_cosignatures,
             context_events,
             agents,
             registries,

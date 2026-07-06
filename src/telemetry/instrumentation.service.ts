@@ -79,6 +79,12 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['status'] as const,
   });
 
+  readonly logCosignaturesTotal = new client.Counter({
+    name: 'acdp_log_cosignatures_total',
+    help: 'Witness cosignatures minted by result (minted / duplicate / error) (RFC-ACDP-0015)',
+    labelNames: ['result'] as const,
+  });
+
   onModuleInit(): void {
     client.collectDefaultMetrics();
   }

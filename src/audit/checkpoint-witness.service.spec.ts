@@ -15,11 +15,12 @@
  *   - environmental failure → consecutive_failures, no alert, cursor holds
  *   - alert emission gated on the state TRANSITION (no re-spam)
  */
-import { createHash, generateKeyPairSync, sign as edSign, KeyObject } from 'node:crypto';
+import { createHash, createPrivateKey, generateKeyPairSync, sign as edSign, KeyObject } from 'node:crypto';
 import {
   CheckpointWitnessPollerService,
   LOG_WITNESS_ALERT_EVENT,
 } from './checkpoint-witness.service';
+import { nodeWitnessSigner } from './cosign';
 import { checkpointHash, leafHash, LogCheckpoint, nodeHash } from './log-verify';
 
 const AUTHORITY = 'reg-a.example';
@@ -104,6 +105,8 @@ interface Harness {
   profiles: any;
   enrollmentRepo: any;
   didResolver: any;
+  witnessSigning: any;
+  cosignatureRepo: any;
 }
 
 function makeHarness(overrides: Partial<Record<string, any>> = {}): Harness {
@@ -138,9 +141,17 @@ function makeHarness(overrides: Partial<Record<string, any>> = {}): Harness {
   const instrumentation = {
     logWitnessChecksTotal: { inc: jest.fn() },
     logWitnessAlertsTotal: { inc: jest.fn() },
+    logCosignaturesTotal: { inc: jest.fn() },
   };
   const streamHub = { publishGlobal: jest.fn() };
   const webhookService = { fireEvent: jest.fn().mockResolvedValue(undefined) };
+  // Cosigning is OFF by default (detect-only) — the existing state-machine
+  // tests assert no cosignatures are minted. Tests that exercise the cosign
+  // layer pass overrides.witnessSigning with a live signer.
+  const witnessSigning = overrides.witnessSigning ?? { enabled: false, signer: null };
+  const cosignatureRepo = overrides.cosignatureRepo ?? {
+    record: jest.fn().mockResolvedValue({ id: 'cosig-1' }),
+  };
 
   const svc = new CheckpointWitnessPollerService(
     config as never,
@@ -154,6 +165,8 @@ function makeHarness(overrides: Partial<Record<string, any>> = {}): Harness {
     instrumentation as never,
     streamHub as never,
     webhookService as never,
+    witnessSigning as never,
+    cosignatureRepo as never,
   );
   return {
     svc,
@@ -165,6 +178,8 @@ function makeHarness(overrides: Partial<Record<string, any>> = {}): Harness {
     profiles,
     enrollmentRepo,
     didResolver,
+    witnessSigning,
+    cosignatureRepo,
   };
 }
 
@@ -498,5 +513,171 @@ describe('CheckpointWitnessPollerService', () => {
     const outcomes = await h.svc.sweep();
     expect(outcomes).toEqual([]);
     expect(h.enrollmentRepo.listAllEnabled).not.toHaveBeenCalled();
+  });
+});
+
+// ── RFC-ACDP-0015 witness cosigning (the cosign layer over the detect sweep) ──
+
+describe('CheckpointWitnessPollerService — witness cosigning (RFC-ACDP-0015)', () => {
+  const WITNESS_ID = 'did:web:witness.example.org';
+  const KEY_ID = `${WITNESS_ID}#witness-key-1`;
+
+  // A live witness signer from a raw Ed25519 seed (node:crypto), the same
+  // primitive the production WitnessSigningService uses from a PEM.
+  function witnessSigner(seedHex = '33'.repeat(32)) {
+    const pkcs8 = Buffer.concat([
+      Buffer.from('302e020100300506032b657004220420', 'hex'),
+      Buffer.from(seedHex, 'hex'),
+    ]);
+    const key = createPrivateKey({ key: pkcs8, format: 'der', type: 'pkcs8' });
+    return nodeWitnessSigner(WITNESS_ID, KEY_ID, key);
+  }
+
+  function enabledSigning(seedHex?: string) {
+    return { enabled: true, witnessId: WITNESS_ID, signer: witnessSigner(seedHex) };
+  }
+
+  it('cosigns a checkpoint that passes the §7 obligation (first observation)', async () => {
+    const record = jest.fn().mockResolvedValue({ id: 'cosig-1' });
+    const h = makeHarness({
+      witnessSigning: enabledSigning(),
+      cosignatureRepo: { record },
+    });
+    const leaves = makeLeafHashes(5);
+    const cp = signCheckpoint(privateKey, { tree_size: 5, root_hash: wire(mth(leaves)) });
+    routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: JSON.stringify(cp) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('witnessed');
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        witnessId: WITNESS_ID,
+        keyId: KEY_ID,
+        logId: LOG_ID,
+        treeSize: 5,
+        rootHash: wire(mth(leaves)),
+        timestamp: cp.timestamp,
+      }),
+    );
+    // The stored object is the full signed cosignature over the observed tuple.
+    const arg = record.mock.calls[0]![0];
+    expect(arg.cosignature).toMatchObject({
+      cosignature_version: 'acdp-cosig/1',
+      witness_id: WITNESS_ID,
+      witnessed_checkpoint: { log_id: LOG_ID, tree_size: 5, root_hash: wire(mth(leaves)) },
+      signature: { algorithm: 'ed25519', key_id: KEY_ID },
+    });
+    expect(h.instrumentation.logCosignaturesTotal.inc).toHaveBeenCalledWith({ result: 'minted' });
+  });
+
+  it('cosigns after a verified consistency growth', async () => {
+    const record = jest.fn().mockResolvedValue({ id: 'cosig-1' });
+    const h = makeHarness({
+      witnessSigning: enabledSigning(),
+      cosignatureRepo: { record },
+    });
+    const leaves = makeLeafHashes(5);
+    const prevRoot = wire(mth(leaves.slice(0, 3)));
+    h.witnessRepo.getCursor.mockResolvedValue(cursorAt(LOG_ID, 3, prevRoot));
+    const cp = signCheckpoint(privateKey, { tree_size: 5, root_hash: wire(mth(leaves)) });
+    routeFetch(h, {
+      [`${BASE}/log/checkpoint`]: { status: 200, body: JSON.stringify(cp) },
+      [`${BASE}/log/proof?first=3&second=5`]: {
+        status: 200,
+        body: JSON.stringify({
+          log_id: LOG_ID,
+          first_tree_size: 3,
+          second_tree_size: 5,
+          consistency_path: consistencyProof(3, leaves).map(wire),
+          log_checkpoint: cp,
+        }),
+      },
+    });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('witnessed');
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ treeSize: 5 }));
+  });
+
+  it('MUST NOT cosign a checkpoint that FAILS consistency (the whole point)', async () => {
+    const record = jest.fn().mockResolvedValue({ id: 'cosig-1' });
+    const h = makeHarness({
+      witnessSigning: enabledSigning(),
+      cosignatureRepo: { record },
+    });
+    const good = makeLeafHashes(5);
+    const evil = makeLeafHashes(5, 'x'); // a rewritten size-5 tree
+    const prevRoot = wire(mth(good.slice(0, 3)));
+    h.witnessRepo.getCursor.mockResolvedValue(cursorAt(LOG_ID, 3, prevRoot));
+    const cp = signCheckpoint(privateKey, { tree_size: 5, root_hash: wire(mth(evil)) });
+    routeFetch(h, {
+      [`${BASE}/log/checkpoint`]: { status: 200, body: JSON.stringify(cp) },
+      // A consistency proof that folds to the GOOD second root, not the evil one.
+      [`${BASE}/log/proof?first=3&second=5`]: {
+        status: 200,
+        body: JSON.stringify({
+          log_id: LOG_ID,
+          first_tree_size: 3,
+          second_tree_size: 5,
+          consistency_path: consistencyProof(3, good).map(wire),
+          log_checkpoint: cp,
+        }),
+      },
+    });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('alert');
+    expect(h.witnessRepo.markAlert).toHaveBeenCalled();
+    // NO cosignature is ever minted for a checkpoint failing the §7 obligation.
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('MUST NOT cosign on a signature failure', async () => {
+    const record = jest.fn().mockResolvedValue({ id: 'cosig-1' });
+    const h = makeHarness({
+      witnessSigning: enabledSigning(),
+      cosignatureRepo: { record },
+    });
+    const cp = signCheckpoint(privateKey, { tree_size: 5, root_hash: wire(mth(makeLeafHashes(5))) });
+    const tampered = { ...cp, root_hash: wire(mth(makeLeafHashes(4))) }; // sig no longer matches
+    routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: JSON.stringify(tampered) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('alert');
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('re-cosigning the same head is idempotent (repo dedups; no crash)', async () => {
+    // repo.record returns null on the (witness, log, size, root) conflict.
+    const record = jest.fn().mockResolvedValue(null);
+    const h = makeHarness({
+      witnessSigning: enabledSigning(),
+      cosignatureRepo: { record },
+    });
+    const leaves = makeLeafHashes(5);
+    const cp = signCheckpoint(privateKey, { tree_size: 5, root_hash: wire(mth(leaves)) });
+    routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: JSON.stringify(cp) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('witnessed');
+    expect(record).toHaveBeenCalledTimes(1);
+    // A duplicate is counted, not an error, and never crashes the sweep.
+    expect(h.instrumentation.logCosignaturesTotal.inc).toHaveBeenCalledWith({ result: 'duplicate' });
+  });
+
+  it('stays detect-only when cosigning is disabled (no cosignature minted)', async () => {
+    const record = jest.fn();
+    const h = makeHarness({
+      witnessSigning: { enabled: false, signer: null },
+      cosignatureRepo: { record },
+    });
+    const cp = signCheckpoint(privateKey, { tree_size: 5, root_hash: wire(mth(makeLeafHashes(5))) });
+    routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: JSON.stringify(cp) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('witnessed');
+    expect(record).not.toHaveBeenCalled();
   });
 });

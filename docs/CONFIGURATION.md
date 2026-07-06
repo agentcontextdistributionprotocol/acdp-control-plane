@@ -118,6 +118,36 @@ See [INGEST.md](./INGEST.md).
 | `THROTTLE_TTL_MS` | number | `60000` | Throttle window per `(actorId\|ip)`. |
 | `THROTTLE_LIMIT` | number | `200` | Requests per window. `/auth/*` uses a tighter override. |
 
+## Transparency-log witnessing (RFC-ACDP-0012 / RFC-ACDP-0015)
+
+The checkpoint witness polls `GET /log/checkpoint` on enrolled registries advertising
+`acdp-registry-transparency-log`, verifies each checkpoint's signature and its
+consistency against the last-witnessed head, and alerts on any dishonesty signal
+(root rewrite, split view, tree-size regression, log reset).
+
+| Var | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `LOG_WITNESS_ENABLED` | bool | `false` | Enable the checkpoint-witness sweep. |
+| `LOG_WITNESS_INTERVAL_SECONDS` | number | `300` | Sweep interval. **≥5** when enabled. |
+| `LOG_WITNESS_EXCLUDE_AUTHORITIES` | list | `''` | Authorities never witnessed. |
+
+**Witness cosigning (RFC-ACDP-0015).** When enabled, a checkpoint that passes the §7
+obligation (signature valid **and** consistency from the retained head) is **cosigned**:
+the witness mints a signed `acdp-log-cosignature` over the observed tuple with its own
+Ed25519 `assertionMethod` key and serves it at `GET /log/witness`. Riding the checkpoint
+witness, it requires `LOG_WITNESS_ENABLED=true`. A checkpoint that **fails** the
+obligation is never cosigned.
+
+| Var | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `WITNESS_COSIGNING_ENABLED` | bool | `false` | Enable minting + serving witness cosignatures. |
+| `WITNESS_ID` | string | `''` | The witness's DID (`did:web:<this-CP-host>` or `did:key`). Required when enabled. |
+| `WITNESS_SIGNING_PRIVATE_KEY_PEM` | string | `''` | PEM-encoded **Ed25519** private key the witness cosigns with. Required when enabled. **Dedicated** — never the JWT IdP key (§5/§15). |
+| `WITNESS_KEY_ID` | string | `''` | assertionMethod key id (DID URL under `WITNESS_ID`). Defaults to `<WITNESS_ID>#witness-key-1`. |
+
+Generate the witness key with `openssl genpkey -algorithm ed25519`. `WITNESS_ID`'s host
+must resolve to this CP so consumers can dereference `/.well-known/did.json`.
+
 ## Data retention
 
 | Var | Type | Default | Meaning |
@@ -162,6 +192,11 @@ See [INGEST.md](./INGEST.md).
 - Issuance + `HS256` with `JWT_SECRET` < 32 bytes.
 - Issuance + `EdDSA` with empty `JWT_PRIVATE_KEY_PEM`.
 - Issuance with `JWT_TTL_SECONDS < 60` or `CHALLENGE_TTL_SECONDS < 30`.
+- `LOG_WITNESS_ENABLED=true` with `LOG_WITNESS_INTERVAL_SECONDS < 5`.
+- `WITNESS_COSIGNING_ENABLED=true` without `WITNESS_ID`, without
+  `WITNESS_SIGNING_PRIVATE_KEY_PEM`, or without `LOG_WITNESS_ENABLED=true`.
+  (`WitnessSigningService` additionally rejects a non-Ed25519 key, a malformed
+  witness DID, or a `WITNESS_KEY_ID` not under `WITNESS_ID` — in every environment.)
 
 **Warns** (starts, but flags a risk) on, in production:
 

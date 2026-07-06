@@ -80,6 +80,9 @@ returns `429` with a `Retry-After` header (see [POLICY.md](./POLICY.md)).
 | POST | `/auth/token/revoke` | self/admin | RFC 7009 token revocation |
 | GET  | `/auth/revocations` | admin | Cross-issuer revocation feed |
 | GET  | `/.well-known/jwks.json` | Public | CP public JWKS |
+| GET  | `/log/witness` | Public | This witness's log cosignatures (RFC-ACDP-0015) |
+| GET  | `/.well-known/acdp-witness.json` | Public | Witness capabilities (RFC-ACDP-0015 §9) |
+| GET  | `/.well-known/did.json` | Public | Witness DID document (assertionMethod key) |
 | POST | `/admin/pinned-keys/reload` | admin | Reload pinned keys from env |
 | GET  | `/healthz` `/readyz` `/metrics` | Public | Probes / Prometheus |
 | GET  | `/docs` | dev | Swagger UI |
@@ -458,6 +461,68 @@ Publishes the CP's public verification key(s). For `HS256` returns
 
 Reloads `CONTROL_PLANE_PINNED_KEYS` from the environment and atomically swaps the
 in-memory directory. Returns `{ "ok": true, "count": <n> }`.
+
+---
+
+## Witness cosigning (RFC-ACDP-0015)
+
+When `WITNESS_COSIGNING_ENABLED=true`, the control plane acts as a transparency-log
+**witness**: after the checkpoint witness verifies a registry checkpoint's signature
+**and** its RFC-ACDP-0015 §7 consistency obligation against the retained head, it mints
+a signed `acdp-log-cosignature` over the observed `{log_id, tree_size, root_hash,
+timestamp}` tuple with the witness's own Ed25519 `assertionMethod` key. A consumer
+trusting this witness inherits split-view protection. A checkpoint that **fails** the
+obligation is never cosigned — it stays on the detect/alert path. These endpoints are
+served only when cosigning is enabled (else `404`).
+
+### `GET /log/witness` (Public)
+
+This witness's cosignatures, most-recent first (RFC-ACDP-0015 §6.2). Optional query
+params `log_id` (a `did:web:…/log/<instance>` id) and `tree_size` (a non-negative
+integer) filter the result; a malformed value returns `400` (`schema_violation`).
+`Content-Type: application/acdp+json`.
+
+```json
+{
+  "witness_id": "did:web:witness.example.org",
+  "witness_signatures": [
+    {
+      "cosignature_version": "acdp-cosig/1",
+      "witness_id": "did:web:witness.example.org",
+      "witnessed_checkpoint": { "log_id": "…/log/1", "tree_size": 5, "root_hash": "sha256:…", "timestamp": "2026-07-04T12:00:00.000Z" },
+      "witnessed_at": "2026-07-04T12:00:05.000Z",
+      "signature": { "algorithm": "ed25519", "key_id": "did:web:witness.example.org#witness-key-1", "value": "…" }
+    }
+  ]
+}
+```
+
+### `GET /.well-known/acdp-witness.json` (Public)
+
+Witness capabilities document (RFC-ACDP-0015 §9): the witness DID, the
+`acdp-log-witness` profile, the logs it has cosigned (`covered_logs`, advisory), and
+the cosignature endpoint. `Cache-Control: public, max-age=300`.
+
+```json
+{
+  "witness_id": "did:web:witness.example.org",
+  "profiles": ["acdp-log-witness"],
+  "covered_logs": ["did:web:registry.example.com/log/1"],
+  "cosignature_endpoint": "/log/witness"
+}
+```
+
+### `GET /.well-known/did.json` (Public)
+
+The witness DID document. Carries the single active `assertionMethod` Ed25519 key
+(as `Ed25519VerificationKey2020` / `publicKeyMultibase`) a consumer resolves
+`signature.key_id` to when verifying a cosignature (RFC-ACDP-0015 §8 step 2).
+`Content-Type: application/did+json`. `WITNESS_ID`'s host MUST point at this CP for
+the `did:web` document to resolve.
+
+> The witness key is **dedicated** — never the federation IdP JWT key at
+> `/.well-known/jwks.json` (RFC-ACDP-0015 §5/§15 require an independent witness signing
+> role; the JWT key may be HS256 with no publishable public half).
 
 ---
 

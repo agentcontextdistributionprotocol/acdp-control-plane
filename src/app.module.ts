@@ -50,6 +50,7 @@ import { LineageEdgeRepository } from './storage/lineage-edge.repository';
 import { DataRetentionService } from './retention/data-retention.service';
 import { BanditRouter } from './routing/bandit-router.service';
 import { RoutingController } from './routing/routing.controller';
+import { LogCosignatureRepository } from './storage/log-cosignature.repository';
 import { LogInclusionAuditRepository } from './storage/log-inclusion-audit.repository';
 import { LogWitnessRepository } from './storage/log-witness.repository';
 import { ReceiptAuditRepository } from './storage/receipt-audit.repository';
@@ -61,6 +62,8 @@ import { WebhookController } from './webhooks/webhook.controller';
 import { WebhookDeliveryRepository } from './webhooks/webhook-delivery.repository';
 import { WebhookRepository } from './webhooks/webhook.repository';
 import { WebhookService } from './webhooks/webhook.service';
+import { WitnessController } from './witness/witness.controller';
+import { WitnessSigningService } from './witness/witness-signing.service';
 
 @Module({
   imports: [
@@ -97,6 +100,9 @@ import { WebhookService } from './webhooks/webhook.service';
     RoutingController,
     HealthController,
     MetricsController,
+    // RFC-ACDP-0015 witness endpoints: GET /log/witness + the witness
+    // /.well-known/{did.json,acdp-witness.json} identity docs (all @Public()).
+    WitnessController,
     // Admin: pinned-key directory reload. Mounted at AppModule level
     // because the underlying PinnedKeysService is registered globally
     // here (not in AuthModule), and the endpoint is useful even when
@@ -143,6 +149,7 @@ import { WebhookService } from './webhooks/webhook.service';
     RegistryEnrollmentRepository,
     ReceiptAuditRepository,
     LogWitnessRepository,
+    LogCosignatureRepository,
     LogInclusionAuditRepository,
     WebhookRepository,
     WebhookDeliveryRepository,
@@ -167,6 +174,10 @@ import { WebhookService } from './webhooks/webhook.service';
     // + receipt↔log inclusion cross-check. Both config-gated sweepers, same
     // shared SSRF-gated federation client / DID resolver / profile probe as
     // the receipt audit.
+    // ACDP 0.4.0 (RFC-ACDP-0015): witness cosigning. WitnessSigningService holds
+    // the dedicated witness key + serves the identity docs; the checkpoint
+    // witness mints cosignatures through it after the §7 obligation passes.
+    WitnessSigningService,
     CheckpointWitnessPollerService,
     LogInclusionAuditService,
     {

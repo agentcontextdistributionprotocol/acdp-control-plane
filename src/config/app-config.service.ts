@@ -239,6 +239,27 @@ export class AppConfigService implements OnModuleInit {
   // Per-registry opt-out: authorities listed here are never witnessed.
   readonly logWitnessExcludeAuthorities = readStringList('LOG_WITNESS_EXCLUDE_AUTHORITIES');
 
+  // Transparency-log witness COSIGNING (ACDP 0.4.0, RFC-ACDP-0015). Evolves the
+  // checkpoint witness above from detect-only into a COSIGNING witness: after a
+  // checkpoint passes the §7 obligation (signature + consistency from the
+  // retained head), the poller MINTS a signed acdp-log-cosignature over the
+  // observed tuple with the witness's OWN Ed25519 assertionMethod key and serves
+  // it at GET /log/witness. Requires the checkpoint witness (LOG_WITNESS_ENABLED)
+  // — the cosign layer rides its verification. The witness key is DEDICATED
+  // (never the JWT IdP key): §5/§15 require an independent witness signing role,
+  // and the IdP key may be HS256 (no publishable public half). See
+  // `src/witness/witness-signing.service.ts`.
+  readonly witnessCosigningEnabled = readBoolean('WITNESS_COSIGNING_ENABLED', false);
+  // The witness's own DID (did:web from this CP's host, or did:key). Its
+  // /.well-known/did.json (served by WitnessController) MUST carry the
+  // assertionMethod key below so consumers can resolve signature.key_id.
+  readonly witnessId = process.env.WITNESS_ID ?? '';
+  // PEM-encoded Ed25519 private key the witness cosigns with.
+  readonly witnessSigningPrivateKeyPem = process.env.WITNESS_SIGNING_PRIVATE_KEY_PEM ?? '';
+  // Optional assertionMethod key id (DID URL under WITNESS_ID). Defaults to
+  // `<WITNESS_ID>#witness-key-1`.
+  readonly witnessKeyId = process.env.WITNESS_KEY_ID ?? '';
+
   // Receipt ↔ log inclusion cross-check (RFC-ACDP-0012 §9.1): for stored
   // publish events with receipts from log-advertising registries, fetch
   // GET /log/proof?ctx_id=… and verify inclusion against a verified
@@ -357,6 +378,26 @@ export class AppConfigService implements OnModuleInit {
       throw new Error(
         'LOG_WITNESS_INTERVAL_SECONDS must be >= 5 when the checkpoint witness is enabled',
       );
+    }
+
+    // Witness cosigning (RFC-ACDP-0015). Enabled requires a witness DID + key;
+    // the full Ed25519/PEM validation happens in WitnessSigningService at boot,
+    // but fail fast here on the obvious misconfigurations and the missing
+    // prerequisite (cosigning rides the checkpoint witness's verification).
+    if (this.witnessCosigningEnabled) {
+      if (!this.witnessId.trim()) {
+        throw new Error('WITNESS_ID is required when WITNESS_COSIGNING_ENABLED=true');
+      }
+      if (!this.witnessSigningPrivateKeyPem.trim()) {
+        throw new Error(
+          'WITNESS_SIGNING_PRIVATE_KEY_PEM (Ed25519 PEM) is required when WITNESS_COSIGNING_ENABLED=true',
+        );
+      }
+      if (!this.logWitnessEnabled) {
+        throw new Error(
+          'WITNESS_COSIGNING_ENABLED=true requires LOG_WITNESS_ENABLED=true — cosigning rides the checkpoint witness verification',
+        );
+      }
     }
 
     if (this.logInclusionAuditEnabled) {
