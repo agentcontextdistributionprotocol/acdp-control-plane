@@ -2,33 +2,31 @@
  * Transparency-log verification (RFC-ACDP-0012 §5/§6/§9) for the checkpoint
  * witness and the receipt↔log inclusion cross-check.
  *
- * ## Implementation choice (binding vs TS) — documented per the SDK rule
+ * ## Implementation choice (native binding, TS fallback) — per the SDK rule
  *
- * The published `acdp` binding this repo consumes
- * (`npm:@agentcontextdistributionprotocol/acdp@^0.5.0`) predates the 0.3.0
- * log surface (`AcdpVerifier.verifyLogCheckpoint` / `verifyLogInclusion` /
- * `verifyLogConsistency` / `buildLogLeaf`, `AcdpMerkle`) — those methods ship
- * on the not-yet-published `feature/bindings-0.3.0-surfaces` branch of
- * acdp-rs. Unlike the receipt API (where receipt-verify.ts degrades to
- * structural-only checks on an old binding), a checkpoint witness that cannot
- * verify proofs is useless, so the §5/§9 algorithms are implemented here:
+ * The pinned `acdp` binding (`npm:@agentcontextdistributionprotocol/acdp@^0.6.0`)
+ * carries the RFC-ACDP-0012 log surface natively:
+ * `AcdpVerifier.verifyLogInclusion` / `verifyLogConsistency` /
+ * `verifyLogCheckpoint` / `buildLogLeaf` and `AcdpMerkle.{leafHash,nodeHash,
+ * rootHash}`. `verifyInclusion()` / `verifyConsistency()` DELEGATE the §9.1
+ * audit-path and §9.2 consistency folds to that binding — the same Rust
+ * arithmetic the reference consumer runs — whenever `sdkHasLogSurface()` is
+ * true (0.6.0+). The verdicts are byte-identical to the host TS fold; a
+ * conformance cross-check (`log-verify.parity.spec.ts`) runs the log-001 /
+ * log-003 golden vectors through BOTH paths and asserts the same roots and
+ * verdicts.
  *
- *   - They are pure, fully pinned SHA-256 arithmetic — the RFC 6962/9162
- *     audit-path and consistency folds transcribed VERBATIM in
- *     RFC-ACDP-0012 §9.1/§9.2, plus the §5.1 0x00/0x01 domain-separation
- *     prefixes — not a wire format the CLAUDE.md SDK rule protects.
- *   - Everything that IS protocol wire format still comes from the SDK:
- *     JCS canonicalization (`AcdpCanonicalizer.canonicalize`, RFC 8785),
- *     Ed25519 signature verification (`AcdpVerifier` via
- *     `verifySignatureB64`), and receipt-key resolution + the RFC-ACDP-0010
- *     §9 lifecycle (`DidWebResolverService.resolveReceiptKey`). No
- *     canonicalization, signature, or DID logic is re-implemented in TS.
- *
- * `sdkHasLogSurface()` feature-detects a future binding that carries the log
- * API (mirroring `sdkSupportsReceipts()`); when the control plane upgrades to
- * it, delegate these functions to the binding and retire the host-side Merkle
- * math (the callers already speak in JSON strings / wire hashes, matching the
- * binding's surface).
+ * The host-side §5/§9 SHA-256 arithmetic (`verifyInclusionPath`,
+ * `verifyConsistencyPath`, `leafHash`, `nodeHash`) is RETAINED as the
+ * fallback for a binding that predates the log surface (≤ 0.5.0) — a
+ * checkpoint witness that cannot verify proofs is useless, so it degrades to
+ * the pure, fully pinned RFC 6962/9162 folds (§5.1 0x00/0x01
+ * domain-separation prefixes included) rather than crashing. Both branches
+ * still take everything that IS protocol wire format from the SDK: JCS
+ * canonicalization (`AcdpCanonicalizer.canonicalize`, RFC 8785), Ed25519
+ * signature verification (`AcdpVerifier` via `verifySignatureB64`), and
+ * receipt-key resolution + the RFC-ACDP-0010 §9 lifecycle
+ * (`DidWebResolverService.resolveReceiptKey`).
  *
  * All functions return outcome objects — they never throw on untrusted input.
  */
@@ -41,7 +39,14 @@ export const CHECKPOINT_MAX_FUTURE_SKEW_MS = 120_000;
 
 export type VerifyOutcome = { ok: true } | { ok: false; reason: string };
 
-/** True when the installed `acdp` binding carries the RFC-ACDP-0012 API. */
+/**
+ * True when the installed `acdp` binding carries the RFC-ACDP-0012 log API
+ * (0.6.0+). The probed names are the binding's public static methods — the
+ * NAPI surface is camelCase (`verifyLogCheckpoint`, not `verify_log_...`), so
+ * these match the published `AcdpVerifier` methods exactly. When true,
+ * `verifyInclusion()` / `verifyConsistency()` delegate the §9.1/§9.2 folds to
+ * the binding; when false they fall back to the host TS arithmetic below.
+ */
 export function sdkHasLogSurface(): boolean {
   const v = AcdpVerifier as unknown as Record<string, unknown>;
   return (
@@ -50,6 +55,60 @@ export function sdkHasLogSurface(): boolean {
     typeof v.verifyLogConsistency === 'function' &&
     typeof v.buildLogLeaf === 'function'
   );
+}
+
+/** The RFC-ACDP-0012 §9.1/§9.2 fold surface on the 0.6.0+ binding. */
+interface LogCapableVerifier {
+  verifyLogInclusion(inclusionJson: string, checkpointJson: string, reconstructedLeafJson: string): string;
+  verifyLogConsistency(consistencyJson: string, checkpointJson: string, firstRootHash: string): string;
+}
+
+/**
+ * Map a native fold verdict to a {@link VerifyOutcome}. The binding returns a
+ * JSON string `{"valid":true}` / `{"valid":false,"code","error"}` for a
+ * shape-valid proof that simply fails to fold, and THROWS (with a `.code`)
+ * on structurally malformed input — both collapse to `{ ok:false, reason }`.
+ */
+function nativeVerdict(run: () => string): VerifyOutcome {
+  let json: string;
+  try {
+    json = run();
+  } catch (err) {
+    return { ok: false, reason: nativeErr(err) };
+  }
+  let parsed: { valid?: unknown; error?: unknown };
+  try {
+    parsed = JSON.parse(json) as { valid?: unknown; error?: unknown };
+  } catch {
+    return { ok: false, reason: 'native log verification returned non-JSON' };
+  }
+  if (parsed.valid === true) return { ok: true };
+  return {
+    ok: false,
+    reason: typeof parsed.error === 'string' ? parsed.error : 'native log verification failed',
+  };
+}
+
+function nativeErr(err: unknown): string {
+  if (err && typeof err === 'object' && 'code' in err) {
+    return `${String((err as { code: unknown }).code)}: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Strip an embedded `log_checkpoint` from a proof before a native fold call.
+ * The binding requires any embedded checkpoint to be byte-equal to the
+ * separately-supplied (signature-verified) one and rejects the proof
+ * otherwise (§9.1 step 3). The host TS path only ever consumes the trusted
+ * checkpoint's `root_hash`, so we drop the embedded copy and let the binding
+ * insert our verified checkpoint — keeping the two paths byte-identical.
+ */
+function stripEmbeddedCheckpoint<T extends { log_checkpoint?: unknown }>(
+  proof: T,
+): Omit<T, 'log_checkpoint'> {
+  const { log_checkpoint: _omit, ...rest } = proof;
+  return rest;
 }
 
 // ── Checkpoint (signed tree head), §6 / §9.3 ─────────────────────────────
@@ -493,4 +552,112 @@ export function parseConsistencyProof(
 
 function isWireHashArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((e) => typeof e === 'string' && WIRE_HASH_RE.test(e));
+}
+
+// ── §9.1 / §9.2 fold: native binding (0.6.0+) with a host TS fallback ─────
+//
+// The wrappers below are what the checkpoint witness and the inclusion-audit
+// sweep call. Callers supply the parsed proof, the already signature-verified
+// checkpoint, and (for inclusion) the leaf reconstructed from OUR stored
+// receipt — the JSON surface the binding speaks — so `sdkHasLogSurface()`
+// picks the Rust fold vs the host arithmetic transparently.
+
+/**
+ * §9.1 steps 2, 5, 6 — hash the reconstructed leaf, bind the proof to the
+ * checkpoint, fold the audit path, compare against the checkpoint root.
+ *
+ * Native (0.6.0+): `AcdpVerifier.verifyLogInclusion`. Fallback: the host
+ * §5.1 leaf hash + the RFC 6962 fold in {@link verifyInclusionPath}. Both
+ * consume the SAME checkpoint `root_hash`, so the verdict is identical.
+ */
+export function verifyInclusion(
+  proof: InclusionProof,
+  checkpoint: LogCheckpoint,
+  leaf: Record<string, unknown>,
+): VerifyOutcome {
+  if (sdkHasLogSurface()) return nativeVerifyInclusion(proof, checkpoint, leaf);
+  return tsVerifyInclusion(proof, checkpoint, leaf);
+}
+
+/** The native-binding branch of {@link verifyInclusion} (exported for the parity cross-check). */
+export function nativeVerifyInclusion(
+  proof: InclusionProof,
+  checkpoint: LogCheckpoint,
+  leaf: Record<string, unknown>,
+): VerifyOutcome {
+  const surface = AcdpVerifier as unknown as LogCapableVerifier;
+  return nativeVerdict(() =>
+    surface.verifyLogInclusion(
+      JSON.stringify(stripEmbeddedCheckpoint(proof)),
+      JSON.stringify(checkpoint),
+      JSON.stringify(leaf),
+    ),
+  );
+}
+
+/** The host-arithmetic branch of {@link verifyInclusion} (exported for the parity cross-check). */
+export function tsVerifyInclusion(
+  proof: InclusionProof,
+  checkpoint: LogCheckpoint,
+  leaf: Record<string, unknown>,
+): VerifyOutcome {
+  const leafH = leafHash(leaf);
+  if (leafH === null) {
+    return { ok: false, reason: 'reconstructed leaf could not be canonicalized (JCS)' };
+  }
+  return verifyInclusionPath(
+    proof.leaf_index,
+    proof.tree_size,
+    leafH,
+    proof.inclusion_path,
+    checkpoint.root_hash,
+  );
+}
+
+/**
+ * §9.2 — prove the retained tree at `firstRootHash` (size
+ * `proof.first_tree_size`) is a prefix of the checkpointed later tree.
+ *
+ * Native (0.6.0+): `AcdpVerifier.verifyLogConsistency`. Fallback: the RFC
+ * 6962 consistency fold in {@link verifyConsistencyPath}. Both take the
+ * retained root and the checkpoint's `root_hash` as the two anchors.
+ */
+export function verifyConsistency(
+  proof: ConsistencyProof,
+  checkpoint: LogCheckpoint,
+  firstRootHash: string,
+): VerifyOutcome {
+  if (sdkHasLogSurface()) return nativeVerifyConsistency(proof, checkpoint, firstRootHash);
+  return tsVerifyConsistency(proof, checkpoint, firstRootHash);
+}
+
+/** The native-binding branch of {@link verifyConsistency} (exported for the parity cross-check). */
+export function nativeVerifyConsistency(
+  proof: ConsistencyProof,
+  checkpoint: LogCheckpoint,
+  firstRootHash: string,
+): VerifyOutcome {
+  const surface = AcdpVerifier as unknown as LogCapableVerifier;
+  return nativeVerdict(() =>
+    surface.verifyLogConsistency(
+      JSON.stringify(stripEmbeddedCheckpoint(proof)),
+      JSON.stringify(checkpoint),
+      firstRootHash,
+    ),
+  );
+}
+
+/** The host-arithmetic branch of {@link verifyConsistency} (exported for the parity cross-check). */
+export function tsVerifyConsistency(
+  proof: ConsistencyProof,
+  checkpoint: LogCheckpoint,
+  firstRootHash: string,
+): VerifyOutcome {
+  return verifyConsistencyPath(
+    proof.first_tree_size,
+    proof.second_tree_size,
+    proof.consistency_path,
+    firstRootHash,
+    checkpoint.root_hash,
+  );
 }

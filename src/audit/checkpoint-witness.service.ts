@@ -69,7 +69,7 @@ import {
   parseConsistencyProof,
   sdkHasLogSurface,
   verifyCheckpointSignature,
-  verifyConsistencyPath,
+  verifyConsistency,
 } from './log-verify';
 import { RegistryProfileService } from './registry-profile.service';
 
@@ -126,7 +126,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     this.logger.log(
       `checkpoint witness enabled: interval=${this.config.logWitnessIntervalSeconds}s ` +
         `excluded=[${this.config.logWitnessExcludeAuthorities.join(',')}] ` +
-        `verification=${sdkHasLogSurface() ? 'acdp-binding' : 'host (§5/§9 over SDK JCS + Ed25519; binding predates the log API)'}`,
+        `verification=${sdkHasLogSurface() ? 'acdp-binding (native §9.2 fold)' : 'host (§5/§9 over SDK JCS + Ed25519; binding predates the log API)'}`,
     );
     void this.sweep().catch((err) =>
       this.logger.warn(`initial log-witness sweep failed: ${msgOf(err)}`),
@@ -396,15 +396,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
           ? `proof sizes ${parsed.proof.first_tree_size}→${parsed.proof.second_tree_size} do not match the demanded ${prior.size}→${checkpoint.tree_size}`
           : null;
 
-    const foldVerdict = shapeError
-      ? { ok: false as const, reason: shapeError }
-      : verifyConsistencyPath(
-          prior.size,
-          checkpoint.tree_size,
-          (parsed as { ok: true; proof: { consistency_path: string[] } }).proof.consistency_path,
-          prior.root,
-          checkpoint.root_hash,
-        );
+    // Native binding (acdp 0.6.0+) when present; host arithmetic otherwise.
+    // Both fold the §9.2 consistency path against OUR retained root.
+    const foldVerdict =
+      shapeError || !parsed.ok
+        ? { ok: false as const, reason: shapeError ?? 'malformed consistency proof' }
+        : verifyConsistency(parsed.proof, checkpoint, prior.root);
 
     if (!foldVerdict.ok) {
       // THE headline detection: the retained pre-rewrite root, the new signed
