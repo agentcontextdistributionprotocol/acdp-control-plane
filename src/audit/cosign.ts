@@ -9,27 +9,34 @@
  * observed and verified a specific `(log_id, tree_size, root_hash, timestamp)`
  * tuple no later than `witnessed_at`, signed with the WITNESS's own key.
  *
- * ## Implementation choice (host TS today, native swap tomorrow) — the SDK rule
+ * ## Implementation choice (native binding, TS fallback) — the SDK rule
  *
- * The pinned `acdp` binding (`@agentcontextdistributionprotocol/acdp@^0.6.0`)
- * carries the RFC-ACDP-0012 log surface, but NOT the RFC-ACDP-0015 cosignature
- * surface (that landed in the Rust crate — `WitnessSigner` / `WitnessedCheckpoint`
- * / `verify_cosignature` — but not yet the bindings). So the §5 signing
- * construction is implemented HOST-SIDE here, exactly as the checkpoint witness
- * implements the §5/§9 Merkle math in TS. It still takes everything that IS
- * protocol wire format from the SDK: JCS canonicalization
+ * The pinned `acdp` binding (`@agentcontextdistributionprotocol/acdp@^0.7.0`)
+ * carries the RFC-ACDP-0015 cosignature surface natively:
+ * `AcdpVerifier.buildWitnessCosignature` (MINT, §5),
+ * `AcdpVerifier.verifyWitnessCosignature` (VERIFY, §8), and
+ * `AcdpVerifier.evaluateWitnessQuorum` (§8 N-witnessed report). When
+ * {@link sdkHasCosignatureSurface} is true (0.7.0+), {@link mintCosignature}
+ * DELEGATES the §5 signing construction to `buildWitnessCosignature` — the same
+ * Rust arithmetic the reference implementation runs — and {@link verifyCosignature}
+ * (when handed the full observed checkpoint) delegates §8 to
+ * `verifyWitnessCosignature`. The verdicts / bytes are identical to the host TS
+ * path; a conformance cross-check (`cosign.spec.ts`) runs the wit-001 golden
+ * vector through BOTH paths and asserts the same canonical form, cosignature
+ * hash, and signature bytes.
+ *
+ * The host-side §5 construction (`tsMintCosignature` / `tsVerifyCosignature`) is
+ * RETAINED as the fallback for a binding that predates the cosignature surface
+ * (≤ 0.6.0) — a witness that cannot mint is useless, so it degrades to the pure,
+ * fully-pinned §5 construction rather than crashing. Both branches still take
+ * everything that IS protocol wire format from the SDK: JCS canonicalization
  * (`AcdpCanonicalizer.canonicalize`, RFC 8785) and Ed25519 signature
- * verification (`AcdpVerifier` via `verifySignatureB64`). The signing primitive
- * — Ed25519 over the ASCII bytes of `"sha256:<hex>"` — is `node:crypto`, the
- * same primitive the CP already uses to sign its EdDSA federation JWTs
- * (`src/auth/jwt-signing.ts`) and to sign test checkpoints in the log tests.
- * The byte output is pinned identical to the Rust/Python implementations by the
- * wit-001 golden vector (`cosign.spec.ts`, seed 0x33×32).
- *
- * {@link sdkHasCosignatureSurface} is the feature-detect for the future native
- * swap (mirrors `sdkHasLogSurface` in `log-verify.ts`): when a later binding
- * exposes the cosignature API, mint/verify can delegate to the Rust arithmetic
- * with no call-site change.
+ * verification (`AcdpVerifier` via `verifySignatureB64`). The host signing
+ * primitive — Ed25519 over the ASCII bytes of `"sha256:<hex>"` — is
+ * `node:crypto`, the same primitive the CP already uses to sign its EdDSA
+ * federation JWTs (`src/auth/jwt-signing.ts`). The byte output of BOTH paths is
+ * pinned identical to the Rust/Python implementations by the wit-001 golden
+ * vector (`cosign.spec.ts`, seed 0x33×32).
  *
  * The §5 construction reuses RFC-ACDP-0010 §5 verbatim:
  *   1. Preimage  = JCS(cosignature − signature).
@@ -40,8 +47,9 @@
  * All functions return outcome objects — they never throw on untrusted input.
  */
 import { createHash, sign as edSign, type KeyObject } from 'node:crypto';
-import { AcdpCanonicalizer } from 'acdp';
+import { AcdpCanonicalizer, AcdpVerifier } from 'acdp';
 import { verifySignatureB64 } from '../auth/acdp-verify';
+import type { LogCheckpoint } from './log-verify';
 
 /** RFC-ACDP-0015 §4: the sole cosignature envelope version / domain separator. */
 export const COSIGNATURE_VERSION = 'acdp-cosig/1';
@@ -90,23 +98,42 @@ export interface WitnessSigner {
   witnessId: string;
   keyId: string;
   algorithm: 'ed25519';
+  /**
+   * The witness Ed25519 signing seed as hex, when it can be recovered from the
+   * key material. Present for `node:crypto` keys; enables the native
+   * `buildWitnessCosignature` MINT path (which takes a seed, not a KeyObject).
+   * `undefined` forces the host TS mint. Never logged or serialized.
+   */
+  seedHex?: string;
   signAsciiToBase64(message: string): string;
 }
 
 /**
  * Build a {@link WitnessSigner} backed by a `node:crypto` Ed25519 private key
  * (loaded from a PEM at boot, or from a raw seed in tests). `key_id` must be a
- * DID URL under `witnessId` (RFC-ACDP-0015 §4).
+ * DID URL under `witnessId` (RFC-ACDP-0015 §4). The raw 32-byte seed is
+ * extracted from the PKCS#8 DER (Ed25519 private keys serialize as a fixed
+ * 48-byte DER whose last 32 bytes are the seed) so the native MINT path can use
+ * it; extraction failures leave `seedHex` undefined and simply keep the host
+ * mint.
  */
 export function nodeWitnessSigner(
   witnessId: string,
   keyId: string,
   privateKey: KeyObject,
 ): WitnessSigner {
+  let seedHex: string | undefined;
+  try {
+    const der = privateKey.export({ format: 'der', type: 'pkcs8' });
+    if (der.length === 48) seedHex = Buffer.from(der).subarray(16, 48).toString('hex');
+  } catch {
+    seedHex = undefined;
+  }
   return {
     witnessId,
     keyId,
     algorithm: 'ed25519',
+    seedHex,
     signAsciiToBase64(message: string): string {
       return edSign(null, Buffer.from(message, 'ascii'), privateKey).toString('base64');
     },
@@ -114,29 +141,49 @@ export function nodeWitnessSigner(
 }
 
 /**
- * True when the installed `acdp` binding carries a native RFC-ACDP-0015
- * cosignature surface. The 0.6.0 binding does NOT (the Rust crate has
- * `WitnessSigner` but the bindings were not regenerated), so this returns
- * false and mint/verify use the host TS §5 construction below. Mirrors
- * `sdkHasLogSurface()` — when a 0.7.0+ binding ships the API, this flips true
- * and the arithmetic can delegate to Rust with no call-site change.
+ * True when the installed `acdp` binding carries the native RFC-ACDP-0015
+ * cosignature surface (0.7.0+). The probed names are the binding's public
+ * static `AcdpVerifier` methods — the NAPI surface is camelCase
+ * (`buildWitnessCosignature`, not `build_witness_cosignature`), so these match
+ * the published methods exactly. When true, {@link mintCosignature} delegates
+ * the §5 MINT to `buildWitnessCosignature` and {@link verifyCosignature}
+ * delegates the §8 VERIFY to `verifyWitnessCosignature`; when false they fall
+ * back to the host TS §5 construction below. (`evaluateWitnessQuorum` is the
+ * §8 N-witnessed report — probed so the detect only trips on the complete
+ * surface, exercised in the wit-003 parity cross-check.)
  */
 export function sdkHasCosignatureSurface(): boolean {
-  // Probe both the verifier and a producer/signer surface — the NAPI names
-  // would be camelCase (`verifyWitnessCosignature`, `signWitnessCosignature`),
-  // mirroring the log surface probe. Neither exists on 0.6.0.
-  const probes: Array<[unknown, string]> = [];
-  try {
+  const v = AcdpVerifier as unknown as Record<string, unknown>;
+  return (
+    typeof v.buildWitnessCosignature === 'function' &&
+    typeof v.verifyWitnessCosignature === 'function' &&
+    typeof v.evaluateWitnessQuorum === 'function'
+  );
+}
 
-    const acdp = require('acdp') as Record<string, unknown>;
-    const verifier = acdp.AcdpVerifier as Record<string, unknown> | undefined;
-    const producer = acdp.AcdpProducer as Record<string, unknown> | undefined;
-    if (verifier) probes.push([verifier.verifyWitnessCosignature, 'verifyWitnessCosignature']);
-    if (producer) probes.push([producer.signWitnessCosignature, 'signWitnessCosignature']);
-  } catch {
-    return false;
+/** The RFC-ACDP-0015 §5/§8 cosignature surface on the 0.7.0+ binding. */
+interface CosignCapableVerifier {
+  buildWitnessCosignature(
+    witnessedCheckpointJson: string,
+    witnessDid: string,
+    witnessSeedHex: string,
+    witnessedAtRfc3339: string,
+  ): string;
+  verifyWitnessCosignature(
+    cosigJson: string,
+    witnessDidDocJson: string,
+    expectedCheckpointJson: string,
+    nowRfc3339?: string | null,
+    maxClockSkewSecs?: number | null,
+  ): string;
+}
+
+/** Map a native error (which may carry a `.code`) to a reason string. */
+function nativeErr(err: unknown): string {
+  if (err && typeof err === 'object' && 'code' in err) {
+    return `${String((err as { code: unknown }).code)}: ${err instanceof Error ? err.message : String(err)}`;
   }
-  return probes.length === 2 && probes.every(([fn]) => typeof fn === 'function');
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -162,13 +209,90 @@ export function cosignatureHash(unsigned: Omit<LogCosignature, 'signature'>): st
  * this only performs the §5 signing construction. Returns the signed object
  * plus its hash, or an error if the object cannot be canonicalized.
  */
+export type MintOutcome =
+  | { ok: true; cosignature: LogCosignature; cosignatureHash: string }
+  | { ok: false; reason: string };
+
 export function mintCosignature(
   witnessedCheckpoint: WitnessedCheckpoint,
   witnessedAt: string,
   signer: WitnessSigner,
-):
-  | { ok: true; cosignature: LogCosignature; cosignatureHash: string }
-  | { ok: false; reason: string } {
+): MintOutcome {
+  // Native (0.7.0+) when the surface is present, the signer exposes its seed,
+  // and the key_id follows the binding's fixed `<witnessId>#witness-key-1`
+  // convention (`buildWitnessCosignature` mints under exactly that key id, so a
+  // custom key id can only be served by the host path). A native failure
+  // degrades to the byte-identical host mint so a witness never stalls.
+  if (canNativeMint(signer)) {
+    const native = nativeMintCosignature(witnessedCheckpoint, witnessedAt, signer);
+    if (native.ok) return native;
+  }
+  return tsMintCosignature(witnessedCheckpoint, witnessedAt, signer);
+}
+
+/** True when {@link mintCosignature} can route this signer through the binding. */
+function canNativeMint(signer: WitnessSigner): boolean {
+  return (
+    sdkHasCosignatureSurface() &&
+    typeof signer.seedHex === 'string' &&
+    signer.keyId === `${signer.witnessId}#witness-key-1`
+  );
+}
+
+/**
+ * The native-binding branch of {@link mintCosignature} (exported for the parity
+ * cross-check): delegate the §5 construction to `AcdpVerifier.buildWitnessCosignature`.
+ * The binding mints under `<witnessId>#witness-key-1` and signs the ASCII bytes
+ * of the `"sha256:<hex>"` cosignature hash — byte-identical to the host path.
+ */
+export function nativeMintCosignature(
+  witnessedCheckpoint: WitnessedCheckpoint,
+  witnessedAt: string,
+  signer: WitnessSigner,
+): MintOutcome {
+  if (typeof signer.seedHex !== 'string') {
+    return { ok: false, reason: 'signer exposes no seed for the native mint path' };
+  }
+  const surface = AcdpVerifier as unknown as CosignCapableVerifier;
+  let json: string;
+  try {
+    json = surface.buildWitnessCosignature(
+      JSON.stringify({
+        log_id: witnessedCheckpoint.log_id,
+        tree_size: witnessedCheckpoint.tree_size,
+        root_hash: witnessedCheckpoint.root_hash,
+        timestamp: witnessedCheckpoint.timestamp,
+      }),
+      signer.witnessId,
+      signer.seedHex,
+      witnessedAt,
+    );
+  } catch (err) {
+    return { ok: false, reason: nativeErr(err) };
+  }
+  let cosignature: LogCosignature;
+  try {
+    cosignature = JSON.parse(json) as LogCosignature;
+  } catch {
+    return { ok: false, reason: 'native mint returned non-JSON' };
+  }
+  const { signature: _omit, ...unsigned } = cosignature;
+  const hash = cosignatureHash(unsigned);
+  if (hash === null) {
+    return { ok: false, reason: 'native cosignature could not be canonicalized (JCS)' };
+  }
+  return { ok: true, cosignature, cosignatureHash: hash };
+}
+
+/**
+ * The host-arithmetic branch of {@link mintCosignature} (exported for the parity
+ * cross-check): the pure §5 construction over SDK JCS + node:crypto Ed25519.
+ */
+export function tsMintCosignature(
+  witnessedCheckpoint: WitnessedCheckpoint,
+  witnessedAt: string,
+  signer: WitnessSigner,
+): MintOutcome {
   const unsigned: Omit<LogCosignature, 'signature'> = {
     cosignature_version: COSIGNATURE_VERSION,
     witness_id: signer.witnessId,
@@ -308,8 +432,69 @@ function validateWitnessedCheckpoint(raw: unknown): string | null {
  * point (§5). A failure here surfaces as `invalid_witness_cosignature` (§10).
  * Ed25519 verify goes through the SDK (`verifySignatureB64`), the same
  * parity-guaranteed path the checkpoint witness uses.
+ *
+ * Native (0.7.0+): when `expectedCheckpoint` (the full §6 checkpoint the caller
+ * independently holds) is supplied AND the binding carries the cosignature
+ * surface, the §8 verification delegates to `AcdpVerifier.verifyWitnessCosignature`
+ * — witness binding, checkpoint binding, and signature all in Rust. Without a
+ * checkpoint, or on a ≤0.6.0 binding, it runs the host §8 steps 2–3 below. Both
+ * paths return the same verdict for a well-formed cosignature.
  */
 export function verifyCosignature(
+  cosignature: LogCosignature,
+  witnessPublicKeyB64: string,
+  expectedCheckpoint?: LogCheckpoint,
+): CosignOutcome {
+  if (expectedCheckpoint !== undefined && sdkHasCosignatureSurface()) {
+    return nativeVerifyCosignature(cosignature, witnessPublicKeyB64, expectedCheckpoint);
+  }
+  return tsVerifyCosignature(cosignature, witnessPublicKeyB64);
+}
+
+/**
+ * The native-binding branch of {@link verifyCosignature} (exported for the
+ * parity cross-check). Synthesizes the witness's resolved DID document from the
+ * raw public key (the shape §8 step 2 dereferences) and delegates the §8
+ * verification to `AcdpVerifier.verifyWitnessCosignature` against the caller's
+ * verified checkpoint.
+ */
+export function nativeVerifyCosignature(
+  cosignature: LogCosignature,
+  witnessPublicKeyB64: string,
+  expectedCheckpoint: LogCheckpoint,
+): CosignOutcome {
+  const surface = AcdpVerifier as unknown as CosignCapableVerifier;
+  const didDoc = witnessDidDocFromPubkey(
+    cosignature.witness_id,
+    cosignature.signature.key_id,
+    witnessPublicKeyB64,
+  );
+  let json: string;
+  try {
+    json = surface.verifyWitnessCosignature(
+      JSON.stringify(cosignature),
+      JSON.stringify(didDoc),
+      JSON.stringify(expectedCheckpoint),
+    );
+  } catch (err) {
+    return { ok: false, reason: nativeErr(err) };
+  }
+  let parsed: { valid?: unknown; error?: unknown };
+  try {
+    parsed = JSON.parse(json) as { valid?: unknown; error?: unknown };
+  } catch {
+    return { ok: false, reason: 'native cosignature verification returned non-JSON' };
+  }
+  if (parsed.valid === true) return { ok: true };
+  return {
+    ok: false,
+    reason:
+      typeof parsed.error === 'string' ? parsed.error : 'native cosignature verification failed',
+  };
+}
+
+/** The host-arithmetic branch of {@link verifyCosignature} (§8 steps 2–3). */
+export function tsVerifyCosignature(
   cosignature: LogCosignature,
   witnessPublicKeyB64: string,
 ): CosignOutcome {
@@ -360,4 +545,50 @@ export function cosignatureFreshnessOk(
 function stripFragment(didUrl: string): string {
   const hash = didUrl.indexOf('#');
   return hash === -1 ? didUrl : didUrl.slice(0, hash);
+}
+
+/**
+ * Build the resolvable witness DID document `AcdpVerifier.verifyWitnessCosignature`
+ * dereferences (§8 step 2) from the witness's raw Ed25519 public key. The
+ * standard-base64 key becomes the single `Ed25519VerificationKey2020`
+ * `assertionMethod` entry, encoded as `did:key`-style multibase (multicodec
+ * 0xed01). Mirrors `WitnessSigningService.didDocument()`.
+ */
+function witnessDidDocFromPubkey(
+  witnessId: string,
+  keyId: string,
+  publicKeyB64: string,
+): Record<string, unknown> {
+  const raw = Buffer.from(publicKeyB64, 'base64');
+  return {
+    '@context': ['https://www.w3.org/ns/did/v1'],
+    id: witnessId,
+    verificationMethod: [
+      {
+        id: keyId,
+        type: 'Ed25519VerificationKey2020',
+        controller: witnessId,
+        publicKeyMultibase: ed25519Multibase(raw),
+      },
+    ],
+    assertionMethod: [keyId],
+  };
+}
+
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+/** Encode a raw 32-byte Ed25519 key as `did:key`-style multibase (0xed01 prefix). */
+function ed25519Multibase(rawPub: Buffer): string {
+  const prefixed = Buffer.concat([Buffer.from([0xed, 0x01]), rawPub]);
+  let x = BigInt('0x' + (prefixed.toString('hex') || '0'));
+  let out = '';
+  while (x > 0n) {
+    out = BASE58_ALPHABET[Number(x % 58n)] + out;
+    x /= 58n;
+  }
+  for (const byte of prefixed) {
+    if (byte === 0) out = BASE58_ALPHABET[0] + out;
+    else break;
+  }
+  return 'z' + out;
 }

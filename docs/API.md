@@ -475,6 +475,15 @@ trusting this witness inherits split-view protection. A checkpoint that **fails*
 obligation is never cosigned — it stays on the detect/alert path. These endpoints are
 served only when cosigning is enabled (else `404`).
 
+The §5 mint (and the §8 verify / §8 quorum) run through the native `acdp` binding
+(`AcdpVerifier.buildWitnessCosignature` / `verifyWitnessCosignature` /
+`evaluateWitnessQuorum`, 0.7.0+); a binding that predates the cosignature surface
+(≤ 0.6.0) transparently falls back to the byte-identical host-TS construction. The
+active mode is reported in the checkpoint-witness boot log (`mint=…`), and the two
+paths are pinned byte-identical by the wit-001 golden parity test. Likewise the
+RFC-ACDP-0012 log inclusion/consistency verification uses the native binding
+(0.6.0+) with a host-TS fold as the fallback.
+
 ### `GET /log/witness` (Public)
 
 This witness's cosignatures, most-recent first (RFC-ACDP-0015 §6.2). Optional query
