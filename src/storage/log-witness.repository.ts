@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { DatabaseService } from '../db/database.service';
 import {
   LogWitnessCheckpoint,
@@ -27,7 +27,11 @@ export class LogWitnessRepository {
 
   /**
    * Record a witnessed checkpoint. Idempotent on the (log_id, tree_size,
-   * root_hash) unique key — re-witnessing the same head keeps the first row.
+   * root_hash) unique key — re-witnessing the same head keeps the first row and
+   * returns null (the evidence row, incl. its first-sight quorum, is
+   * append-once). The RFC-ACDP-0015 §8 quorum fields are set from the INSERT
+   * values on the first observation; a later refresh as the registry aggregates
+   * more cosignatures goes through {@link updateQuorum}.
    */
   async recordCheckpoint(input: NewLogWitnessCheckpoint): Promise<LogWitnessCheckpoint | null> {
     const rows = await this.database.db
@@ -36,6 +40,31 @@ export class LogWitnessRepository {
       .onConflictDoNothing()
       .returning();
     return rows[0] ?? null;
+  }
+
+  /**
+   * Refresh the RFC-ACDP-0015 §8 quorum trust signal on an already-recorded
+   * head (called on a re-observation, where the registry may have aggregated
+   * more cosignatures for the same tuple since we first saw it). A no-op when
+   * the head is not yet recorded.
+   */
+  async updateQuorum(
+    logId: string,
+    treeSize: number,
+    rootHash: string,
+    witnessedCount: number,
+    meetsQuorum: boolean,
+  ): Promise<void> {
+    await this.database.db
+      .update(logWitnessCheckpoints)
+      .set({ witnessedCount, meetsQuorum })
+      .where(
+        and(
+          eq(logWitnessCheckpoints.logId, logId),
+          eq(logWitnessCheckpoints.treeSize, treeSize),
+          eq(logWitnessCheckpoints.rootHash, rootHash),
+        ),
+      );
   }
 
   /** Latest witnessed checkpoints for an authority, newest first. */
@@ -96,12 +125,54 @@ export class LogWitnessRepository {
     return rows[0] ?? null;
   }
 
-  /** All alerted cursors for a tenant — the dashboard alert tile. */
-  async listAlerted(tenantId: string = DEFAULT_TENANT_ID): Promise<LogWitnessCursor[]> {
+  /**
+   * Alerted cursors for a tenant — the operator alert feed. By default returns
+   * only the UNACKNOWLEDGED ones (`alerted AND acknowledged_at IS NULL`): a
+   * durable, pollable worklist of dishonesty detections that survives a failed
+   * SSE/webhook fan-out. Pass `{ includeAcknowledged: true }` for the full set.
+   */
+  async listAlerted(
+    tenantId: string = DEFAULT_TENANT_ID,
+    opts: { includeAcknowledged?: boolean } = {},
+  ): Promise<LogWitnessCursor[]> {
+    const conditions = [
+      eq(logWitnessCursors.tenantId, tenantId),
+      eq(logWitnessCursors.alerted, true),
+    ];
+    if (!opts.includeAcknowledged) {
+      conditions.push(isNull(logWitnessCursors.acknowledgedAt));
+    }
     return this.database.db
       .select()
       .from(logWitnessCursors)
-      .where(and(eq(logWitnessCursors.tenantId, tenantId), eq(logWitnessCursors.alerted, true)));
+      .where(and(...conditions))
+      .orderBy(desc(logWitnessCursors.lastAlertAt));
+  }
+
+  /**
+   * Operator acknowledgement of an alerted cursor — records who saw it and when
+   * WITHOUT touching the retained head or the `alerted` flag (which still
+   * auto-clears only on resolution). Returns the updated cursor, or null if the
+   * cursor is not currently alerted (nothing to acknowledge).
+   */
+  async acknowledgeAlert(
+    tenantId: string,
+    authority: string,
+    acknowledgedBy: string,
+  ): Promise<LogWitnessCursor | null> {
+    const now = new Date().toISOString();
+    const rows = await this.database.db
+      .update(logWitnessCursors)
+      .set({ acknowledgedAt: now, acknowledgedBy, updatedAt: now })
+      .where(
+        and(
+          eq(logWitnessCursors.tenantId, tenantId),
+          eq(logWitnessCursors.registryAuthority, authority),
+          eq(logWitnessCursors.alerted, true),
+        ),
+      )
+      .returning();
+    return rows[0] ?? null;
   }
 
   /**
@@ -128,6 +199,8 @@ export class LogWitnessRepository {
         alerted: false,
         lastAlertReason: null,
         lastAlertDetail: null,
+        acknowledgedAt: null,
+        acknowledgedBy: null,
         lastSuccessAt: now,
         updatedAt: now,
       })
@@ -141,6 +214,10 @@ export class LogWitnessRepository {
           alerted: false,
           lastAlertReason: null,
           lastAlertDetail: null,
+          // Resolution clears any acknowledgement — a fresh alert on the same
+          // authority later is a new, unacknowledged detection.
+          acknowledgedAt: null,
+          acknowledgedBy: null,
           lastSuccessAt: now,
           updatedAt: now,
         },
@@ -160,6 +237,13 @@ export class LogWitnessRepository {
   }): Promise<{ wasAlerted: boolean; previousReason: string | null }> {
     const existing = await this.getCursor(input.tenantId, input.authority);
     const now = new Date().toISOString();
+    // A NEW distinct alert reason is a fresh detection — reset any prior
+    // acknowledgement so it resurfaces on the unacknowledged worklist. A
+    // persisting alert (same reason) keeps its ack (no re-spam).
+    const reasonChanged = (existing?.lastAlertReason ?? null) !== input.reason;
+    const ackReset = reasonChanged
+      ? { acknowledgedAt: null as string | null, acknowledgedBy: null as string | null }
+      : {};
     await this.database.db
       .insert(logWitnessCursors)
       .values({
@@ -179,6 +263,7 @@ export class LogWitnessRepository {
           lastAlertDetail: input.detail,
           lastAlertAt: now,
           updatedAt: now,
+          ...ackReset,
         },
       });
     return {

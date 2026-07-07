@@ -85,6 +85,12 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['result'] as const,
   });
 
+  readonly logWitnessQuorumTotal = new client.Counter({
+    name: 'acdp_log_witness_quorum_total',
+    help: 'Witness quorum evaluations over aggregated cosignatures by meets-quorum (RFC-ACDP-0015 §8)',
+    labelNames: ['meets'] as const,
+  });
+
   onModuleInit(): void {
     client.collectDefaultMetrics();
   }

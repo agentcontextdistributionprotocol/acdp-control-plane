@@ -291,6 +291,9 @@ Returns one agent's capabilities: `{ "data": [ … ], "total": N }`.
 | `GET`  | `/registries` | Known registries (observed via events), tenant-scoped, with `eventCount`. |
 | `GET`  | `/registries/enrollments` | Enrolled registries. `webhookSecret` is always omitted. |
 | `POST` | `/registries/enroll` | **Admin-only**. Upsert an enrollment. |
+| `GET`  | `/registries/:authority/log-witness` | Witness state + latest witnessed checkpoints for a registry. |
+| `GET`  | `/registries/log-witness/alerts` | Unacknowledged witness alerts for this tenant (worklist). |
+| `POST` | `/registries/:authority/log-witness/ack` | **Admin-only**. Acknowledge an active witness alert. |
 
 ### `POST /registries/enroll`
 
@@ -314,6 +317,33 @@ Returns one agent's capabilities: `{ "data": [ … ], "total": N }`.
 - `enabled` (optional, default `true`) — whether ingest from this authority is accepted.
 
 Response echoes the enrollment **without** `webhookSecret`.
+
+### `GET /registries/:authority/log-witness`
+
+Transparency-log witness state for a registry: the cursor (retained head, last
+success, alert state) and the latest witnessed checkpoints (signed tree heads,
+retained as evidence). Each checkpoint carries the RFC-ACDP-0015 §8 quorum trust
+signal when quorum consumption is enabled:
+
+- `witnessedCount` — DISTINCT trusted witnesses whose aggregated cosignature over
+  this exact `(logId, treeSize, rootHash)` tuple the CP independently verified
+  (`null` when `WITNESS_QUORUM_ENABLED=false`).
+- `meetsQuorum` — whether `witnessedCount ≥ WITNESS_QUORUM_MIN_WITNESSES`.
+
+### `GET /registries/log-witness/alerts?includeAcknowledged=true`
+
+A durable, pollable worklist of witness dishonesty detections (root rewrite, split
+view, tree-size regression, log reset) for this tenant. Persisted on detection, so
+it survives a failed SSE/webhook fan-out. Returns **unacknowledged** alerts by
+default; pass `includeAcknowledged=true` for the full set. Each entry carries
+`authority`, `reason`, `detail`, `at`, `acknowledgedAt`, `acknowledgedBy`.
+
+### `POST /registries/:authority/log-witness/ack`
+
+**Admin-only.** Acknowledge an active alert — records who saw it and when, without
+touching the retained head (the alert still auto-clears only when the underlying
+condition resolves). Acknowledged alerts drop off the default worklist; a **new**
+alert reason resurfaces it. `404` if the authority has no active alert.
 
 ---
 
@@ -483,6 +513,16 @@ active mode is reported in the checkpoint-witness boot log (`mint=…`), and the
 paths are pinned byte-identical by the wit-001 golden parity test. Likewise the
 RFC-ACDP-0012 log inclusion/consistency verification uses the native binding
 (0.6.0+) with a host-TS fold as the fallback.
+
+**Quorum consumption (§8), the mirror of cosigning.** With `WITNESS_QUORUM_ENABLED=true`,
+the same checkpoint-witness fetch of `GET /log/checkpoint` *also* reads the cosignatures
+the registry **aggregates** and serves as the top-level `witness_signatures` sibling
+(§6.1). Each is verified against its witness's **own** resolved `did:web` document via
+`evaluateWitnessQuorum`, and DISTINCT `WITNESS_QUORUM_TRUSTED` witnesses over the
+checkpoint's exact tuple are counted — external attestations only, never the CP's own
+mint. The `witnessedCount` / `meetsQuorum` land on the witnessed head (see
+`GET /registries/:authority/log-witness`). A did:web `WITNESS_ID`'s host is asserted to
+match `PUBLIC_HOST` at boot (§9) so the witness's own DID document is actually resolvable.
 
 ### `GET /log/witness` (Public)
 

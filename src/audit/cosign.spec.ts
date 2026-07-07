@@ -21,6 +21,8 @@ import { AcdpCanonicalizer, AcdpVerifier } from 'acdp';
 import {
   cosignatureFreshnessOk,
   cosignatureHash,
+  evaluateQuorum,
+  hostEvaluateQuorum,
   mintCosignature,
   nativeMintCosignature,
   nativeVerifyCosignature,
@@ -370,6 +372,103 @@ describeGolden('RFC-ACDP-0015 native-vs-host parity (mint / verify / quorum)', (
     expect(report.witnessed_count).toBe(hostWitnessIds.size);
     expect(report.witnessed_count).toBe(q.witnessed_count);
     expect(report.meets_quorum).toBe(true);
+  });
+});
+
+// ── §8 quorum CONSUMPTION wrapper (fixture-free, host + native) ───────────
+
+describe('evaluateQuorum (RFC-ACDP-0015 §8 N-witnessed consumption)', () => {
+  const CP: LogCheckpoint = {
+    checkpoint_version: 'acdp-log/1',
+    log_id: 'did:web:registry.example.com/log/1',
+    tree_size: 5,
+    root_hash: 'sha256:0b5978172c671ca050b44790a749b18fc29d58a7a17495fbb4e0f86eb885f731',
+    timestamp: '2026-07-04T12:00:00.000Z',
+    signature: { algorithm: 'ed25519', key_id: 'did:web:registry.example.com#receipt-key-1', value: 'x' },
+  };
+  const tuple: WitnessedCheckpoint = {
+    log_id: CP.log_id,
+    tree_size: CP.tree_size,
+    root_hash: CP.root_hash,
+    timestamp: CP.timestamp,
+  };
+
+  function witness(seedHex: string, id: string) {
+    const keyId = `${id}#witness-key-1`;
+    const signer = signerFromSeed(seedHex, id, keyId);
+    const key = createPrivateKey({
+      key: Buffer.concat([
+        Buffer.from('302e020100300506032b657004220420', 'hex'),
+        Buffer.from(seedHex, 'hex'),
+      ]),
+      format: 'der',
+      type: 'pkcs8',
+    });
+    const { createPublicKey } = require('node:crypto');
+    const spki = createPublicKey(key).export({ format: 'der', type: 'spki' }) as Buffer;
+    const cosig = mintCosignature(tuple, '2026-07-04T12:00:01.000Z', signer);
+    if (!cosig.ok) throw new Error('mint failed');
+    return { id, cosignature: cosig.cosignature, publicKeyB64: spki.subarray(spki.length - 32).toString('base64') };
+  }
+
+  const now = new Date('2026-07-04T12:05:00.000Z').getTime();
+
+  it('counts DISTINCT trusted witnesses over the exact tuple (host path)', () => {
+    const a = witness('11'.repeat(32), 'did:web:witness-a.example');
+    const b = witness('22'.repeat(32), 'did:web:witness-b.example');
+    const report = hostEvaluateQuorum({
+      cosignatures: [a.cosignature, b.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [a.id, b.id],
+      witnessKeysB64: { [a.id]: a.publicKeyB64, [b.id]: b.publicKeyB64 },
+      minWitnesses: 2,
+      nowMs: now,
+    });
+    expect(report.witnessedCount).toBe(2);
+    expect(report.meetsQuorum).toBe(true);
+    expect(report.verifiedWitnessIds.sort()).toEqual([a.id, b.id].sort());
+  });
+
+  it('host and native (evaluateQuorum) agree on the count', () => {
+    const a = witness('11'.repeat(32), 'did:web:witness-a.example');
+    const inputs = {
+      cosignatures: [a.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [a.id],
+      witnessKeysB64: { [a.id]: a.publicKeyB64 },
+      minWitnesses: 1,
+      nowMs: now,
+    };
+    const host = hostEvaluateQuorum(inputs);
+    const chosen = evaluateQuorum(inputs); // native when the surface is present
+    expect(host.witnessedCount).toBe(1);
+    expect(chosen.witnessedCount).toBe(host.witnessedCount);
+    expect(chosen.meetsQuorum).toBe(host.meetsQuorum);
+  });
+
+  it('ignores an untrusted witness and does not count a wrong-tuple cosignature', () => {
+    const trusted = witness('11'.repeat(32), 'did:web:witness-a.example');
+    const untrusted = witness('22'.repeat(32), 'did:web:witness-x.example');
+    const wrongTuple = mintCosignature(
+      { ...tuple, root_hash: 'sha256:' + 'ab'.repeat(32) },
+      '2026-07-04T12:00:01.000Z',
+      signerFromSeed('33'.repeat(32), 'did:web:witness-c.example', 'did:web:witness-c.example#witness-key-1'),
+    );
+    if (!wrongTuple.ok) throw new Error('mint failed');
+    const report = hostEvaluateQuorum({
+      cosignatures: [trusted.cosignature, untrusted.cosignature, wrongTuple.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [trusted.id, 'did:web:witness-c.example'],
+      witnessKeysB64: {
+        [trusted.id]: trusted.publicKeyB64,
+        'did:web:witness-c.example': 'ignored',
+      },
+      minWitnesses: 2,
+      nowMs: now,
+    });
+    // Only the trusted, correct-tuple witness counts.
+    expect(report.witnessedCount).toBe(1);
+    expect(report.meetsQuorum).toBe(false);
   });
 });
 

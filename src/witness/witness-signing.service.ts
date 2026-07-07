@@ -131,6 +131,33 @@ export class WitnessSigningService {
       );
     }
 
+    // RFC-ACDP-0015 §9: a did:web witness MUST serve its DID document at the
+    // host encoded in the DID. This CP serves the witness did.json at
+    // `/.well-known/did.json` (WitnessController), so a `did:web:<host>` witness
+    // is only resolvable if `<host>` actually points at THIS control plane —
+    // otherwise every consumer's resolver fetches someone else's host (or 404s)
+    // and no cosignature we mint can ever be verified. Assert the binding at
+    // boot against the configured public host. did:key is self-describing (the
+    // key IS the DID), so it is exempt.
+    if (witnessId.startsWith('did:web:')) {
+      const didHost = didWebAuthority(witnessId);
+      const publicHost = normalizeHost(config.publicHost ?? '');
+      if (publicHost === '') {
+        this.logger.warn(
+          `WITNESS_ID is a did:web (${witnessId}) but PUBLIC_HOST is not set — cannot verify the ` +
+            `witness DID resolves to this control plane. Set PUBLIC_HOST to this CP's externally ` +
+            `resolvable host so a consumer's resolver reaches /.well-known/did.json here.`,
+        );
+      } else if (didHost !== publicHost) {
+        throw new WitnessConfigError(
+          `WITNESS_ID '${witnessId}' encodes host '${didHost}', which does not match this control ` +
+            `plane's PUBLIC_HOST '${publicHost}'. A consumer resolving the witness DID would fetch ` +
+            `'${didHost}/.well-known/did.json', not this CP — so no cosignature this witness mints ` +
+            `could be verified. Fix WITNESS_ID or PUBLIC_HOST (RFC-ACDP-0015 §9).`,
+        );
+      }
+    }
+
     this.enabled = true;
     this.witnessId = witnessId;
     this.keyId = keyId;
@@ -232,4 +259,27 @@ function base58btc(buf: Buffer): string {
 function stripFragment(didUrl: string): string {
   const hash = didUrl.indexOf('#');
   return hash === -1 ? didUrl : didUrl.slice(0, hash);
+}
+
+/**
+ * Extract the host authority (`host` or `host:port`) from a `did:web` DID. Per
+ * the did:web method, the authority is the first colon-separated segment after
+ * `did:web:` (later segments are the path), and a `:port` is percent-encoded as
+ * `%3A`. Returns a lowercase, normalized host[:port].
+ */
+function didWebAuthority(witnessId: string): string {
+  const body = witnessId.slice('did:web:'.length);
+  const authority = body.split(':', 1)[0] ?? body;
+  return normalizeHost(decodeURIComponent(authority));
+}
+
+/** Normalize a host string: drop any scheme/path, lowercase, trim a trailing slash. */
+function normalizeHost(raw: string): string {
+  let h = raw.trim().toLowerCase();
+  if (h === '') return '';
+  const scheme = h.indexOf('://');
+  if (scheme !== -1) h = h.slice(scheme + 3);
+  const slash = h.indexOf('/');
+  if (slash !== -1) h = h.slice(0, slash);
+  return h;
 }

@@ -25,6 +25,7 @@ production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startu
 | `NODE_ENV` | string | `development` | `development` relaxes fail-fast checks. |
 | `PORT` | number | `3001` | HTTP listen port. |
 | `HOST` | string | `0.0.0.0` | Bind address. |
+| `PUBLIC_HOST` | string | `''` | Externally-resolvable host (`example.com` / `example.com:8443`) a consumer's `did:web` resolver hits for `/.well-known/did.json`. Distinct from `HOST`. Used to assert the `did:web` witness↔host binding at boot. |
 | `CORS_ORIGIN` | string | `http://localhost:3000` | Allowed CORS origin. |
 
 ## Database
@@ -145,8 +146,27 @@ obligation is never cosigned.
 | `WITNESS_SIGNING_PRIVATE_KEY_PEM` | string | `''` | PEM-encoded **Ed25519** private key the witness cosigns with. Required when enabled. **Dedicated** — never the JWT IdP key (§5/§15). |
 | `WITNESS_KEY_ID` | string | `''` | assertionMethod key id (DID URL under `WITNESS_ID`). Defaults to `<WITNESS_ID>#witness-key-1`. |
 
-Generate the witness key with `openssl genpkey -algorithm ed25519`. `WITNESS_ID`'s host
-must resolve to this CP so consumers can dereference `/.well-known/did.json`.
+Generate the witness key with `openssl genpkey -algorithm ed25519`. When `WITNESS_ID`
+is a `did:web`, its host **must** match [`PUBLIC_HOST`](#core-server) so consumers can
+dereference `/.well-known/did.json` on this CP — the binding is asserted at boot
+(RFC-ACDP-0015 §9): a mismatch is fatal, and an unset `PUBLIC_HOST` only warns. `did:key`
+witnesses are exempt (self-describing).
+
+**Witness quorum consumption (RFC-ACDP-0015 §8).** The mirror of cosigning: instead of
+minting, evaluate the **N-witnessed quorum** over the cosignatures a registry *aggregates*
+and serves on `GET /log/checkpoint` (the top-level `witness_signatures` sibling, §6.1).
+Each is verified against its witness's **own** resolved `did:web` document, and DISTINCT
+trusted witnesses over the checkpoint's exact `(log_id, tree_size, root_hash)` tuple are
+counted — never the CP's own local mint. The count + `meets_quorum` are recorded on the
+witnessed head (surfaced on `GET /registries/:authority/log-witness` per checkpoint and on
+the dashboard `logWitness.headsMeetingQuorum` tile). Rides the checkpoint witness, so it
+requires `LOG_WITNESS_ENABLED=true`.
+
+| Var | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `WITNESS_QUORUM_ENABLED` | bool | `false` | Enable quorum consumption over aggregated cosignatures. |
+| `WITNESS_QUORUM_TRUSTED` | list | `''` | Witness DIDs whose cosignatures count; others are verified-but-ignored. |
+| `WITNESS_QUORUM_MIN_WITNESSES` | number | `1` | The N in N-witnessed. **≥1** when enabled. |
 
 ## Data retention
 

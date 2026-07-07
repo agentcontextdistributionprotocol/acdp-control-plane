@@ -40,6 +40,14 @@ export class AppConfigService implements OnModuleInit {
 
   readonly port = readNumber('PORT', 3001);
   readonly host = process.env.HOST ?? '0.0.0.0';
+  // The externally-resolvable host (`example.com` or `example.com:8443`) this
+  // control plane is reachable at — the DNS name a consumer's `did:web`
+  // resolver would hit to fetch `/.well-known/did.json`. Distinct from `host`
+  // (the bind address, usually 0.0.0.0) and `jwtAuthority` (the IdP issuer
+  // identity). Empty (default) = unknown; the witness did:web↔host binding
+  // check (RFC-ACDP-0015 §9, WitnessSigningService) then only warns instead of
+  // failing at boot. Set this in any deployment that serves a did:web witness.
+  readonly publicHost = (process.env.PUBLIC_HOST ?? '').trim();
   readonly corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:3000';
   readonly databaseUrl =
     process.env.DATABASE_URL ??
@@ -260,6 +268,25 @@ export class AppConfigService implements OnModuleInit {
   // `<WITNESS_ID>#witness-key-1`.
   readonly witnessKeyId = process.env.WITNESS_KEY_ID ?? '';
 
+  // Transparency-log witness quorum CONSUMPTION (ACDP 0.4.0, RFC-ACDP-0015 §8).
+  // The mirror of cosigning: instead of MINTING our own cosignature, evaluate the
+  // N-witnessed quorum over the cosignatures a registry AGGREGATES and serves on
+  // its GET /log/checkpoint (the top-level `witness_signatures` sibling, §6.1).
+  // Each cosignature is verified against its witness's own resolved did:web
+  // document, and DISTINCT trusted witnesses over the checkpoint's exact
+  // (log_id, tree_size, root_hash) tuple are counted. The result is recorded as a
+  // trust signal on the witnessed head. Rides the checkpoint witness poller, so
+  // it requires LOG_WITNESS_ENABLED=true. A single trusted witness yields
+  // 1-witnessed; the machinery is correct for M-of-N.
+  readonly witnessQuorumEnabled = readBoolean('WITNESS_QUORUM_ENABLED', false);
+  // The witness DIDs whose cosignatures count toward the quorum. A cosignature
+  // from any witness NOT in this set is verified-but-ignored (never counted).
+  // Wire format: comma-separated did:web / did:key.
+  readonly witnessQuorumTrusted = readStringList('WITNESS_QUORUM_TRUSTED');
+  // The N in "N-witnessed": meets_quorum is true once this many DISTINCT trusted
+  // witnesses have a valid cosignature over the exact head tuple.
+  readonly witnessQuorumMinWitnesses = readNumber('WITNESS_QUORUM_MIN_WITNESSES', 1);
+
   // Receipt ↔ log inclusion cross-check (RFC-ACDP-0012 §9.1): for stored
   // publish events with receipts from log-advertising registries, fetch
   // GET /log/proof?ctx_id=… and verify inclusion against a verified
@@ -396,6 +423,25 @@ export class AppConfigService implements OnModuleInit {
       if (!this.logWitnessEnabled) {
         throw new Error(
           'WITNESS_COSIGNING_ENABLED=true requires LOG_WITNESS_ENABLED=true — cosigning rides the checkpoint witness verification',
+        );
+      }
+    }
+
+    // Witness quorum consumption (RFC-ACDP-0015 §8). Rides the checkpoint
+    // witness poller (the same GET /log/checkpoint fetch), so it needs the
+    // prerequisite; and an N-witnessed count with N < 1 is meaningless.
+    if (this.witnessQuorumEnabled) {
+      if (!this.logWitnessEnabled) {
+        throw new Error(
+          'WITNESS_QUORUM_ENABLED=true requires LOG_WITNESS_ENABLED=true — quorum consumption rides the checkpoint witness fetch of GET /log/checkpoint',
+        );
+      }
+      if (this.witnessQuorumMinWitnesses < 1) {
+        throw new Error('WITNESS_QUORUM_MIN_WITNESSES must be >= 1 when quorum consumption is enabled');
+      }
+      if (this.witnessQuorumTrusted.length === 0) {
+        this.logger.warn(
+          'WITNESS_QUORUM_ENABLED=true but WITNESS_QUORUM_TRUSTED is empty — no witness can ever count, so every head reports witnessed_count=0.',
         );
       }
     }
