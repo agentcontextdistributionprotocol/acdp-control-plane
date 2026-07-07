@@ -141,7 +141,16 @@ export class DashboardService {
             WHERE tenant_id = ${tenantId}) AS witnessed_logs,
           (SELECT count(*)::int
              FROM log_witness_cursors
-            WHERE tenant_id = ${tenantId} AND alerted) AS active_alerts
+            WHERE tenant_id = ${tenantId} AND alerted) AS active_alerts,
+          (SELECT count(*)::int
+             FROM log_witness_cursors
+            WHERE tenant_id = ${tenantId} AND alerted AND acknowledged_at IS NULL)
+            AS unacknowledged_alerts,
+          -- RFC-ACDP-0015 §8: distinct current-posture heads whose aggregated
+          -- witness cosignatures met the configured N-witnessed quorum.
+          (SELECT count(*)::int
+             FROM log_witness_checkpoints
+            WHERE tenant_id = ${tenantId} AND meets_quorum) AS heads_meeting_quorum
       `),
     ]);
 
@@ -172,6 +181,16 @@ export class DashboardService {
         ),
         activeAlerts: Number(
           (logWitness.rows[0] as { active_alerts?: number } | undefined)?.active_alerts ?? 0,
+        ),
+        // Alerts an operator has not yet acknowledged — the durable worklist.
+        unacknowledgedAlerts: Number(
+          (logWitness.rows[0] as { unacknowledged_alerts?: number } | undefined)
+            ?.unacknowledged_alerts ?? 0,
+        ),
+        // RFC-ACDP-0015 §8 quorum consumption: heads meeting the N-witnessed policy.
+        headsMeetingQuorum: Number(
+          (logWitness.rows[0] as { heads_meeting_quorum?: number } | undefined)
+            ?.heads_meeting_quorum ?? 0,
         ),
       },
     };

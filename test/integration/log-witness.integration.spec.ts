@@ -182,9 +182,115 @@ describe('transparency-log checkpoint witness (integration)', () => {
     });
 
     const overview = (await ctx.client.requestJson('GET', '/dashboard/overview')) as {
-      logWitness: { witnessedLogs: number; activeAlerts: number };
+      logWitness: {
+        witnessedLogs: number;
+        activeAlerts: number;
+        unacknowledgedAlerts: number;
+        headsMeetingQuorum: number;
+      };
     };
-    expect(overview.logWitness).toEqual({ witnessedLogs: 1, activeAlerts: 1 });
+    // 1 witnessed head, 1 alert (root_mismatch) that is not yet acknowledged,
+    // and no head meeting quorum (quorum consumption disabled in this harness).
+    expect(overview.logWitness).toEqual({
+      witnessedLogs: 1,
+      activeAlerts: 1,
+      unacknowledgedAlerts: 1,
+      headsMeetingQuorum: 0,
+    });
+  });
+
+  it('records + refreshes the §8 quorum trust signal on a witnessed head', async () => {
+    // First observation: registry had aggregated no cosignatures yet.
+    await witnessRepo.recordCheckpoint({
+      ...checkpointRow(3, ROOT_3),
+      witnessedCount: 0,
+      meetsQuorum: false,
+    });
+    // A later sweep re-observes the SAME head after the registry aggregated a
+    // trusted witness's cosignature — the quorum refreshes on the append-once row.
+    await witnessRepo.updateQuorum(LOG_ID, 3, ROOT_3, 1, true);
+
+    const res = (await ctx.client.requestJson(
+      'GET',
+      `/registries/${encodeURIComponent(AUTHORITY)}/log-witness`,
+    )) as { checkpoints: Array<{ treeSize: number; witnessedCount: number; meetsQuorum: boolean }> };
+    const head = res.checkpoints.find((c) => c.treeSize === 3)!;
+    expect(head.witnessedCount).toBe(1);
+    expect(head.meetsQuorum).toBe(true);
+  });
+
+  it('alert worklist: unacknowledged listing + acknowledgement round-trip', async () => {
+    await witnessRepo.markAlert({
+      tenantId: 'default',
+      authority: AUTHORITY,
+      reason: 'consistency_failed',
+      detail: { error: 'rewrite' },
+    });
+
+    // The endpoint lists it as an UNACKNOWLEDGED detection.
+    let alerts = (await ctx.client.requestJson(
+      'GET',
+      '/registries/log-witness/alerts',
+    )) as { data: Array<{ authority: string; reason: string; acknowledgedAt: string | null }>; total: number };
+    expect(alerts.total).toBe(1);
+    expect(alerts.data[0]).toMatchObject({
+      authority: AUTHORITY,
+      reason: 'consistency_failed',
+      acknowledgedAt: null,
+    });
+
+    // Acknowledge it (repo layer — the HTTP ack is admin-gated, covered in the
+    // controller unit test).
+    const acked = await witnessRepo.acknowledgeAlert('default', AUTHORITY, 'operator-1');
+    expect(acked).toMatchObject({ acknowledgedBy: 'operator-1' });
+
+    // It drops off the default (unacknowledged) worklist…
+    alerts = (await ctx.client.requestJson('GET', '/registries/log-witness/alerts')) as typeof alerts;
+    expect(alerts.total).toBe(0);
+    // …but remains when acknowledged rows are requested explicitly.
+    alerts = (await ctx.client.requestJson(
+      'GET',
+      '/registries/log-witness/alerts?includeAcknowledged=true',
+    )) as typeof alerts;
+    expect(alerts.total).toBe(1);
+
+    // A resolution (full success) clears the ack so a later alert is fresh.
+    await witnessRepo.advanceCursor({
+      tenantId: 'default',
+      authority: AUTHORITY,
+      logId: LOG_ID,
+      treeSize: 3,
+      rootHash: ROOT_3,
+    });
+    const cleared = await witnessRepo.getCursor('default', AUTHORITY);
+    expect(cleared).toMatchObject({ alerted: false, acknowledgedAt: null });
+  });
+
+  it('a NEW alert reason resets a prior acknowledgement', async () => {
+    await witnessRepo.markAlert({
+      tenantId: 'default',
+      authority: AUTHORITY,
+      reason: 'root_mismatch',
+      detail: {},
+    });
+    await witnessRepo.acknowledgeAlert('default', AUTHORITY, 'operator-1');
+    // A different, more severe detection fires — it must resurface unacknowledged.
+    await witnessRepo.markAlert({
+      tenantId: 'default',
+      authority: AUTHORITY,
+      reason: 'consistency_failed',
+      detail: {},
+    });
+    const cursor = await witnessRepo.getCursor('default', AUTHORITY);
+    expect(cursor).toMatchObject({
+      lastAlertReason: 'consistency_failed',
+      acknowledgedAt: null,
+    });
+    const alerts = (await ctx.client.requestJson(
+      'GET',
+      '/registries/log-witness/alerts',
+    )) as { total: number };
+    expect(alerts.total).toBe(1);
   });
 
   it('the witness sweep runs in the real app graph and skips an unreachable registry', async () => {

@@ -541,6 +541,182 @@ export function cosignatureFreshnessOk(
   return { ok: true };
 }
 
+// ── §8 N-witnessed quorum CONSUMPTION ─────────────────────────────────────
+//
+// The mirror of minting: over the cosignatures a registry AGGREGATES for a
+// checkpoint the consumer has ITSELF verified (the §6.1 `witness_signatures`
+// sibling on GET /log/checkpoint), count how many DISTINCT TRUSTED witnesses
+// independently attest the exact (log_id, tree_size, root_hash) tuple. Each
+// cosignature is verified under its OWN witness's resolved key — a cosignature
+// that fails a §8 step never fails the checkpoint, it just does not count.
+//
+// Native (0.7.0+): delegate to `AcdpVerifier.evaluateWitnessQuorum` (the same
+// Rust §8 report the reference consumer runs). Host fallback (≤0.6.0): the loop
+// below, reusing {@link parseCosignature} + {@link verifyCosignature} — so a
+// binding that predates the quorum surface still consumes M-of-N.
+
+/** The result of an N-witnessed quorum evaluation (RFC-ACDP-0015 §8). */
+export interface QuorumReport {
+  /** DISTINCT trusted witnesses with a valid cosignature over the tuple. */
+  witnessedCount: number;
+  /** `witnessedCount >= minWitnesses`. */
+  meetsQuorum: boolean;
+  /** The DISTINCT trusted witness DIDs that counted. */
+  verifiedWitnessIds: string[];
+  /** Human-readable per-cosignature rejects (untrusted witnesses are silent). */
+  failures: string[];
+}
+
+export interface QuorumInputs {
+  /** The registry-served `witness_signatures` array, verbatim (unknown-typed). */
+  cosignatures: unknown[];
+  /** OUR independently signature-verified checkpoint the quorum is over. */
+  checkpoint: LogCheckpoint;
+  /** The witness DIDs the consumer trusts; only these can count. */
+  trustedWitnessIds: string[];
+  /** Resolved witness assertionMethod public keys, keyed by witness_id (base64). */
+  witnessKeysB64: Record<string, string>;
+  /** The N in N-witnessed. */
+  minWitnesses: number;
+  /** Consumer clock override (ms); defaults to now. */
+  nowMs?: number;
+}
+
+/** The §8 report surface on the 0.7.0+ binding. */
+interface QuorumCapableVerifier {
+  evaluateWitnessQuorum(
+    cosignaturesJson: string,
+    expectedCheckpointJson: string,
+    trustedWitnessDidsJson: string,
+    witnessDidDocsJson: string,
+    policyJson: string,
+    nowRfc3339?: string | null,
+  ): string;
+}
+
+/**
+ * Evaluate the §8 N-witnessed quorum. Native-first (`evaluateWitnessQuorum`)
+ * with the host loop as the fallback — a native throw / non-JSON degrades to
+ * the host count so consumption never stalls. Both count DISTINCT trusted
+ * witnesses whose cosignature verifies AND binds to the checkpoint tuple.
+ */
+export function evaluateQuorum(inp: QuorumInputs): QuorumReport {
+  if (sdkHasCosignatureSurface()) {
+    const native = nativeEvaluateQuorum(inp);
+    if (native !== null) return native;
+  }
+  return hostEvaluateQuorum(inp);
+}
+
+/**
+ * The native-binding branch (exported for the parity cross-check): delegate the
+ * §8 report to `AcdpVerifier.evaluateWitnessQuorum`, synthesizing each trusted
+ * witness's resolvable DID document from its resolved public key. Returns null
+ * (fall back to host) on a malformed-input throw or non-JSON reply.
+ */
+export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
+  const surface = AcdpVerifier as unknown as QuorumCapableVerifier;
+  const didDocs: Record<string, unknown> = {};
+  for (const raw of inp.cosignatures) {
+    const parsed = parseCosignature(raw);
+    if (!parsed.ok) continue;
+    const c = parsed.cosignature;
+    const key = inp.witnessKeysB64[c.witness_id];
+    if (key === undefined || didDocs[c.witness_id] !== undefined) continue;
+    didDocs[c.witness_id] = witnessDidDocFromPubkey(c.witness_id, c.signature.key_id, key);
+  }
+  let json: string;
+  try {
+    json = surface.evaluateWitnessQuorum(
+      JSON.stringify(inp.cosignatures),
+      JSON.stringify(inp.checkpoint),
+      JSON.stringify(inp.trustedWitnessIds),
+      JSON.stringify(didDocs),
+      JSON.stringify({ min_witnesses: inp.minWitnesses }),
+      new Date(inp.nowMs ?? Date.now()).toISOString(),
+    );
+  } catch {
+    return null;
+  }
+  let report: {
+    witnessed_count?: unknown;
+    meets_quorum?: unknown;
+    witnesses?: unknown;
+    failures?: unknown;
+  };
+  try {
+    report = JSON.parse(json) as typeof report;
+  } catch {
+    return null;
+  }
+  const count = typeof report.witnessed_count === 'number' ? report.witnessed_count : 0;
+  return {
+    witnessedCount: count,
+    meetsQuorum: report.meets_quorum === true,
+    verifiedWitnessIds: Array.isArray(report.witnesses)
+      ? report.witnesses.filter((w): w is string => typeof w === 'string')
+      : [],
+    failures: Array.isArray(report.failures) ? report.failures.map((f) => String(f)) : [],
+  };
+}
+
+/**
+ * The host-arithmetic branch (exported for the parity cross-check): the §8 loop
+ * over SDK JCS + Ed25519. Counts DISTINCT trusted witnesses whose cosignature
+ * parses, binds to the checkpoint tuple, is not future-dated, and verifies
+ * under the witness's own resolved key.
+ */
+export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
+  const nowMs = inp.nowMs ?? Date.now();
+  const trusted = new Set(inp.trustedWitnessIds);
+  const verified = new Set<string>();
+  const failures: string[] = [];
+  for (const raw of inp.cosignatures) {
+    const parsed = parseCosignature(raw);
+    if (!parsed.ok) {
+      failures.push(parsed.reason);
+      continue;
+    }
+    const cosig = parsed.cosignature;
+    // Untrusted witnesses are silently ignored — not a failure, just not counted.
+    if (!trusted.has(cosig.witness_id)) continue;
+    if (verified.has(cosig.witness_id)) continue;
+    const key = inp.witnessKeysB64[cosig.witness_id];
+    if (key === undefined) {
+      failures.push(`witness '${cosig.witness_id}' key unresolved`);
+      continue;
+    }
+    const wc = cosig.witnessed_checkpoint;
+    if (
+      wc.log_id !== inp.checkpoint.log_id ||
+      wc.tree_size !== inp.checkpoint.tree_size ||
+      wc.root_hash !== inp.checkpoint.root_hash
+    ) {
+      failures.push(
+        `witness '${cosig.witness_id}' cosigned a different tuple than the verified checkpoint`,
+      );
+      continue;
+    }
+    const fresh = cosignatureFreshnessOk(cosig, nowMs);
+    if (!fresh.ok) {
+      failures.push(`witness '${cosig.witness_id}': ${fresh.reason}`);
+      continue;
+    }
+    const verdict = verifyCosignature(cosig, key, inp.checkpoint);
+    if (!verdict.ok) {
+      failures.push(`witness '${cosig.witness_id}': ${verdict.reason}`);
+      continue;
+    }
+    verified.add(cosig.witness_id);
+  }
+  return {
+    witnessedCount: verified.size,
+    meetsQuorum: verified.size >= inp.minWitnesses,
+    verifiedWitnessIds: [...verified],
+    failures,
+  };
+}
+
 /** The `did:web:...` / `did:key:...` DID with any `#fragment` stripped. */
 function stripFragment(didUrl: string): string {
   const hash = didUrl.indexOf('#');

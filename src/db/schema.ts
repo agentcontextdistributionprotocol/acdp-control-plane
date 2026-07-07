@@ -423,6 +423,13 @@ export const logWitnessCheckpoints = pgTable(
     // §9.2 verdict vs the previously witnessed head of the same log_id;
     // NULL for the first witnessed checkpoint of a log.
     consistencyOk: boolean('consistency_ok'),
+    // RFC-ACDP-0015 §8 quorum CONSUMPTION (migration 0018): DISTINCT trusted
+    // witnesses whose aggregated cosignature over THIS exact tuple the control
+    // plane independently verified, and whether that meets the configured
+    // N-witnessed policy. NULL when quorum consumption is disabled (the
+    // detect/cosign layers work without it).
+    witnessedCount: integer('witnessed_count'),
+    meetsQuorum: boolean('meets_quorum'),
   },
   (t) => ({
     // Dedupes re-fetches of the same head; two rows sharing (log_id,
@@ -456,6 +463,14 @@ export const logWitnessCursors = pgTable(
     lastAlertReason: varchar('last_alert_reason', { length: 64 }),
     lastAlertDetail: jsonb('last_alert_detail').$type<Record<string, unknown>>(),
     lastAlertAt: timestamp('last_alert_at', { withTimezone: true, mode: 'string' }),
+    // Operator acknowledgement (migration 0018): an alerted cursor is
+    // UNACKNOWLEDGED until an operator acks it, so a durable root-rewrite
+    // detection can be polled and worked even if the best-effort SSE/webhook
+    // fan-out failed. Reset when a NEW alert reason fires or the condition
+    // resolves (advanceCursor). Distinct from `alerted` (auto-clears on
+    // resolution) — ack is the human "I've seen this" signal.
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true, mode: 'string' }),
+    acknowledgedBy: text('acknowledged_by'),
     lastSuccessAt: timestamp('last_success_at', { withTimezone: true, mode: 'string' }),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' })
       .notNull()

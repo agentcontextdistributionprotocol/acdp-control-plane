@@ -63,7 +63,12 @@ import { RegistryRepository } from '../storage/registry.repository';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
 import { WebhookService } from '../webhooks/webhook.service';
 import { WitnessSigningService } from '../witness/witness-signing.service';
-import { mintCosignature, sdkHasCosignatureSurface } from './cosign';
+import {
+  evaluateQuorum,
+  mintCosignature,
+  parseCosignature,
+  sdkHasCosignatureSurface,
+} from './cosign';
 import {
   checkpointTimestampOk,
   LogCheckpoint,
@@ -94,6 +99,17 @@ export interface WitnessOutcome {
   status: 'witnessed' | 'skipped' | 'alert' | 'error';
   /** Alert reason, or a human-readable skip/error note. */
   reason?: string;
+}
+
+/**
+ * The RFC-ACDP-0015 §8 quorum result for a witnessed head. Both null when
+ * quorum consumption is disabled (WITNESS_QUORUM_ENABLED=false).
+ */
+export interface QuorumResult {
+  /** DISTINCT trusted witnesses that independently attest the tuple. */
+  witnessedCount: number | null;
+  /** Whether `witnessedCount` meets the configured N-witnessed policy. */
+  meetsQuorum: boolean | null;
 }
 
 @Injectable()
@@ -216,14 +232,21 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     }
 
     // ── Fetch the current signed tree head ────────────────────────────────
+    // A registry that has aggregated witness cosignatures serves the §6.1
+    // ENVELOPE `{log_checkpoint, witness_signatures}` instead of the bare
+    // checkpoint; unwrap both. With none it serves the bare checkpoint (the
+    // pre-cosigning shape) and witness_signatures is [].
     let checkpointRaw: unknown;
+    let witnessSignatures: unknown[] = [];
     try {
       const resp = await this.federationClient.get(`${baseUrl}/log/checkpoint`);
       if (resp.status < 200 || resp.status >= 300) {
         await this.recordFailureSafe(tenantId, authority);
         return { authority, status: 'error', reason: `/log/checkpoint returned HTTP ${resp.status}` };
       }
-      checkpointRaw = JSON.parse(resp.body);
+      const envelope = unwrapCheckpointEnvelope(JSON.parse(resp.body));
+      checkpointRaw = envelope.checkpoint;
+      witnessSignatures = envelope.witnessSignatures;
     } catch (err) {
       await this.recordFailureSafe(tenantId, authority);
       return { authority, status: 'error', reason: `checkpoint fetch failed: ${msgOf(err)}` };
@@ -284,6 +307,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       });
     }
 
+    // ── §8 quorum CONSUMPTION over the aggregated cosignatures ───────────
+    // The checkpoint is now signature-valid, so we can evaluate how many
+    // DISTINCT TRUSTED witnesses independently attest this exact tuple. No-op
+    // (null) when quorum consumption is disabled. Never throws.
+    const quorum = await this.consumeQuorumSafe(authority, checkpoint, witnessSignatures);
+
     // ── State machine vs the retained cursor ─────────────────────────────
     const cursor = await this.witnessRepo.getCursor(tenantId, authority);
     const prior =
@@ -301,7 +330,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       // proves no consistency; its signature IS verified (step 1), so it may be
       // cosigned — the anti-rewrite guarantee accrues from the SECOND
       // observation onward.
-      await this.persistCheckpointSafe(tenantId, authority, checkpoint, true, null);
+      await this.persistCheckpointSafe(tenantId, authority, checkpoint, true, null, quorum);
       await this.witnessRepo.advanceCursor({
         tenantId,
         authority,
@@ -312,7 +341,8 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       await this.cosignSafe(tenantId, authority, checkpoint);
       this.instrumentation.logWitnessChecksTotal.inc({ result: 'witnessed' });
       this.logger.log(
-        `witnessed first checkpoint of '${checkpoint.log_id}' at size ${checkpoint.tree_size}`,
+        `witnessed first checkpoint of '${checkpoint.log_id}' at size ${checkpoint.tree_size}` +
+          quorumSuffix(quorum),
       );
       return { authority, status: 'witnessed' };
     }
@@ -355,6 +385,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       // (§6). Nothing new to prove; touch the cursor's success clock. The tuple
       // is unchanged, so the cosignature is idempotent (RFC-ACDP-0015 §4/§7 —
       // we retain the first per tuple rather than re-mint a liveness copy).
+      // Quorum, however, DOES evolve: the registry may have aggregated more
+      // cosignatures for this same tuple since we first saw it, so refresh the
+      // recorded count (recordCheckpoint coalesces it onto the existing row).
+      if (quorum.witnessedCount !== null) {
+        await this.persistCheckpointSafe(tenantId, authority, checkpoint, true, null, quorum);
+      }
       await this.witnessRepo.advanceCursor({
         tenantId,
         authority,
@@ -368,7 +404,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     }
 
     // tree_size grew: demand the §9.2 consistency proof against OUR root.
-    return this.verifyGrowth(tenantId, authority, baseUrl, prior, checkpoint);
+    return this.verifyGrowth(tenantId, authority, baseUrl, prior, checkpoint, quorum);
   }
 
   /**
@@ -383,6 +419,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     baseUrl: string,
     prior: { logId: string; size: number; root: string },
     checkpoint: LogCheckpoint,
+    quorum: QuorumResult,
   ): Promise<WitnessOutcome> {
     const proofUrl = `${baseUrl}/log/proof?first=${prior.size}&second=${checkpoint.tree_size}`;
     let proofRaw: unknown;
@@ -438,7 +475,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       });
     }
 
-    await this.persistCheckpointSafe(tenantId, authority, checkpoint, true, true);
+    await this.persistCheckpointSafe(tenantId, authority, checkpoint, true, true, quorum);
     await this.witnessRepo.advanceCursor({
       tenantId,
       authority,
@@ -451,7 +488,8 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     await this.cosignSafe(tenantId, authority, checkpoint);
     this.instrumentation.logWitnessChecksTotal.inc({ result: 'witnessed' });
     this.logger.log(
-      `witnessed '${checkpoint.log_id}' ${prior.size}→${checkpoint.tree_size} (consistency verified)`,
+      `witnessed '${checkpoint.log_id}' ${prior.size}→${checkpoint.tree_size} (consistency verified)` +
+        quorumSuffix(quorum),
     );
     return { authority, status: 'witnessed' };
   }
@@ -601,9 +639,10 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     checkpoint: LogCheckpoint,
     signatureValid: boolean,
     consistencyOk: boolean | null,
+    quorum: QuorumResult = { witnessedCount: null, meetsQuorum: null },
   ): Promise<void> {
     try {
-      await this.witnessRepo.recordCheckpoint({
+      const inserted = await this.witnessRepo.recordCheckpoint({
         tenantId,
         registryAuthority: authority,
         logId: checkpoint.log_id,
@@ -613,11 +652,90 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         rawCheckpoint: checkpoint as unknown as Record<string, unknown>,
         signatureValid,
         consistencyOk,
+        witnessedCount: quorum.witnessedCount,
+        meetsQuorum: quorum.meetsQuorum,
       });
+      // The evidence row is append-once (null = a re-observation of an existing
+      // head). The §8 quorum, however, evolves as the registry aggregates more
+      // cosignatures, so refresh it on re-observation.
+      if (
+        inserted === null &&
+        quorum.witnessedCount !== null &&
+        quorum.meetsQuorum !== null
+      ) {
+        await this.witnessRepo.updateQuorum(
+          checkpoint.log_id,
+          checkpoint.tree_size,
+          checkpoint.root_hash,
+          quorum.witnessedCount,
+          quorum.meetsQuorum,
+        );
+      }
     } catch (err) {
       this.logger.warn(
         `failed to persist witnessed checkpoint for '${authority}': ${msgOf(err)}`,
       );
+    }
+  }
+
+  /**
+   * RFC-ACDP-0015 §8 quorum CONSUMPTION — count how many DISTINCT TRUSTED
+   * witnesses independently attest a checkpoint the control plane has itself
+   * signature-verified, over the cosignatures the registry aggregated and
+   * served (the §6.1 `witness_signatures` sibling). Each cosignature is verified
+   * under its OWN witness's resolved assertionMethod key (independence is the
+   * whole point, §5) — so this counts EXTERNAL attestations, never re-counts
+   * the CP's own mint. No-op (null) when consumption is disabled. Never throws:
+   * a quorum failure must not stall the detect sweep.
+   */
+  private async consumeQuorumSafe(
+    authority: string,
+    checkpoint: LogCheckpoint,
+    witnessSignatures: unknown[],
+  ): Promise<QuorumResult> {
+    if (!this.config.witnessQuorumEnabled) {
+      return { witnessedCount: null, meetsQuorum: null };
+    }
+    try {
+      const trusted = this.config.witnessQuorumTrusted;
+      // Resolve each TRUSTED witness's own assertionMethod key from its DID
+      // document (§8 step 2). Resolution failure for one witness just means it
+      // cannot count — it is never treated as registry dishonesty.
+      const witnessKeysB64: Record<string, string> = {};
+      for (const raw of witnessSignatures) {
+        const parsed = parseCosignature(raw);
+        if (!parsed.ok) continue;
+        const cosig = parsed.cosignature;
+        if (!trusted.includes(cosig.witness_id)) continue;
+        if (witnessKeysB64[cosig.witness_id] !== undefined) continue;
+        try {
+          const resolved = await this.didResolver.resolveKey(cosig.signature.key_id, 'ed25519');
+          witnessKeysB64[cosig.witness_id] = resolved.publicKeyB64;
+        } catch (err) {
+          this.logger.debug(
+            `witness key '${cosig.signature.key_id}' unresolved for quorum: ${msgOf(err)}`,
+          );
+        }
+      }
+      const report = evaluateQuorum({
+        cosignatures: witnessSignatures,
+        checkpoint,
+        trustedWitnessIds: trusted,
+        witnessKeysB64,
+        minWitnesses: this.config.witnessQuorumMinWitnesses,
+      });
+      this.instrumentation.logWitnessQuorumTotal.inc({
+        meets: report.meetsQuorum ? 'true' : 'false',
+      });
+      if (report.failures.length > 0) {
+        this.logger.debug(
+          `quorum for '${authority}' had ${report.failures.length} non-counting cosignature(s): ${report.failures.join('; ')}`,
+        );
+      }
+      return { witnessedCount: report.witnessedCount, meetsQuorum: report.meetsQuorum };
+    } catch (err) {
+      this.logger.warn(`witness quorum evaluation failed for '${authority}': ${msgOf(err)}`);
+      return { witnessedCount: null, meetsQuorum: null };
     }
   }
 
@@ -633,4 +751,35 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
 
 function msgOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Split a GET /log/checkpoint response into the bare checkpoint object and the
+ * aggregated witness cosignatures (RFC-ACDP-0015 §6.1). A registry that has
+ * collected cosignatures for the current head serves the ENVELOPE
+ * `{log_checkpoint, witness_signatures}` (the checkpoint is a closed object, so
+ * the array must ride OUTSIDE it as a sibling); one with none serves the bare
+ * checkpoint. Anything else is passed through as the checkpoint for the closed
+ * parse to reject.
+ */
+function unwrapCheckpointEnvelope(raw: unknown): {
+  checkpoint: unknown;
+  witnessSignatures: unknown[];
+} {
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+    const obj = raw as Record<string, unknown>;
+    if ('log_checkpoint' in obj && 'witness_signatures' in obj) {
+      return {
+        checkpoint: obj.log_checkpoint,
+        witnessSignatures: Array.isArray(obj.witness_signatures) ? obj.witness_signatures : [],
+      };
+    }
+  }
+  return { checkpoint: raw, witnessSignatures: [] };
+}
+
+/** ` (N-witnessed[, quorum met])` log suffix, or '' when consumption is off. */
+function quorumSuffix(quorum: QuorumResult): string {
+  if (quorum.witnessedCount === null) return '';
+  return ` (${quorum.witnessedCount}-witnessed${quorum.meetsQuorum ? ', quorum met' : ''})`;
 }
