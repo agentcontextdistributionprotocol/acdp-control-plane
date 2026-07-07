@@ -103,4 +103,59 @@ describe('WitnessSigningService', () => {
         ),
     ).toThrow(/must be a DID URL under WITNESS_ID/);
   });
+
+  // ── did:web WITNESS_ID ↔ PUBLIC_HOST binding (RFC-ACDP-0015 §9) ─────────
+
+  it('throws when the did:web witness host does not match PUBLIC_HOST', () => {
+    expect(
+      () =>
+        new WitnessSigningService(
+          makeConfig({
+            witnessId: 'did:web:witness.example.org',
+            publicHost: 'some-other-host.example.com',
+          }) as never,
+        ),
+    ).toThrow(/does not match this control plane's PUBLIC_HOST/);
+  });
+
+  it('accepts a did:web witness whose host matches PUBLIC_HOST', () => {
+    const svc = new WitnessSigningService(
+      makeConfig({
+        witnessId: 'did:web:witness.example.org',
+        publicHost: 'https://Witness.Example.ORG/', // scheme/case/slash are normalized away
+      }) as never,
+    );
+    expect(svc.enabled).toBe(true);
+    expect(svc.witnessId).toBe('did:web:witness.example.org');
+  });
+
+  it('accepts a did:web witness with a %3A-encoded port matching PUBLIC_HOST', () => {
+    const svc = new WitnessSigningService(
+      makeConfig({
+        witnessId: 'did:web:witness.example.org%3A8443',
+        witnessKeyId: '',
+        publicHost: 'witness.example.org:8443',
+      }) as never,
+    );
+    expect(svc.enabled).toBe(true);
+  });
+
+  it('warns but does not throw when PUBLIC_HOST is unset (cannot verify the binding)', () => {
+    const svc = new WitnessSigningService(
+      makeConfig({ witnessId: 'did:web:witness.example.org', publicHost: '' }) as never,
+    );
+    expect(svc.enabled).toBe(true);
+  });
+
+  it('exempts a did:key witness from the host binding (self-describing)', () => {
+    const svc = new WitnessSigningService(
+      makeConfig({
+        witnessId: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
+        witnessKeyId: '',
+        publicHost: 'anything.example.com', // ignored for did:key
+      }) as never,
+    );
+    expect(svc.enabled).toBe(true);
+    expect(svc.witnessId).toBe('did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK');
+  });
 });
