@@ -1,0 +1,99 @@
+name: acdp SDK fast-track
+
+# Bumps @agentcontextdistributionprotocol/acdp within minutes of a release,
+# instead of waiting for Dependabot's weekly sweep. Polls npm every 15 min;
+# a new version opens a bump PR (package.json + lockfile, both the real name
+# and the `acdp:` npm-alias) and arms native auto-merge, so a green build ships
+# it unattended. Dependabot still tracks the package weekly as a backstop.
+#
+# NOTE: PRs opened with the default GITHUB_TOKEN do NOT trigger the CI workflow,
+# so required checks would never run and auto-merge would stall. Set a
+# fine-grained PAT secret `ACDP_BUMP_TOKEN` (contents: RW, pull-requests: RW on
+# this repo) for fully unattended operation. Without it, the PR is still opened
+# (via GITHUB_TOKEN) but waits for a human to kick CI.
+#
+# Scheduled runs only fire once this file is on `main`.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [acdp-released] # optional: the acdp repo's publish job can trigger this instantly
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: acdp-fast-track
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.ACDP_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Resolve current vs latest acdp version
+        id: v
+        run: |
+          set -euo pipefail
+          PKG='@agentcontextdistributionprotocol/acdp'
+          CURRENT=$(node -e "const l=require('./package-lock.json').packages; const p=l['node_modules/'+process.argv[1]]||l['node_modules/acdp']; process.stdout.write(p.version)" "$PKG")
+          LATEST=$(npm view "$PKG" version)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST"   >> "$GITHUB_OUTPUT"
+          echo "branch=deps/acdp-$LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "acdp already at $LATEST — nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "acdp $CURRENT -> $LATEST"
+          fi
+
+      - name: Skip if bump branch already exists
+        if: steps.v.outputs.changed == 'true'
+        id: br
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin "${{ steps.v.outputs.branch }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Branch ${{ steps.v.outputs.branch }} already exists — PR likely open."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump package.json (both entries) + lockfile
+        if: steps.v.outputs.changed == 'true' && steps.br.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          L='${{ steps.v.outputs.latest }}'
+          npm pkg set "dependencies.@agentcontextdistributionprotocol/acdp=^$L"
+          npm pkg set "dependencies.acdp=npm:@agentcontextdistributionprotocol/acdp@^$L"
+          npm install --package-lock-only
+
+      - name: Open PR + arm auto-merge
+        if: steps.v.outputs.changed == 'true' && steps.br.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.ACDP_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BR='${{ steps.v.outputs.branch }}'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$BR"
+          git add package.json package-lock.json
+          git commit -m "chore(deps): bump acdp SDK ${{ steps.v.outputs.current }} -> ${{ steps.v.outputs.latest }}"
+          git push -u origin "$BR"
+          gh pr create --base main --head "$BR" \
+            --title "chore(deps): bump acdp SDK to ${{ steps.v.outputs.latest }}" \
+            --body "Fast-track bump of \`@agentcontextdistributionprotocol/acdp\` (and its \`acdp:\` alias) ${{ steps.v.outputs.current }} → ${{ steps.v.outputs.latest }}. Auto-merges once the required checks pass."
+          gh pr merge --auto --squash "$BR"
