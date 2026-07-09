@@ -1,0 +1,126 @@
+name: bump acdp
+
+# npm-side counterpart to acdp-registry-rs/.github/workflows/bump-acdp.yml.
+# When the acdp SDK publishes, the publisher repo dispatches `acdp-released`
+# here; within a minute or two we open a bump PR (package.json — both the real
+# name and the `acdp:` alias — plus the lockfile) and arm native auto-merge, so
+# a green build ships it. Dependabot's weekly `acdp-sdk` group stays as-is and
+# is the safety net if a dispatch is ever missed.
+#
+# The manual button (workflow_dispatch) with a blank version re-syncs to the
+# latest stable on npm — use it to test the flow or recover by hand.
+#
+# NOTE: a bot PR opened with GITHUB_TOKEN does NOT trigger CI, so required
+# checks never run and auto-merge stalls. Set a fine-grained PAT secret
+# ACDP_BUMP_TOKEN (contents RW + pull-requests RW on this repo) for fully
+# unattended operation. Without it the PR still opens but waits for a human to
+# start checks.
+
+on:
+  repository_dispatch:
+    types: [acdp-released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact acdp version to pin (blank = latest stable on npm)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: bump-acdp
+  cancel-in-progress: false
+
+env:
+  PKG: '@agentcontextdistributionprotocol/acdp'
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.ACDP_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Resolve target version
+        id: v
+        run: |
+          set -euo pipefail
+          # Prefer the version carried by the dispatch, then the manual input,
+          # else the latest stable on npm.
+          TARGET='${{ github.event.client_payload.version || inputs.version }}'
+          if [ -z "$TARGET" ]; then TARGET=$(npm view "$PKG" version); fi
+          TARGET=${TARGET#v}
+          CURRENT=$(node -e "const l=require('./package-lock.json').packages; const p=l['node_modules/'+process.env.PKG]||l['node_modules/acdp']; process.stdout.write(p.version)")
+          echo "target=$TARGET"   >> "$GITHUB_OUTPUT"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "branch=deps/acdp-$TARGET" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$TARGET" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already at $TARGET — nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "acdp $CURRENT -> $TARGET"
+          fi
+
+      - name: Wait for npm to serve the version
+        if: steps.v.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          T='${{ steps.v.outputs.target }}'
+          # The NAPI binding builds platform binaries after the crate publishes,
+          # so npm can lag the dispatch. Retry ~2 min (bump the count if the
+          # dispatch fires at crate-publish rather than npm-publish time).
+          for i in $(seq 1 24); do
+            if [ "$(npm view "$PKG@$T" version 2>/dev/null || true)" = "$T" ]; then
+              echo "npm is serving $PKG@$T"; exit 0
+            fi
+            echo "waiting for $PKG@$T on npm ($i/24)…"; sleep 5
+          done
+          echo "::error::$PKG@$T not on npm after ~2 min"; exit 1
+
+      - name: Skip if bump branch already exists
+        if: steps.v.outputs.changed == 'true'
+        id: br
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin "${{ steps.v.outputs.branch }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Branch ${{ steps.v.outputs.branch }} already exists — PR likely open."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump package.json (both entries) + lockfile
+        if: steps.v.outputs.changed == 'true' && steps.br.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          T='${{ steps.v.outputs.target }}'
+          npm pkg set "dependencies.@agentcontextdistributionprotocol/acdp=^$T"
+          npm pkg set "dependencies.acdp=npm:@agentcontextdistributionprotocol/acdp@^$T"
+          npm install --package-lock-only
+
+      - name: Open PR + arm auto-merge
+        if: steps.v.outputs.changed == 'true' && steps.br.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.ACDP_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BR='${{ steps.v.outputs.branch }}'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$BR"
+          git add package.json package-lock.json
+          git commit -m "chore(deps): bump acdp to ${{ steps.v.outputs.target }}"
+          git push -u origin "$BR"
+          gh pr create --base main --head "$BR" \
+            --title "chore(deps): bump acdp to ${{ steps.v.outputs.target }}" \
+            --body "Event-driven bump of \`@agentcontextdistributionprotocol/acdp\` (and its \`acdp:\` alias) ${{ steps.v.outputs.current }} → ${{ steps.v.outputs.target }}, dispatched on npm publish. Auto-merges once the required checks pass."
+          gh pr merge --auto --squash "$BR"
