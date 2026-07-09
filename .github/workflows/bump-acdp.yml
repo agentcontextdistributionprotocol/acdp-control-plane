@@ -11,10 +11,11 @@ name: bump acdp
 # latest stable on npm — use it to test the flow or recover by hand.
 #
 # NOTE: a bot PR opened with GITHUB_TOKEN does NOT trigger CI, so required
-# checks never run and auto-merge stalls. Set a fine-grained PAT secret
-# ACDP_BUMP_TOKEN (contents RW + pull-requests RW on this repo) for fully
-# unattended operation. Without it the PR still opens but waits for a human to
-# start checks.
+# checks never run and auto-merge stalls. This workflow authenticates as a
+# GitHub App instead (an installation token DOES trigger CI, and never expires
+# like a PAT). Set two repo secrets from the App: ACDP_BOT_APP_ID and
+# ACDP_BOT_PRIVATE_KEY. The App needs Contents: RW + Pull requests: RW and must
+# be installed on this repo.
 
 on:
   repository_dispatch:
@@ -41,9 +42,16 @@ jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
+      - name: Mint GitHub App token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ACDP_BOT_APP_ID }}
+          private-key: ${{ secrets.ACDP_BOT_PRIVATE_KEY }}
+
       - uses: actions/checkout@v5
         with:
-          token: ${{ secrets.ACDP_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
 
       - uses: actions/setup-node@v5
         with:
@@ -110,7 +118,7 @@ jobs:
       - name: Open PR + arm auto-merge
         if: steps.v.outputs.changed == 'true' && steps.br.outputs.exists == 'false'
         env:
-          GH_TOKEN: ${{ secrets.ACDP_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
           BR='${{ steps.v.outputs.branch }}'
