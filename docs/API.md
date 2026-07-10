@@ -55,7 +55,8 @@ returns `429` with a `Retry-After` header (see [POLICY.md](./POLICY.md)).
 | GET  | `/runs/:runId/lineage` | key/JWT | Lineage DAG |
 | GET  | `/runs/:runId/events` | key/JWT | Run events |
 | GET  | `/runs/:runId/events/stream` | key/JWT | SSE — per-run |
-| POST | `/runs/:runId/complete` | key/JWT | Mark run terminal |
+| POST | `/runs/started` | Public (HMAC) | Run-start notify (scenario attribution) |
+| POST | `/runs/:runId/complete` | Public (HMAC) | Mark run terminal |
 | GET  | `/events` | key/JWT | Cross-run event history |
 | GET  | `/events/stream` | key/JWT | SSE — global firehose |
 | GET  | `/contexts/*ctxId` | key/JWT (policy) | Federation proxy |
@@ -67,6 +68,9 @@ returns `429` with a `Retry-After` header (see [POLICY.md](./POLICY.md)).
 | GET  | `/registries` | key/JWT | Known registries |
 | GET  | `/registries/enrollments` | key/JWT | Enrolled registries (secrets hidden) |
 | POST | `/registries/enroll` | admin | Enroll/update a registry |
+| GET  | `/registries/:authority/log-witness` | key/JWT | Witnessed checkpoints + alert state (RFC-ACDP-0012) |
+| GET  | `/registries/log-witness/alerts` | key/JWT | Alerted registries worklist |
+| POST | `/registries/:authority/log-witness/ack` | admin | Acknowledge a witness alert |
 | GET  | `/dashboard/overview` | key/JWT | KPIs |
 | POST | `/webhooks` | key/JWT | Create subscription |
 | GET  | `/webhooks` | key/JWT | List |
@@ -136,7 +140,8 @@ returns `429` with a `Retry-After` header (see [POLICY.md](./POLICY.md)).
 | `GET`  | `/runs/:runId/lineage` | Lineage DAG: `{ runId, nodes[], edges[] }`. |
 | `GET`  | `/runs/:runId/events` | Context events for the run, ordered by `event_ts`. |
 | `GET`  | `/runs/:runId/events/stream` | **SSE** — live events for this run. |
-| `POST` | `/runs/:runId/complete` | Mark the run terminal. Body: `{ status, result? }`. Returns `204`. |
+| `POST` | `/runs/started` | **Public (HMAC)** run-start notify. Body: `{ run_id, scenario_id, started_at?, inputs? }`. Records scenario attribution before the first ingest event lands. Tenant via `X-Tenant-Id`. Returns `204`. |
+| `POST` | `/runs/:runId/complete` | **Public (HMAC)** — authenticated with the same `WEBHOOK_SECRET` HMAC as `/ingest/acdp`, not a bearer token. Mark the run terminal. Body: `{ status, result? }`. Returns `204`. |
 
 ### `GET /runs` query parameters
 
@@ -164,7 +169,8 @@ Response:
       "contextType": "task",
       "visibility": "public",
       "registryAuthority": "registry-a.example",
-      "step": 1
+      "step": 1,
+      "retracted": false
     }
   ],
   "edges": [ { "from": "acdp://registry-a/ctx-001", "to": "acdp://registry-a/ctx-002" } ]
@@ -358,12 +364,28 @@ KPIs over the window (default `24h`), tenant-scoped:
   "window": "24h",
   "totalRuns": 12,
   "totalContexts": 87,
+  "totalRetracted": 2,
+  "totalContextsLive": 85,
   "totalAgents": 5,
   "recentRuns": [ /* last 10 runs */ ],
   "byScenario": [ { "scenario_id": "...", "run_count": 4 } ],
-  "byRegistry": [ { "registry_authority": "...", "event_count": 31 } ]
+  "byRegistry": [ { "registry_authority": "...", "event_count": 31 } ],
+  "receiptCoverage": [ { "registry_authority": "...", "publish_count": 40, "receipt_count": 38 } ],
+  "didMethods": [ { "method": "did:web", "publish_count": 61 } ],
+  "logWitness": {
+    "witnessedLogs": 1,
+    "activeAlerts": 0,
+    "unacknowledgedAlerts": 0,
+    "headsMeetingQuorum": 3
+  }
 }
 ```
+
+`totalRetracted` / `totalContextsLive` are the ACDP 0.3.0 lifecycle tiles
+(currently-retracted contexts from the window, and published − retracted).
+`receiptCoverage` / `didMethods` are the ACDP 0.2.0 trust tiles
+(RFC-ACDP-0010), and `logWitness` is the RFC-ACDP-0012/0015 witness posture
+(not window-scoped — it reflects current state).
 
 ---
 

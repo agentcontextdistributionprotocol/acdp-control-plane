@@ -26,8 +26,11 @@ SSRF defenses the did:web resolver inherits are documented in
 request it:
 
 1. Reads `Authorization`. `@Public()` routes skip auth entirely
-   (`/ingest/acdp`, `/ingest/health`, `/auth/challenge`, `/auth/token`,
-   `/.well-known/jwks.json`, `/healthz`, `/readyz`, `/metrics`).
+   (`/ingest/acdp`, `/ingest/health`, `POST /runs/started`,
+   `POST /runs/:runId/complete` — both HMAC-authenticated like ingest —
+   `/auth/challenge`, `/auth/token`, `/.well-known/jwks.json`,
+   `/log/witness`, `/.well-known/acdp-witness.json`, `/.well-known/did.json`,
+   `/healthz`, `/readyz`, `/metrics`).
 2. **Dispatches on token shape** — a string with two dots / three base64url
    segments is treated as a JWT; anything else as an opaque API key. There is no
    cross-fallback (a rejected JWT never falls through to API-key matching — an
@@ -121,6 +124,13 @@ material. It is embedded in the JWT header and published in JWKS so verifiers ca
 match. The supported signature algorithms are governed by the spec's
 [signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/registries);
 the CP accepts exactly the set the SDK verifies.
+
+> **Witness signing key is separate.** When witness cosigning
+> (RFC-ACDP-0015) is enabled, checkpoint cosignatures are minted with a
+> **dedicated** Ed25519 key (`WITNESS_SIGNING_PRIVATE_KEY_PEM`, identity
+> `WITNESS_ID`, published via `/.well-known/did.json`) — never the JWT
+> issuance key above. The two identities must not share key material; see
+> [CONFIGURATION.md](./CONFIGURATION.md#transparency-log-witnessing-rfc-acdp-0012--rfc-acdp-0015).
 
 ## Pinned keys
 
