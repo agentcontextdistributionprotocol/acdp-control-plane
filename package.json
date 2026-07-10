@@ -20,7 +20,7 @@
     "test:integration": "jest --config test/jest.integration.config.ts --runInBand"
   },
   "dependencies": {
-    "@agentcontextdistributionprotocol/acdp": "^0.7.0",
+    "@agentcontextdistributionprotocol/acdp": "^0.8.0",
     "@nestjs/common": "^11.1.28",
     "@nestjs/config": "^4.0.0",
     "@nestjs/core": "^11.1.28",
