@@ -112,6 +112,9 @@ not authenticated principals:
   can bind events to a non-`default` tenant.
 - A registry enrollment (`POST /registries/enroll`) carries a `tenantId` that
   binds all events from that authority.
+- The HMAC-authenticated run-notify endpoints (`POST /runs/started`,
+  `POST /runs/:runId/complete`) accept `X-Tenant-Id` the same way and reject
+  an explicit assertion of the reserved `default` tenant.
 
 See [INGEST.md](./INGEST.md#registry-trust--enrollment).
 

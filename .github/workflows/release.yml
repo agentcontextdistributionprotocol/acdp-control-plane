@@ -3,6 +3,14 @@ name: Release
 # Build the control-plane image and publish it to GitHub Container Registry
 # (GHCR) on every version tag (e.g. `v0.1.0`), then trigger a Railway redeploy
 # of the service that tracks the GHCR image.
+#
+# Gates before anything reaches GHCR:
+#   1. `test` — lint + tsc + unit suite must pass on the tagged commit
+#      (tags can be cut from any commit; don't assume main's CI ran on it).
+#   2. `image` builds locally first and BOOTS the container against a real
+#      Postgres, asserting /healthz + /readyz, before the same build (warm
+#      cache) is pushed. A tag that produces an unbootable image fails here,
+#      not in Railway.
 on:
   push:
     tags: ['v*']
@@ -20,8 +28,26 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
+  test:
+    name: gate (lint + tsc + unit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: bash scripts/ci-conventions.sh
+      - run: npm run lint -- --max-warnings 0
+      - run: npx tsc --noEmit -p tsconfig.json
+      - run: npx jest --testPathIgnorePatterns='/test/integration/' --ci
+        env:
+          NODE_ENV: test
+
   image:
-    name: build + push (GHCR)
+    name: build + smoke test + push (GHCR)
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -51,6 +77,49 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
             type=sha,format=short
+
+      - name: Build image (local, for smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: control-plane-smoke:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test — boot against Postgres, assert /healthz + /readyz
+        run: |
+          set -euo pipefail
+          docker network create smoke
+          docker run -d --name pg --network smoke \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=acdp_control_plane postgres:16
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres >/dev/null 2>&1 && break
+            sleep 2
+          done
+          # NODE_ENV=production is baked into the image; AUTH_API_KEYS is
+          # mandatory there (empty disables auth), so give it a throwaway key.
+          docker run -d --name cp --network smoke -p 3001:3001 \
+            -e DATABASE_URL=postgres://postgres:postgres@pg:5432/acdp_control_plane \
+            -e AUTH_API_KEYS=release-smoke-key \
+            -e WEBHOOK_SECRET=release-smoke-secret \
+            control-plane-smoke:${{ github.sha }}
+          ok=""
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:3001/healthz >/dev/null 2>&1 && ok=1 && break
+            sleep 2
+          done
+          if [ -z "$ok" ]; then
+            echo '::error::control plane never became healthy — boot log follows'
+            docker logs cp
+            exit 1
+          fi
+          curl -fsS http://localhost:3001/healthz
+          # /readyz proves migrations ran and the DB pool is live.
+          curl -fsS http://localhost:3001/readyz
+          docker rm -f cp pg
+          docker network rm smoke
 
       - name: Build and push
         uses: docker/build-push-action@v6

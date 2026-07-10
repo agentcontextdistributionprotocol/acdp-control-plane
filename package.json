@@ -13,6 +13,7 @@
     "migrate": "ts-node src/db/migrate.ts",
     "migrate:prod": "node dist/db/migrate.js",
     "lint": "eslint \"{src,test}/**/*.ts\"",
+    "check:conventions": "bash scripts/ci-conventions.sh",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -92,6 +93,14 @@
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
+    "coverageThreshold": {
+      "global": {
+        "statements": 70,
+        "branches": 58,
+        "functions": 55,
+        "lines": 70
+      }
+    },
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
   }

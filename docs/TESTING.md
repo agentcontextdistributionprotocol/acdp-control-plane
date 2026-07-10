@@ -1,6 +1,7 @@
 # Testing
 
-Two layers, two commands.
+Three layers: unit (`npm test`), integration (`npm run test:integration`), and a
+manual full-stack e2e smoke test (`e2e/run-e2e.sh` — not part of CI).
 
 ## Unit tests
 
@@ -13,8 +14,14 @@ npm test                          # one-shot
 npm test -- src/auth/auth.guard.spec.ts   # single file
 npm test -- -t "rejects spoofed tenant"    # filter by test name
 npm run test:watch                # watch mode
-npm run test:cov                  # coverage → coverage/
+npm run test:cov                  # coverage → coverage/ (thresholds enforced)
+npm run check:conventions         # CI grep rules (no console.*, process.env, raw throws)
 ```
+
+Coverage thresholds live in the `jest.coverageThreshold` block in `package.json`
+(statements 70 / branches 58 / functions 55 / lines 70). CI runs the unit suite
+with `--coverage`, so a regression below any threshold fails the build — raise
+the numbers as coverage improves; never lower them to make a PR pass.
 
 The suite is broad — every guard, decider, store, parser, and the pipeline core
 is covered. Highlights of the contracts most likely to break under refactor:
@@ -86,6 +93,16 @@ npm run test:integration -- ingest.integration # single spec (regex against path
 | `domain-packs.integration.spec.ts` | Pack-gated `context_type` accept/reject |
 | `federation-proxy.integration.spec.ts` | `/contexts` proxy + SSRF + 429→503 mapping |
 | `retention-routing.integration.spec.ts` | Data retention purge + bandit routing |
+| `quota.integration.spec.ts` | Per-tenant per-action quotas, 429 + `Retry-After` |
+| `capabilities.integration.spec.ts` | Signed capability declare + discovery |
+| `dashboard.integration.spec.ts` | `/dashboard/overview` KPIs + trust tiles |
+| `auth-issuance.integration.spec.ts` | `/auth/challenge` → `/auth/token` IdP flow end-to-end |
+| `auth-introspect.integration.spec.ts` | RFC 7662 introspection: active claims, `{active:false}` collapse, auth gate |
+| `trust-hardening.integration.spec.ts` | Receipt audit sweep + trust surfaces |
+| `log-witness.integration.spec.ts` | Checkpoint witness + log-inclusion audit verdicts |
+| `witness-cosigning.integration.spec.ts` | RFC-ACDP-0015 cosignature mint/serve + quorum |
+| `error-envelope.integration.spec.ts` | `GlobalExceptionFilter` acdp+json envelope over HTTP |
+| `migrations.integration.spec.ts` | Migration re-run idempotency + core table presence |
 
 ### How the test app is wired (`test/helpers/test-app.ts`)
 
@@ -126,4 +143,29 @@ await sse.connect(`/runs/${runId}/events/stream`);
 await sse.waitForEvent('context_published', 5000);
 sse.close();
 ```
+
+## End-to-end smoke test (`e2e/`)
+
+`e2e/run-e2e.sh` boots the **real** stack with Docker Compose — Python
+playground → Rust registry → this control plane → Postgres — and asserts the
+control plane's lineage DAG matches what the playground produced. It exercises
+the true webhook path (registry-minted HMAC, not a test client). Manual only:
+it needs Docker plus an OpenAI key and is **not** wired into CI. See
+`e2e/README.md` for the flow, scenarios, and the registry SSRF patch it builds.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every PR/push to `main`:
+
+1. **unit** — convention greps (`scripts/ci-conventions.sh`), ESLint
+   (`--max-warnings 0`), `tsc --noEmit`, then the unit suite with coverage
+   thresholds enforced; the lcov report uploads as an artifact.
+2. **integration** — the full integration suite against a `postgres:16`
+   service container on port 5433.
+3. **docker** — builds the production `Dockerfile` (no push) so image breaks
+   surface at PR time, not at release time.
+
+Release tags additionally gate the GHCR push on the unit suite and a container
+smoke test (boot against Postgres, assert `/healthz` + `/readyz`) — see
+`.github/workflows/release.yml`.
 </content>

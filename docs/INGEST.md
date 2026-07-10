@@ -118,14 +118,17 @@ A new run record is auto-created the first time the control plane sees a given
 The wire shape of these events is defined by the **emitter** — the registry — in
 its [WEBHOOKS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/WEBHOOKS.md)
 (event envelope + `context.published` / `context.retrieved` / `search.executed`
-variants). The table below is **not** a second definition of that wire format; it
+variants); the lifecycle event types (`context_retracted` / `context_republished`)
+are normative in [RFC-ACDP-0013](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0013-lifecycle-events.md)
+and the [lifecycle-event-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/lifecycle-event-types.md).
+The table below is **not** a second definition of that wire format; it
 is the subset of fields the CP *extracts* and what each is used for. The control
 plane is intentionally **liberal** — it stores the raw payload in
 `context_events.raw_payload` and reads only these well-known fields:
 
 | Field                | Required | Used for |
 |----------------------|----------|----------|
-| `type`               | **yes**  | Event type (e.g. `context_published`, `context_archived`). Lineage edges only fire on `context_published`. |
+| `type`               | **yes**  | Event type: `context_published`, `context_retrieved`, `context_retracted`, `context_republished` (RFC-ACDP-0013 lifecycle), `search_executed`. Lineage edges only fire on `context_published`; retract/republish drive the `context_lifecycle` projection. |
 | `agent_id`           | publishes only | DID of the emitting agent. **Required only for `context_published`** — the registry's `context_retrieved` / `search_executed` events are agent-less by design (they carry an optional `requester_did` instead). Indexed; populates the `agents` table when present. |
 | `registry_authority` | **yes**  | DNS-like identifier of the source registry. Indexed; populates the `registries` table. |
 | `ctx_id`             | no       | `acdp://<authority>/<uuid>` URI of the context. |
@@ -136,7 +139,10 @@ plane is intentionally **liberal** — it stores the raw payload in
 | `derived_from`       | no       | Array of `ctx_id`s. **Each entry becomes a lineage edge** when `type === 'context_published'`. |
 | `scenario_id`        | no       | Falls back to `metadata.scenario_id` if absent. Defaults to `"unknown"` for the run record. |
 | `run_id`             | no       | See "Run correlation" above. |
-| `created_at`         | no       | ISO-8601 event timestamp. Defaults to the receive time at the control plane. |
+| `created_at`         | no       | ISO-8601 event timestamp. Falls back to `at` (the RFC-ACDP-0013 lifecycle wire timestamp), then to the receive time at the control plane. |
+| `actor` / `reason`   | no       | Lifted into `context_lifecycle` on `context_retracted` / `context_republished` (who retracted and why). |
+| `key_fingerprint`    | no       | ACDP 0.2.0 trust signal (RFC-ACDP-0010) — lifted into the `key_fingerprint` column and passed through on SSE as `keyFingerprint`. |
+| `registry_receipt`   | no       | ACDP 0.2.0 registry receipt — stays verbatim in `raw_payload`; presence is lifted into the `receipt_present` column (audited later by the receipt-audit sweep). |
 | `metadata`           | no       | Free-form object. `metadata.scenario_id` is checked as a fallback. |
 
 Unknown fields are preserved in `raw_payload` and surfaced via
@@ -194,6 +200,9 @@ For each accepted event, the pipeline:
 2. Upserts the run (correlation), bumping `contexts_count` and the registry list.
 3. Inserts a `lineage_edges` row per `derived_from` entry — only for
    `context_published` and idempotent (`ON CONFLICT DO NOTHING`).
+   For `context_retracted` / `context_republished`, applies the lifecycle
+   transition to `context_lifecycle` instead (mark-not-delete: lineage nodes
+   gain `retracted: true` rather than disappearing).
 4. Upserts the agent's row, bumping `context_count` and `last_seen`.
 5. Upserts the registry's row, bumping `event_count` and `last_seen`.
 6. Publishes a normalized `AcdpStreamEvent` to:
@@ -203,6 +212,10 @@ For each accepted event, the pipeline:
 
 The end-to-end response is `204 No Content` — the control plane does not echo
 back the persisted event.
+
+> The run-notify endpoints `POST /runs/started` and `POST /runs/:runId/complete`
+> authenticate exactly like ingest: `@Public()` + the same `WEBHOOK_SECRET`
+> HMAC over the raw body (`x-acdp-signature: sha256=<hex>`).
 
 ---
 

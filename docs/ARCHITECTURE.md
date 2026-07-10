@@ -13,6 +13,10 @@ registries (which authoritatively store contexts and emit lifecycle webhooks) an
 5. **Proxies** federated context retrievals to the authoring registry (SSRF-gated).
 6. **Authenticates & authorizes** callers (API keys + JWT issuance + federation),
    isolates them by **tenant**, and gates actions with **policy** and **quota**.
+7. **Audits & witnesses** registry honesty: cross-checks embedded registry
+   receipts (RFC-ACDP-0010), witnesses transparency-log checkpoints and audits
+   inclusion proofs (RFC-ACDP-0012), and mints/consumes witness cosignatures
+   with N-witnessed quorum (RFC-ACDP-0015).
 
 > Where this service mirrors protocol or registry behavior (crypto, SSRF, did:web,
 > auth challenge-response, tenancy, webhook event shapes), it relies on the
@@ -48,6 +52,8 @@ registries (which authoritatively store contexts and emit lifecycle webhooks) an
    │                                                                │
    │  /runs /events /contexts /agents /capabilities /registries    │
    │  /dashboard /webhooks /domain-packs /routing /auth/*          │
+   │  /log/witness /.well-known/* /admin/pinned-keys/reload        │
+   │  /registries/:authority/log-witness (+alerts, ack)            │
    │  /healthz /readyz /metrics /docs                              │
    └──────────────────────────────────────────────────────────────┘
                  │                │                  │
@@ -78,7 +84,14 @@ src/
 ├── ingest/                    # POST /ingest/acdp + HMAC verify + body caps + gates
 ├── processor/                 # EventProcessorService — the pipeline core
 │
-├── storage/                   # Repositories: context-event, run, lineage, agent, registry
+├── storage/                   # Repositories: context-event, run, lineage, agent, registry,
+│                              #   context-lifecycle, registry-enrollment, receipt-audit,
+│                              #   log-witness, log-cosignature, log-inclusion-audit
+├── audit/                     # Receipt audit (RFC-ACDP-0010), checkpoint witness +
+│                              #   log-inclusion audit (RFC-ACDP-0012), Merkle log-verify,
+│                              #   cosignature helpers, registry-profile probe
+├── witness/                   # Witness cosigning (RFC-ACDP-0015): signing service +
+│                              #   /log/witness, /.well-known/acdp-witness.json, did.json
 ├── webhooks/                  # Outbound webhook subs + outbox-tracked delivery + retry sweep
 ├── events/                    # StreamHub (memory + redis strategies), /events controller
 ├── runs/                      # /runs controller + service
@@ -100,18 +113,19 @@ src/
 
 ## The pipeline (`EventProcessorService.process`)
 
-For every **accepted, non-duplicate** event the processor performs **six**
+For every **accepted, non-duplicate** event the processor performs these
 ordered steps:
 
 | # | Step                       | Mutation                                                                       |
 |---|----------------------------|--------------------------------------------------------------------------------|
 | 0 | dedup                      | skip if `(tenant_id, fingerprint)` already seen — no side effects (see [INGEST.md](./INGEST.md#idempotency)) |
-| 1 | persist raw                | `INSERT INTO context_events` (the full payload is kept as `raw_payload`)        |
+| 1 | persist raw                | `INSERT INTO context_events` — full payload kept as `raw_payload`, with the ACDP 0.2.0 trust columns (`key_fingerprint`, `receipt_present`) lifted out |
 | 2 | run correlation            | `INSERT … ON CONFLICT` into `runs` — bumps `contexts_count`, dedupes registries |
 | 3 | lineage edges              | one `INSERT … ON CONFLICT DO NOTHING` into `lineage_edges` per `derived_from`  |
+| 3b | lifecycle projection      | `context_retracted` / `context_republished` events upsert `context_lifecycle` (RFC-ACDP-0013 mark-not-delete; lifts `actor` + `reason`) |
 | 4 | agent upsert               | `INSERT … ON CONFLICT (tenant_id, agent_did) DO UPDATE` — bumps `last_seen`, `context_count` |
 | 5 | registry upsert            | same shape, on `registries`                                                    |
-| 6 | broadcast + webhooks       | publish to per-run + global SSE; fire matching outbound webhooks (fire-and-forget) |
+| 6 | broadcast + webhooks       | publish to per-run + global SSE (trust signals pass through as `keyFingerprint`/`receiptPresent`); fire matching outbound webhooks (fire-and-forget) |
 
 Lineage edges are only inserted when `type === 'context_published'` and there is
 at least one `derived_from` entry. The DAG is therefore a property of
@@ -200,6 +214,45 @@ Full detail in [AUTH.md](./AUTH.md).
   the base RFC-ACDP-0001 types (`data_snapshot`, `analysis`, `prediction`,
   `alert`) are never gated. See [INGEST.md](./INGEST.md#domain-pack-context_type-gate).
 
+## Transparency, audit & witness (RFC-ACDP-0010 / 0012 / 0015)
+
+> **Sources of truth.** The receipt, checkpoint, Merkle-proof, and cosignature
+> wire formats and verification procedures are normative in the spec —
+> [RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0010-registry-receipts.md)
+> (receipts),
+> [RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)
+> (transparency log),
+> [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md)
+> (cosigning) — and the registry side is documented in
+> [acdp-registry-rs/docs/RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md).
+> This section is **not** a restatement of those — it describes only what *this
+> service* does as an observer: which sweeps run, what each records, and where
+> the verdicts surface.
+
+Three independent, advisory-locked sweeps make the control plane a second
+observer of registry honesty — each gated by its own env flag and each
+recording verdicts in its own table so the signals stay independent:
+
+| Sweep | Verifies | Evidence table | Surfaces |
+|-------|----------|----------------|----------|
+| `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; dashboard `receiptCoverage` |
+| `CheckpointWitnessPollerService` | Fetches each log-advertising registry's `GET /log/checkpoint` and runs the RFC-ACDP-0012 checkpoint + consistency checks against the head it retains | `log_witness_checkpoints` + `log_witness_cursors` | `GET /registries/:authority/log-witness`; `log_witness_alert` SSE/webhook on state transition; `acdp_log_witness_alerts_total{reason}` |
+| `LogInclusionAuditService` | Rebuilds the leaf from OUR stored receipt, fetches `/log/proof?ctx_id=`, runs the RFC-ACDP-0012 inclusion check, and cross-binds against witnessed heads | `log_inclusion_audits` | verdicts `included` \| `invalid_proof` \| `not_logged` \| `no_log` \| `error` |
+
+On top of witnessing, the CP can **cosign**: a checkpoint that passes the
+RFC-ACDP-0015 witness obligation is signed with a dedicated Ed25519 witness key
+(`WITNESS_ID` + `WITNESS_SIGNING_PRIVATE_KEY_PEM` — never the JWT key) and
+served at `GET /log/witness`; the mirror side consumes registry-aggregated
+cosignatures and evaluates the **N-witnessed quorum** (`WITNESS_QUORUM_*`),
+recording `meets_quorum` per witnessed head. All the crypto is delegated — JCS,
+Ed25519, DID/key lifecycle, and the receipt/log verification come from the
+`acdp` SDK (with `src/audit/log-verify.ts` as a transcribed fallback until the
+binding exposes the 0.3.0 log surface). Registry-side cosigning
+(RFC-ACDP-0009 §2.12) is deliberately NOT implemented — the CP is an external
+witness only. Transport/DID failures are treated as environmental
+(`consecutive_failures`), never dishonesty alerts; the retained head advances
+only on full success.
+
 ## Operational concerns
 
 - **Migrations** run programmatically at boot (`src/db/migrate.ts`) from SQL
@@ -209,7 +262,15 @@ Full detail in [AUTH.md](./AUTH.md).
   pool, `StreamHubService` completes all Subjects, background timers are cleared.
 - **Background services**: `WebhookService` retry sweep, `AuthSweeperService` (GCs
   expired challenges / revocations / ledger), `RevocationPollerService` (consumes
-  peer feeds), `DataRetentionService` (off unless `DATA_RETENTION_ENABLED`).
+  peer feeds), `DataRetentionService` (off unless `DATA_RETENTION_ENABLED`),
+  plus the three advisory-locked audit sweeps — `ReceiptAuditService`
+  (`RECEIPT_AUDIT_ENABLED`), `CheckpointWitnessPollerService`
+  (`LOG_WITNESS_ENABLED`), and `LogInclusionAuditService`
+  (`LOG_INCLUSION_AUDIT_ENABLED`).
+- **Boot assertions (witness)**: with `WITNESS_COSIGNING_ENABLED=true`, a
+  `did:web` `WITNESS_ID` whose host disagrees with `PUBLIC_HOST` is fatal at
+  boot (RFC-ACDP-0015 §9), and cosigning without `LOG_WITNESS_ENABLED=true`
+  refuses to start — the cosigner rides the checkpoint witness.
 - **Observability**: pino structured logs (per-request JSON), Prometheus metrics
   on `/metrics` (all constructed in `InstrumentationService`), optional OTel SDK
   (`OTEL_ENABLED=true`). Metric inventory in [API.md](./API.md#observability).

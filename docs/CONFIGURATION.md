@@ -119,12 +119,36 @@ See [INGEST.md](./INGEST.md).
 | `THROTTLE_TTL_MS` | number | `60000` | Throttle window per `(actorId\|ip)`. |
 | `THROTTLE_LIMIT` | number | `200` | Requests per window. `/auth/*` uses a tighter override. |
 
+## Receipt audit (RFC-ACDP-0010)
+
+An advisory-locked sweep that makes the CP an independent second observer of
+registry receipts: it picks unaudited `context_published` events, cross-checks
+each embedded `registry_receipt`, records a verdict in `receipt_audits`, and
+surfaces it as the `trust` member on `GET /runs/:runId`. The receipt format and
+the verification procedure it runs are normative in
+[RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0010-registry-receipts.md)
+(registry-side runbook:
+[acdp-registry-rs/docs/RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md)) —
+see [ARCHITECTURE.md](./ARCHITECTURE.md#transparency-audit--witness-rfc-acdp-0010--0012--0015)
+for how the sweep fits the pipeline.
+
+| Var | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `RECEIPT_AUDIT_ENABLED` | bool | `false` | Enable the receipt-audit sweep. |
+| `RECEIPT_AUDIT_INTERVAL_SECONDS` | number | `300` | Sweep interval. **≥5** when enabled. |
+| `RECEIPT_AUDIT_BATCH_SIZE` | number | `50` | Events audited per sweep. **≥1** when enabled. |
+| `RECEIPT_AUDIT_LOOKBACK_HOURS` | number | `24` | Only events younger than this are picked up. |
+
 ## Transparency-log witnessing (RFC-ACDP-0012 / RFC-ACDP-0015)
 
 The checkpoint witness polls `GET /log/checkpoint` on enrolled registries advertising
 `acdp-registry-transparency-log`, verifies each checkpoint's signature and its
 consistency against the last-witnessed head, and alerts on any dishonesty signal
-(root rewrite, split view, tree-size regression, log reset).
+(root rewrite, split view, tree-size regression, log reset). The checkpoint/proof
+formats and checks are normative in
+[RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)
+and [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md);
+the knobs below are what this service exposes.
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
@@ -167,6 +191,20 @@ requires `LOG_WITNESS_ENABLED=true`.
 | `WITNESS_QUORUM_ENABLED` | bool | `false` | Enable quorum consumption over aggregated cosignatures. |
 | `WITNESS_QUORUM_TRUSTED` | list | `''` | Witness DIDs whose cosignatures count; others are verified-but-ignored. |
 | `WITNESS_QUORUM_MIN_WITNESSES` | number | `1` | The N in N-witnessed. **≥1** when enabled. |
+
+**Log-inclusion audit ([RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)).**
+The sibling sweep to the checkpoint witness: for stored receipt-bearing publishes
+from log-advertising registries it proves each context is actually in the
+registry's log (fetching `/log/proof?ctx_id=`) and cross-binds against witnessed
+heads. Verdicts (`included` | `invalid_proof` | `not_logged` | `no_log` | `error`)
+seal once per event in `log_inclusion_audits`.
+
+| Var | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `LOG_INCLUSION_AUDIT_ENABLED` | bool | `false` | Enable the inclusion-audit sweep. |
+| `LOG_INCLUSION_AUDIT_INTERVAL_SECONDS` | number | `300` | Sweep interval. **≥5** when enabled. |
+| `LOG_INCLUSION_AUDIT_BATCH_SIZE` | number | `50` | Events audited per sweep. **≥1** when enabled. |
+| `LOG_INCLUSION_AUDIT_LOOKBACK_HOURS` | number | `24` | Only events younger than this are picked up. |
 
 ## Data retention
 
@@ -213,6 +251,10 @@ requires `LOG_WITNESS_ENABLED=true`.
 - Issuance + `EdDSA` with empty `JWT_PRIVATE_KEY_PEM`.
 - Issuance with `JWT_TTL_SECONDS < 60` or `CHALLENGE_TTL_SECONDS < 30`.
 - `LOG_WITNESS_ENABLED=true` with `LOG_WITNESS_INTERVAL_SECONDS < 5`.
+- `RECEIPT_AUDIT_ENABLED=true` with `RECEIPT_AUDIT_INTERVAL_SECONDS < 5` or
+  `RECEIPT_AUDIT_BATCH_SIZE < 1`.
+- `LOG_INCLUSION_AUDIT_ENABLED=true` with `LOG_INCLUSION_AUDIT_INTERVAL_SECONDS < 5`
+  or `LOG_INCLUSION_AUDIT_BATCH_SIZE < 1`.
 - `WITNESS_COSIGNING_ENABLED=true` without `WITNESS_ID`, without
   `WITNESS_SIGNING_PRIVATE_KEY_PEM`, or without `LOG_WITNESS_ENABLED=true`.
   (`WitnessSigningService` additionally rejects a non-Ed25519 key, a malformed
@@ -225,4 +267,6 @@ requires `LOG_WITNESS_ENABLED=true`.
 - `OTEL_ENABLED=true` with empty `OTEL_EXPORTER_OTLP_ENDPOINT` (traces discarded).
 - `REVOCATION_FEEDS` set with `TOKEN_ISSUANCE_ENABLED=false` (poller won't run).
 - `TOKEN_ISSUANCE_ENABLED=true` with `AUTH_PERSISTENCE=memory` (state not shared).
+- `WITNESS_QUORUM_ENABLED=true` with empty `WITNESS_QUORUM_TRUSTED` (no
+  cosignature can ever count toward quorum).
 </content>

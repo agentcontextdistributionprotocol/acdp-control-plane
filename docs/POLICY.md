@@ -103,7 +103,7 @@ Grep `@CheckPolicy` for the live set. As of this writing:
 | `context.retrieve` | `GET /contexts/*ctxId` |
 | `capability.declare` | `POST /capabilities` |
 | `run.read` | several `GET /runs…` handlers |
-| `run.start` | `POST /runs/:runId/complete` |
+| `run.start` | *(reserved in the `PolicyAction` union but currently unwired — `POST /runs/:runId/complete` is `@Public()` + HMAC, no policy gate)* |
 
 `src/policy/controller-coverage.spec.ts` pins which controller methods must carry
 a policy decorator, so coverage gaps fail CI.
