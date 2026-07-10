@@ -10,7 +10,7 @@
 # are `*-unknown-linux-gnu`, not musl, so alpine cannot load them.
 
 # ── Stage 1: build the control plane ─────────────────────────────────────
-FROM node:22-bookworm-slim AS builder
+FROM node:26-bookworm-slim AS builder
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci --no-audit --no-fund
@@ -20,7 +20,7 @@ COPY drizzle ./drizzle
 RUN npm run build
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────
-FROM node:22-bookworm-slim AS runner
+FROM node:26-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json* ./
