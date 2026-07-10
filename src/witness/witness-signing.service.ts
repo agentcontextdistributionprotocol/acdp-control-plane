@@ -123,7 +123,11 @@ export class WitnessSigningService {
       );
     }
 
-    const rawPub = extractEd25519RawPublic(createPublicKey(priv));
+    // @types/node 26 dropped the KeyObject overload from createPublicKey;
+    // deriving the public key from a private KeyObject is valid at runtime.
+    const rawPub = extractEd25519RawPublic(
+      createPublicKey(priv as unknown as Parameters<typeof createPublicKey>[0]),
+    );
     const keyId = config.witnessKeyId.trim() || `${witnessId}#witness-key-1`;
     if (stripFragment(keyId) !== witnessId) {
       throw new WitnessConfigError(

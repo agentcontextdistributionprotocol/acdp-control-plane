@@ -113,7 +113,9 @@ export function buildSigningMaterial(cfg: JwtSigningConfig): SigningMaterial {
       `JWT_PRIVATE_KEY_PEM must be an Ed25519 key (got '${priv.asymmetricKeyType ?? 'unknown'}')`,
     );
   }
-  const pub = createPublicKey(priv);
+  // @types/node 26 dropped the KeyObject overload from createPublicKey;
+  // deriving the public key from a private KeyObject is valid at runtime.
+  const pub = createPublicKey(priv as unknown as Parameters<typeof createPublicKey>[0]);
   const rawPubBytes = extractEd25519RawPublic(pub);
   const xB64Url = base64UrlEncode(rawPubBytes);
   const kid = cfg.kid ?? fingerprint(rawPubBytes);

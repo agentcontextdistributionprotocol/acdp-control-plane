@@ -150,7 +150,11 @@ function validateRegisteredClaims(
 function toPublicKey(key: KeyLike): KeyObject {
   if (key instanceof KeyObject) {
     // A private key can verify too, but normalize to the public half.
-    return key.type === 'private' ? createPublicKey(key) : key;
+    // @types/node 26 dropped the KeyObject overload from createPublicKey,
+    // though deriving a public key from a private KeyObject is valid at runtime.
+    return key.type === 'private'
+      ? createPublicKey(key as unknown as Parameters<typeof createPublicKey>[0])
+      : key;
   }
   return createPublicKey(key as string | Buffer);
 }
