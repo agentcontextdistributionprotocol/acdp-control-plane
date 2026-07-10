@@ -6,9 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# Superseded pushes to the same PR cancel the in-flight run; pushes to main
+# always run to completion so every merge commit has a full CI record.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   unit:
-    name: tsc + jest (unit)
+    name: lint + tsc + jest (unit, coverage-gated)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -17,14 +23,23 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      - name: Convention greps (CLAUDE.md CI grep rules)
+        run: bash scripts/ci-conventions.sh
       - name: Lint (ESLint)
         run: npm run lint -- --max-warnings 0
       - name: TypeScript compile
         run: npx tsc --noEmit -p tsconfig.json
-      - name: Unit tests
-        run: npx jest --testPathIgnorePatterns='/test/integration/' --ci
+      - name: Unit tests (coverage thresholds enforced from package.json)
+        run: npx jest --testPathIgnorePatterns='/test/integration/' --ci --coverage
         env:
           NODE_ENV: test
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/lcov.info
+          retention-days: 14
 
   integration:
     name: jest integration (Postgres)
@@ -56,3 +71,21 @@ jobs:
       - run: npm ci
       - name: Integration tests
         run: npm run test:integration
+
+  docker:
+    # The release workflow builds this same Dockerfile on tag push — catching a
+    # broken build here (PR time) instead of at release time. push: false, so
+    # nothing is published; the gha cache is shared with release builds.
+    name: docker build (no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
