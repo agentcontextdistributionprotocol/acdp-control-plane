@@ -5,8 +5,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    # Group all otel updates into a single PR so the 0.218 → 0.220 churn
-    # doesn't fan out into 7 separate PRs per minor bump.
+    # Pattern groups stay (they collapse their own churn); the two
+    # update-type groups catch everything else. Dependabot assigns a dep
+    # to the first matching group, so the specific patterns are listed
+    # before the catch-all minor/major split.
     groups:
       opentelemetry:
         patterns:
@@ -18,20 +20,28 @@ updates:
         patterns:
           - drizzle-orm
           - drizzle-kit
-      # The acdp SDK (NAPI binding over acdp-rs) ships crypto/SSRF/DID +
-      # receipt/log verification — keep the real name and the `acdp:` npm-alias
-      # (package.json declares both) in one PR so they never diverge.
+      # The acdp SDK (NAPI binding over acdp-rs) — keep the real name and
+      # the `acdp:` npm-alias (package.json declares both) in one PR.
       acdp-sdk:
         patterns:
           - "@agentcontextdistributionprotocol/acdp"
           - acdp
-  # Node runtime pin (node:22-bookworm-slim in the Dockerfile). Bumps the base
-  # image; CI's `docker build (no push)` job gates the PR.
+      minor-and-patch:
+        update-types: [minor, patch]
+      major-updates:
+        update-types: [major]
+  # Node runtime pin (node:22-bookworm-slim in the Dockerfile).
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    groups:
+      docker:
+        patterns: ['*']
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
