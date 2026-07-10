@@ -33,6 +33,14 @@ describe('Health Probes (integration)', () => {
     expect(text).toMatch(/process_cpu|nodejs_/);
   });
 
+  it('GET /metrics exposes the app-specific acdp_* metrics, not just runtime defaults', async () => {
+    const text = (await client.metrics()) as string;
+    // InstrumentationService registers these at boot; a wiring regression
+    // (metric constructed outside the service, registry cleared, renamed
+    // prefix) would drop them even while default nodejs_* metrics survive.
+    expect(text).toMatch(/^# TYPE acdp_/m);
+  });
+
   it('health/metrics endpoints do not require auth', async () => {
     const noAuth = new TestClient(ctx.url);
     const healthRes = await noAuth.requestRaw('GET', '/healthz');
