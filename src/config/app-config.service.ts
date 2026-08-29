@@ -368,8 +368,9 @@ export class AppConfigService implements OnModuleInit {
     }
 
     if (!this.webhookSecret) {
-      this.logger.warn(
-        'WEBHOOK_SECRET is not set — webhook HMAC verification is disabled. Required in production.',
+      throw new Error(
+        'WEBHOOK_SECRET must be set in production. Empty value disables webhook HMAC ' +
+          'verification, allowing unauthenticated writes to POST /ingest/acdp.',
       );
     }
 

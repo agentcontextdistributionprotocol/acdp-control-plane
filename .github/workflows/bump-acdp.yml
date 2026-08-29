@@ -13,6 +13,15 @@ jobs:
     uses: agentcontextdistributionprotocol/acdp-ci/.github/workflows/bump-consume.yml@v1
     with:
       ecosystem: npm
+      # `package` is the npm REGISTRY name (bump-consume.yml resolves/waits on
+      # it via `npm view`), not the manifest key — it must stay the scoped
+      # name even though the code only ever imports the `acdp` npm: alias.
+      # bump-consume.yml's rewrite step already covers both: it matches a
+      # manifest key equal to `package` (the real name, if ever declared
+      # directly) AND any `npm:<package>@…` alias value (our case) in the
+      # same pass. Pointing this at the bare unscoped `acdp` string breaks
+      # every step (that name isn't a published npm package: `npm view acdp
+      # version` 404s) and would corrupt the alias if it ever did resolve.
       package: '@agentcontextdistributionprotocol/acdp'
       version: ${{ github.event.inputs.version }}
     secrets: inherit

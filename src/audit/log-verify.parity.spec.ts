@@ -68,12 +68,29 @@ function tsRoot(leafHashesWire: string[]): string {
   return `sha256:${mth(hashes).toString('hex')}`;
 }
 
-const describeOrSkip = DIR ? describe : describe.skip;
+// ACDP_REQUIRE_CONFORMANCE (set by CI's `unit` job, mirroring acdp-rs's
+// ACDP_REQUIRE_CONFORMANCE): when set, a missing spec checkout is a hard
+// failure instead of a graceful skip — a green run then genuinely proves the
+// log-001/log-003 golden parity ran, rather than silently no-op'ing (CP-7).
+const REQUIRE_CONFORMANCE = typeof process.env.ACDP_REQUIRE_CONFORMANCE !== 'undefined';
+const describeOrSkip = DIR || REQUIRE_CONFORMANCE ? describe : describe.skip;
+
+function requireConformanceDir(): void {
+  if (REQUIRE_CONFORMANCE && !DIR) {
+    throw new Error(
+      'ACDP_REQUIRE_CONFORMANCE is set but no ACDP spec checkout was found at ' +
+        'ACDP_SPEC_DIR or the sibling path — the log-001/log-003 golden parity ' +
+        'fixtures are required in this mode.',
+    );
+  }
+}
 
 describeOrSkip('log-verify parity: native binding vs host arithmetic', () => {
+  beforeAll(requireConformanceDir);
+
   it('the environment carries the native log surface (0.6.0+)', () => {
     // This suite only runs when the fixtures are present; on this monorepo
-    // checkout the pinned binding is 0.6.0, so the native surface MUST exist —
+    // checkout the pinned binding is 0.6.0+, so the native surface MUST exist —
     // otherwise the switch-over silently fell back to TS.
     expect(sdkHasLogSurface()).toBe(true);
   });

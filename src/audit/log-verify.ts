@@ -4,8 +4,8 @@
  *
  * ## Implementation choice (native binding, TS fallback) — per the SDK rule
  *
- * The pinned `acdp` binding (`npm:@agentcontextdistributionprotocol/acdp@^0.7.0`)
- * carries the RFC-ACDP-0012 log surface natively (since 0.6.0):
+ * The pinned `acdp` binding carries the RFC-ACDP-0012 log surface natively
+ * (since 0.6.0):
  * `AcdpVerifier.verifyLogInclusion` / `verifyLogConsistency` /
  * `verifyLogCheckpoint` / `buildLogLeaf` and `AcdpMerkle.{leafHash,nodeHash,
  * rootHash}`. `verifyInclusion()` / `verifyConsistency()` DELEGATE the §9.1

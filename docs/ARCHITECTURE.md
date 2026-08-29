@@ -279,5 +279,6 @@ only on full success.
   quota store — otherwise per-process state diverges. Startup warns when it
   detects production + a single-process default.
 - **Dev sandbox**: when `WEBHOOK_SECRET` is empty, HMAC verification is
-  **skipped** (the config service warns at boot). Never use in production.
+  **skipped** (the config service fails startup in production). Never use in
+  production.
 </content>

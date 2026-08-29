@@ -140,14 +140,31 @@ describe('cosignature construction (RFC-ACDP-0015 §4–§5)', () => {
 });
 
 // ── Golden parity (fixtures required) ────────────────────────────────────
+//
+// ACDP_REQUIRE_CONFORMANCE (set by CI's `unit` job, mirroring acdp-rs's
+// ACDP_REQUIRE_CONFORMANCE): when set, a missing spec checkout is a hard
+// failure instead of a graceful skip — a green run then genuinely proves
+// the wit-* golden parity ran, rather than silently no-op'ing (CP-7).
 
-const describeGolden = CONFORMANCE_DIR ? describe : describe.skip;
-if (!CONFORMANCE_DIR) {
-
+const REQUIRE_CONFORMANCE = typeof process.env.ACDP_REQUIRE_CONFORMANCE !== 'undefined';
+const describeGolden = CONFORMANCE_DIR || REQUIRE_CONFORMANCE ? describe : describe.skip;
+if (!CONFORMANCE_DIR && !REQUIRE_CONFORMANCE) {
   console.warn('[cosign.spec] ACDP_SPEC_DIR / sibling spec not found — SKIPPING wit-* golden parity');
 }
 
+function requireConformanceDir(): void {
+  if (REQUIRE_CONFORMANCE && !CONFORMANCE_DIR) {
+    throw new Error(
+      'ACDP_REQUIRE_CONFORMANCE is set but no ACDP spec checkout was found at ' +
+        'ACDP_SPEC_DIR or the sibling path — the wit-* golden parity fixtures are ' +
+        'required in this mode.',
+    );
+  }
+}
+
 describeGolden('RFC-ACDP-0015 golden parity (wit-001..004 over log-001)', () => {
+  beforeAll(requireConformanceDir);
+
   it('wit-001: mint is BYTE-EXACT to the golden (canonical, hash, signature)', () => {
     const fixture = load('wit-001-cosignature-golden.json');
     const kp = fixture.witness_test_keypair;
@@ -256,9 +273,11 @@ function log001Checkpoint(): LogCheckpoint {
 }
 
 describeGolden('RFC-ACDP-0015 native-vs-host parity (mint / verify / quorum)', () => {
+  beforeAll(requireConformanceDir);
+
   it('the environment carries the native cosignature surface (0.7.0+)', () => {
     // This suite only runs with the fixtures present (the monorepo checkout),
-    // where the pinned binding is 0.7.0 — so the native surface MUST exist,
+    // where the pinned binding is 0.7.0+ — so the native surface MUST exist,
     // otherwise the switch-over silently stayed on the TS fallback.
     expect(sdkHasCosignatureSurface()).toBe(true);
   });
