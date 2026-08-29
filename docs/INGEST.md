@@ -21,7 +21,7 @@ parsing, so any byte difference — including whitespace — invalidates the
 signature.
 
 If `WEBHOOK_SECRET` is empty, HMAC verification is **skipped** (development
-mode). The boot log emits a warning when this is the case in production.
+mode). Startup fails in production when this is the case.
 
 A registry **enrollment** may override the global secret with a per-registry
 `webhookSecret` (see [API.md](./API.md#registries) → `POST /registries/enroll`).

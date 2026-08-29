@@ -67,8 +67,16 @@ describe('AppConfigService', () => {
       expect(() => cfg.onModuleInit()).toThrow(/AUTH_API_KEYS/);
     });
 
+    it('throws when WEBHOOK_SECRET is empty in production', () => {
+      process.env.AUTH_API_KEYS = 'k';
+      delete process.env.WEBHOOK_SECRET;
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).toThrow(/WEBHOOK_SECRET/);
+    });
+
     it('throws when DB_POOL_MAX is < 2 in production', () => {
       process.env.AUTH_API_KEYS = 'k';
+      process.env.WEBHOOK_SECRET = 'shh';
       process.env.DB_POOL_MAX = '1';
       const cfg = freshConfig();
       expect(() => cfg.onModuleInit()).toThrow(/DB_POOL_MAX/);
@@ -76,6 +84,7 @@ describe('AppConfigService', () => {
 
     it('throws when data retention TTL < 1 day in production', () => {
       process.env.AUTH_API_KEYS = 'k';
+      process.env.WEBHOOK_SECRET = 'shh';
       process.env.DATA_RETENTION_ENABLED = 'true';
       process.env.DATA_RETENTION_TTL_DAYS = '0';
       const cfg = freshConfig();

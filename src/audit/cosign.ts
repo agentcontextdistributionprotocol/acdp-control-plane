@@ -11,8 +11,8 @@
  *
  * ## Implementation choice (native binding, TS fallback) — the SDK rule
  *
- * The pinned `acdp` binding (`@agentcontextdistributionprotocol/acdp@^0.7.0`)
- * carries the RFC-ACDP-0015 cosignature surface natively:
+ * The pinned `acdp` binding carries the RFC-ACDP-0015 cosignature surface
+ * natively:
  * `AcdpVerifier.buildWitnessCosignature` (MINT, §5),
  * `AcdpVerifier.verifyWitnessCosignature` (VERIFY, §8), and
  * `AcdpVerifier.evaluateWitnessQuorum` (§8 N-witnessed report). When

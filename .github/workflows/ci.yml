@@ -18,6 +18,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Check out the ACDP spec (pinned)
+        # Pinned so a spec-repo push cannot change this repo's CI result
+        # without a commit here. The wit-001..004 / log-001 / log-003 golden
+        # parity specs (cosign.spec.ts, log-verify.parity.spec.ts) need this
+        # checkout — see CP-7. Bump deliberately when adopting new fixtures.
+        # (spec main HEAD as of 2026-08-28)
+        uses: actions/checkout@v5
+        with:
+          repository: agentcontextdistributionprotocol/agentcontextdistributionprotocol
+          ref: bff3cf3afbdcea619834916e8f0bcac7e82ba658
+          path: acdp-spec
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
@@ -30,9 +41,15 @@ jobs:
       - name: TypeScript compile
         run: npx tsc --noEmit -p tsconfig.json
       - name: Unit tests (coverage thresholds enforced from package.json)
+        # ACDP_REQUIRE_CONFORMANCE fails the wit-*/log-* golden-parity specs
+        # loudly if the pinned spec checkout above is ever missing, instead
+        # of silently `describe.skip`-ing them (the CP-7 fix — this suite was
+        # skipping unnoticed on every CI run before this).
         run: npx jest --testPathIgnorePatterns='/test/integration/' --ci --coverage
         env:
           NODE_ENV: test
+          ACDP_SPEC_DIR: ${{ github.workspace }}/acdp-spec
+          ACDP_REQUIRE_CONFORMANCE: '1'
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4

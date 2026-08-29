@@ -6,6 +6,11 @@ read `process.env` directly are `main.ts`, `db/migrate.ts`, `telemetry/telemetry
 the `auth/{pinned-keys.service,pinned-keys-admin.controller,auth.module}.ts` set,
 and `domain-packs/domain-packs.module.ts`. Start from `.env.example`.
 
+`.env` is loaded automatically at process start via a `dotenv/config` preload —
+the first import in `main.ts`, before anything else runs — so it's populated
+before `AppConfigService` is ever constructed (including the manual instance
+`main.ts` uses to drive database migrations, ahead of Nest's own bootstrap).
+
 Defaults below are the code defaults. Several variables are **fail-fast in
 production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startup-validation).
 
@@ -89,7 +94,7 @@ See [INGEST.md](./INGEST.md).
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `WEBHOOK_SECRET` | string | `''` | Global HMAC secret for inbound webhooks. Empty = verification skipped (dev). |
+| `WEBHOOK_SECRET` | string | `''` | Global HMAC secret for inbound webhooks. Empty = verification skipped (dev only — fails startup in production). |
 | `INGEST_REQUIRE_ENROLLMENT` | bool | `false` | Accept only enrolled authorities. |
 | `INGEST_STRICT_TENANT` | bool | `false` | Unenrolled authority may not assert non-`default` tenant. |
 | `INGEST_MAX_BODY_BYTES` | number | `1048576` | Raw body cap (1 MiB). |
@@ -244,6 +249,8 @@ seal once per event in `log_inclusion_audits`.
 - Tenant bindings configured (`TENANT_AGENTS` or tenant-bound `TENANT_API_KEYS`)
   **without** `AUTH_REQUIRE_TENANT=true`.
 - Production with empty `AUTH_API_KEYS`.
+- Production with empty `WEBHOOK_SECRET` (inbound webhook HMAC verification would
+  otherwise be silently disabled — see `src/ingest/hmac.ts`).
 - `DB_POOL_MAX < 2`.
 - `DATA_RETENTION_ENABLED=true` with `DATA_RETENTION_TTL_DAYS < 1`.
 - `POLICY_BACKEND` not in {`static`,`opa`}; `JWT_SIGNING_ALG` not in {`HS256`,`EdDSA`}.
@@ -262,7 +269,6 @@ seal once per event in `log_inclusion_audits`.
 
 **Warns** (starts, but flags a risk) on, in production:
 
-- Empty `WEBHOOK_SECRET` (inbound HMAC disabled).
 - `STREAM_HUB_STRATEGY=memory` (SSE won't sync across replicas).
 - `OTEL_ENABLED=true` with empty `OTEL_EXPORTER_OTLP_ENDPOINT` (traces discarded).
 - `REVOCATION_FEEDS` set with `TOKEN_ISSUANCE_ENABLED=false` (poller won't run).
