@@ -373,4 +373,5 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
   and added `.drive.lock` to `.gitignore` (housekeeping note from the same review).
   Re-ran the full suite after the fix (763 passed/3 skipped/0 failed, tsc/lint/
   conventions all clean) before proceeding to push.
-- pushed `fix/cp-8-stream-cap-body` (pending sha, appended after push below)
+- pushed `fix/cp-8-stream-cap-body` `234e9fe`
+- PR #128 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/128
