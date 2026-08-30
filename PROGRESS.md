@@ -375,3 +375,8 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
   conventions all clean) before proceeding to push.
 - pushed `fix/cp-8-stream-cap-body` `234e9fe`
 - PR #128 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/128
+- CI green (unit/integration/docker all `pass`)
+- merged #128 (squash) at `c7177c0`. Local `main` fast-forwarded, feature branch deleted
+  (local + remote). No post-merge deploy triggered — `release.yml` is tag-triggered only
+  (confirmed unchanged from Wave 1); nothing further to watch.
+- **What's next:** Phase 2 (CP-9, Dockerfile hardening) — Sonnet verify tier.
