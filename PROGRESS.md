@@ -360,3 +360,17 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
   DONE), `PROGRESS.md` (this entry).
 - **Commit:** `584ff60` on `fix/cp-8-stream-cap-body`.
 - **What's next:** ship Phase 1 now via `/ship`, then Phase 2 (CP-9, Sonnet verify).
+
+### Ship (Phase 1 / CP-8)
+- `/ship`'s own mandatory verification gate (fresh Opus subagent, separate pass from
+  the `/implement`-phase Fable review above) returned **PASS**, and additionally found
+  the same body-leak class already fixed for redirects also applied to two other
+  early-throw paths: the 429 rate-limit branch and the `Content-Length` fast-fail in
+  `readCapped()` both threw without cancelling `resp.body`. Non-blocking per the gate's
+  own verdict, but fixed immediately (same file, same phase's rationale, cheap) rather
+  than shipping a known partial fix — commit `8c5fafe`. Also restored the exceeded-byte
+  count in the streaming `BODY_TOO_LARGE` message (a fidelity nit from the same review),
+  and added `.drive.lock` to `.gitignore` (housekeeping note from the same review).
+  Re-ran the full suite after the fix (763 passed/3 skipped/0 failed, tsc/lint/
+  conventions all clean) before proceeding to push.
+- pushed `fix/cp-8-stream-cap-body` (pending sha, appended after push below)
