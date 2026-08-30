@@ -129,15 +129,22 @@ describe('SafeFederationClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects an oversized body by Content-Length', async () => {
+  it('rejects an oversized body by Content-Length, cancelling the unread body', async () => {
+    const onCancel = jest.fn();
     const fetchMock = jest.fn().mockResolvedValue(
-      resp({ status: 200, headers: { 'content-length': String(2 * 1024 * 1024) }, body: 'x' }),
+      resp({
+        status: 200,
+        headers: { 'content-length': String(2 * 1024 * 1024) },
+        body: 'x',
+        onCancel,
+      }),
     );
     const client = new SafeFederationClient(loopbackPolicy, fetchMock as unknown as typeof fetch);
 
     await expect(client.get('https://localhost/contexts/x')).rejects.toMatchObject({
       code: 'BODY_TOO_LARGE',
     });
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
   it('wraps a 502 response (does not throw) — upstream status is relayed', async () => {
@@ -149,10 +156,11 @@ describe('SafeFederationClient', () => {
     expect(r.body).toBe('nope');
   });
 
-  it('maps a 429 to an AppException (503) and logs the Retry-After hint', async () => {
+  it('maps a 429 to an AppException (503), logs Retry-After, and cancels the unread body', async () => {
     const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const onCancel = jest.fn();
     const fetchMock = jest.fn().mockResolvedValue(
-      resp({ status: 429, headers: { 'retry-after': '30' } }),
+      resp({ status: 429, headers: { 'retry-after': '30' }, onCancel }),
     );
     const client = new SafeFederationClient(loopbackPolicy, fetchMock as unknown as typeof fetch);
 
@@ -170,6 +178,7 @@ describe('SafeFederationClient', () => {
     expect(ex.getStatus()).toBe(503);
     // Retry-After hint is surfaced in both the log and the error message.
     expect(ex.message).toContain('30');
+    expect(onCancel).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('30'))).toBe(true);
     expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('429'))).toBe(true);
 

@@ -127,6 +127,9 @@ export class SafeFederationClient {
         // bare 429 the caller can't act on. The upstream `Retry-After` hint
         // (if any) is logged and echoed so operators can correlate the limit.
         if (resp.status === 429) {
+          if (resp.body) {
+            await resp.body.cancel().catch(() => undefined);
+          }
           const retryAfter = resp.headers.get('retry-after');
           const host = safeHost(url);
           this.logger.warn(
@@ -173,6 +176,9 @@ export class SafeFederationClient {
     // what actually enforces the cap.
     const declared = Number(resp.headers.get('content-length') ?? '');
     if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      if (resp.body) {
+        await resp.body.cancel().catch(() => undefined);
+      }
       throw new FederationFetchError(
         'BODY_TOO_LARGE',
         `'${url}' Content-Length ${declared}B exceeds ${MAX_BODY_BYTES}B cap`,
@@ -204,7 +210,7 @@ export class SafeFederationClient {
         await reader.cancel().catch(() => undefined);
         throw new FederationFetchError(
           'BODY_TOO_LARGE',
-          `'${url}' body exceeds ${MAX_BODY_BYTES}B cap`,
+          `'${url}' body ${total}B exceeds ${MAX_BODY_BYTES}B cap`,
         );
       }
       chunks.push(chunk);
