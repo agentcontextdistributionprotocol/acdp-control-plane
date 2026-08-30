@@ -7,7 +7,7 @@
  * RESOLVABLE through the SDK's `AcdpDidDocument` (the exact path a consumer uses
  * to resolve signature.key_id when verifying a cosignature, §8 step 2).
  */
-import { AcdpDidDocument } from 'acdp';
+import { AcdpDidDocument } from '@agentcontextdistributionprotocol/acdp';
 import { generateEd25519Pem } from '../auth/jwt-signing';
 import { WitnessConfigError, WitnessSigningService } from './witness-signing.service';
 

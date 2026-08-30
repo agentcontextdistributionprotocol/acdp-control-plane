@@ -12,7 +12,7 @@
  *      assertionMethod key RESOLVES through the SDK (the §8 step-2 path a
  *      consumer uses to verify a cosignature).
  */
-import { AcdpDidDocument } from 'acdp';
+import { AcdpDidDocument } from '@agentcontextdistributionprotocol/acdp';
 import { mintCosignature } from '../../src/audit/cosign';
 import { generateEd25519Pem } from '../../src/auth/jwt-signing';
 import { LogCosignatureRepository } from '../../src/storage/log-cosignature.repository';

@@ -17,7 +17,7 @@
 import { createHash, createPrivateKey, KeyObject } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { AcdpCanonicalizer, AcdpVerifier } from 'acdp';
+import { AcdpCanonicalizer, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 import {
   cosignatureFreshnessOk,
   cosignatureHash,

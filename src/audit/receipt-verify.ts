@@ -13,7 +13,7 @@
  * only (no signature verification) instead of crashing — a downgrade
  * weakens the audit loudly (boot warning) rather than breaking ingest.
  */
-import { AcdpVerifier } from 'acdp';
+import { AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 
 /** The post-0.3.0 receipt surface, absent from the published 0.3.0 typings. */
 interface ReceiptCapableVerifier {

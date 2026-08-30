@@ -1,4 +1,4 @@
-import { AcdpCanonicalizer, AcdpProducer, AcdpVerifier } from 'acdp';
+import { AcdpCanonicalizer, AcdpProducer, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 import {
   explainHashMismatch,
   fingerprintEd25519B64,
