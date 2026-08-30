@@ -75,70 +75,85 @@ export class SafeFederationClient {
         throw new FederationFetchError('SSRF', errMsg(e));
       }
 
+      // One AbortController/timer per hop, covering fetch() AND the body
+      // read together — the 10s deadline used to protect headers only,
+      // leaving a slow/hanging body read unbounded. `continue` below still
+      // runs this `finally` (it exits the try normally) so the timer is
+      // always cleared before the next hop or the eventual return/throw.
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), DEFAULT_TIMEOUT_MS);
-      let resp: Response;
       try {
-        resp = await this.fetchImpl(url, {
-          signal: ctrl.signal,
-          redirect: 'manual', // we enforce same-authority below
-        });
-      } catch (e) {
-        throw new FederationFetchError('FETCH', `GET '${url}' failed: ${errMsg(e)}`);
+        let resp: Response;
+        try {
+          resp = await this.fetchImpl(url, {
+            signal: ctrl.signal,
+            redirect: 'manual', // we enforce same-authority below
+          });
+        } catch (e) {
+          throw new FederationFetchError('FETCH', `GET '${url}' failed: ${errMsg(e)}`);
+        }
+
+        // 3. Manual redirect handling — same authority only.
+        if (resp.status >= 300 && resp.status < 400) {
+          // The redirect body is never consumed — cancel it so the
+          // underlying connection is released instead of held open.
+          if (resp.body) {
+            await resp.body.cancel().catch(() => undefined);
+          }
+          const location = resp.headers.get('location');
+          if (!location) {
+            throw new FederationFetchError(
+              'REDIRECT',
+              `redirect from '${url}' had no Location header`,
+            );
+          }
+          let next: URL;
+          try {
+            next = new URL(location, url);
+          } catch (e) {
+            throw new FederationFetchError('REDIRECT', `invalid redirect target: ${errMsg(e)}`);
+          }
+          if (safeOrigin(next.toString()) !== origin) {
+            throw new FederationFetchError(
+              'REDIRECT',
+              `cross-authority redirect '${url}' → '${next.host}' rejected`,
+            );
+          }
+          url = next.toString();
+          continue;
+        }
+
+        // 3a. Upstream rate-limit — surface a clear 503 rather than relaying a
+        // bare 429 the caller can't act on. The upstream `Retry-After` hint
+        // (if any) is logged and echoed so operators can correlate the limit.
+        if (resp.status === 429) {
+          if (resp.body) {
+            await resp.body.cancel().catch(() => undefined);
+          }
+          const retryAfter = resp.headers.get('retry-after');
+          const host = safeHost(url);
+          this.logger.warn(
+            `federation upstream '${host}' returned 429 Too Many Requests` +
+              (retryAfter ? ` (Retry-After: ${retryAfter})` : ' (no Retry-After)'),
+          );
+          throw new AppException(
+            ErrorCode.FEDERATION_UPSTREAM_RATE_LIMITED,
+            `upstream '${host}' is rate limiting` +
+              (retryAfter ? ` (Retry-After: ${retryAfter})` : ''),
+            HttpStatus.SERVICE_UNAVAILABLE,
+          );
+        }
+
+        // 4. Read body with a hard cap — same deadline as the fetch above.
+        const body = await this.readCapped(resp, url, ctrl.signal);
+        return {
+          status: resp.status,
+          contentType: resp.headers.get('content-type'),
+          body,
+        };
       } finally {
         clearTimeout(timer);
       }
-
-      // 3. Manual redirect handling — same authority only.
-      if (resp.status >= 300 && resp.status < 400) {
-        const location = resp.headers.get('location');
-        if (!location) {
-          throw new FederationFetchError(
-            'REDIRECT',
-            `redirect from '${url}' had no Location header`,
-          );
-        }
-        let next: URL;
-        try {
-          next = new URL(location, url);
-        } catch (e) {
-          throw new FederationFetchError('REDIRECT', `invalid redirect target: ${errMsg(e)}`);
-        }
-        if (safeOrigin(next.toString()) !== origin) {
-          throw new FederationFetchError(
-            'REDIRECT',
-            `cross-authority redirect '${url}' → '${next.host}' rejected`,
-          );
-        }
-        url = next.toString();
-        continue;
-      }
-
-      // 3a. Upstream rate-limit — surface a clear 503 rather than relaying a
-      // bare 429 the caller can't act on. The upstream `Retry-After` hint
-      // (if any) is logged and echoed so operators can correlate the limit.
-      if (resp.status === 429) {
-        const retryAfter = resp.headers.get('retry-after');
-        const host = safeHost(url);
-        this.logger.warn(
-          `federation upstream '${host}' returned 429 Too Many Requests` +
-            (retryAfter ? ` (Retry-After: ${retryAfter})` : ' (no Retry-After)'),
-        );
-        throw new AppException(
-          ErrorCode.FEDERATION_UPSTREAM_RATE_LIMITED,
-          `upstream '${host}' is rate limiting` +
-            (retryAfter ? ` (Retry-After: ${retryAfter})` : ''),
-          HttpStatus.SERVICE_UNAVAILABLE,
-        );
-      }
-
-      // 4. Read body with a hard cap.
-      const body = await this.readCapped(resp, url);
-      return {
-        status: resp.status,
-        contentType: resp.headers.get('content-type'),
-        body,
-      };
     }
 
     throw new FederationFetchError(
@@ -147,23 +162,67 @@ export class SafeFederationClient {
     );
   }
 
-  /** Read the response body, aborting once {@link MAX_BODY_BYTES} is exceeded. */
-  private async readCapped(resp: Response, url: string): Promise<string> {
+  /**
+   * Read the response body, streaming it via `getReader()` and cancelling
+   * the underlying stream the instant accumulated bytes exceed
+   * {@link MAX_BODY_BYTES} — never buffers the whole body via
+   * `arrayBuffer()` first, since `Content-Length` can lie or be absent
+   * (chunked transfer). `signal` shares the same per-hop deadline as the
+   * initial `fetch()`; a read that hangs past it surfaces as a `FETCH`
+   * error rather than an unhandled/raw rejection.
+   */
+  private async readCapped(resp: Response, url: string, signal: AbortSignal): Promise<string> {
+    // Cheap fast-fail — advisory only, the byte-counting loop below is
+    // what actually enforces the cap.
     const declared = Number(resp.headers.get('content-length') ?? '');
     if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      if (resp.body) {
+        await resp.body.cancel().catch(() => undefined);
+      }
       throw new FederationFetchError(
         'BODY_TOO_LARGE',
         `'${url}' Content-Length ${declared}B exceeds ${MAX_BODY_BYTES}B cap`,
       );
     }
-    const bytes = new Uint8Array(await resp.arrayBuffer());
-    if (bytes.byteLength > MAX_BODY_BYTES) {
-      throw new FederationFetchError(
-        'BODY_TOO_LARGE',
-        `'${url}' body ${bytes.byteLength}B exceeds ${MAX_BODY_BYTES}B cap`,
-      );
+
+    if (!resp.body) {
+      return '';
     }
-    return new TextDecoder('utf-8').decode(bytes);
+
+    const reader = resp.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+
+    for (;;) {
+      let step: { done: boolean; value?: Uint8Array };
+      try {
+        step = await raceAbort(reader.read(), signal);
+      } catch (e) {
+        await reader.cancel().catch(() => undefined);
+        throw new FederationFetchError('FETCH', `GET '${url}' body read failed: ${errMsg(e)}`);
+      }
+      if (step.done) {
+        break;
+      }
+      const chunk = step.value as Uint8Array;
+      total += chunk.byteLength;
+      if (total > MAX_BODY_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new FederationFetchError(
+          'BODY_TOO_LARGE',
+          `'${url}' body ${total}B exceeds ${MAX_BODY_BYTES}B cap`,
+        );
+      }
+      chunks.push(chunk);
+    }
+
+    const combined = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      combined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder('utf-8').decode(combined);
   }
 }
 
@@ -188,4 +247,35 @@ function safeHost(url: string): string {
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Races `promise` against `signal` firing 'abort'. Needed because an
+ * aborted `AbortController` doesn't automatically reject an in-flight
+ * `reader.read()` for every stream implementation (e.g. a plain
+ * `ReadableStream` not wired to the fetch signal, as in tests) — this
+ * guarantees a hung read still rejects once the deadline trips.
+ */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(toAbortError(signal));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(toAbortError(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
+function toAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('aborted');
 }
