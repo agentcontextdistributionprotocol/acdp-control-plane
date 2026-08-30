@@ -188,4 +188,40 @@ describe('Ingest pipeline (integration)', () => {
     const run = (await ctx.client.getRun(runId)) as Record<string, unknown>;
     expect(run.runId).toBe(runId);
   });
+
+  it('preserves an anc-001-shaped anchors array byte-identically through ingest and retrieval (RFC-ACDP-0016)', async () => {
+    // CP-3: anchors are opaque, producer-authored, verification-side claims —
+    // the control plane has no schema/DTO on this path (see main.ts's
+    // ValidationPipe, which never applies here) and must not strip or
+    // reject them. Shape lifted from the spec's anc-001 conformance fixture
+    // (schemas/conformance/anc-001-well-formed-anchor.json).
+    const runId = 'run-anchors-anc-001';
+    const contentHash =
+      'sha256:2a5fe49a82228322e0be1b9de8f5c7905f95b7f0fe469809e9c7399412206861';
+    const anchors = [
+      {
+        scheme: 'macp.commitment',
+        content_hash:
+          'sha256:fa8fe6b9143b469866d31de09b81928cc44d226ed935162cd346ae80d14fd200',
+      },
+    ];
+    const payload = makeEvent({
+      ctx_id: 'acdp://registry-a.example/anc-001',
+      content_hash: contentHash,
+      anchors,
+    });
+
+    const res = await ctx.client.ingest(payload, { runId, secret: SECRET });
+    expect(res.status).toBe(204);
+
+    const events = (await ctx.client.getRunEvents(runId)) as {
+      data: Array<Record<string, unknown>>;
+    };
+    expect(events.data.length).toBe(1);
+    const stored = events.data[0].rawPayload as Record<string, unknown>;
+    // Same content_hash in, same content_hash out; anchors untouched —
+    // no code path re-derives, truncates, or filters this array.
+    expect(stored.content_hash).toBe(contentHash);
+    expect(stored.anchors).toEqual(anchors);
+  });
 });
