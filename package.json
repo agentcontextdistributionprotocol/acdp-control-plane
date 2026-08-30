@@ -32,7 +32,7 @@
     "@opentelemetry/sdk-node": "^0.221.0",
     "@opentelemetry/sdk-trace-base": "^2.7.1",
     "@opentelemetry/semantic-conventions": "^1.43.0",
-    "acdp": "npm:@agentcontextdistributionprotocol/acdp@^0.8.1",
+    "acdp": "npm:@agentcontextdistributionprotocol/acdp@^0.8.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "dotenv": "^17.4.2",
