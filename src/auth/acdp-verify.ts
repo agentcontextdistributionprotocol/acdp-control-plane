@@ -14,7 +14,7 @@
  * rest of the auth stack expects a boolean, so we translate the throw
  * into `false` here — the single boundary where that mapping happens.
  */
-import { AcdpVerifier } from 'acdp';
+import { AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 
 export type SignatureAlgorithm = 'ed25519' | 'ecdsa-p256';
 

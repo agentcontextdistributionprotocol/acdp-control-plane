@@ -48,7 +48,7 @@
  * from `verificationMethod` entirely still fails closed.
  */
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { AcdpDid } from 'acdp';
+import { AcdpDid } from '@agentcontextdistributionprotocol/acdp';
 import { AppConfigService } from '../config/app-config.service';
 import { SafeFederationClient } from '../contexts/safe-federation-client';
 import { DatabaseService } from '../db/database.service';

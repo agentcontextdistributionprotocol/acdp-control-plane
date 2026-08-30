@@ -32,7 +32,7 @@ import {
   OnModuleDestroy,
   Optional,
 } from '@nestjs/common';
-import { AcdpDid, AcdpDidDocument } from 'acdp';
+import { AcdpDid, AcdpDidDocument } from '@agentcontextdistributionprotocol/acdp';
 import { ResolvedKey, ResolvedReceiptKey } from './did-document';
 import { SsrfPolicy, SsrfPolicyError } from './ssrf-guard';
 

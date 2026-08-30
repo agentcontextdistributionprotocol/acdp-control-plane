@@ -6,7 +6,7 @@
  * load-time key validation — against real signatures produced by the
  * binding's own producers.
  */
-import { AcdpProducer, AcdpP256Producer } from 'acdp';
+import { AcdpProducer, AcdpP256Producer } from '@agentcontextdistributionprotocol/acdp';
 import { assertValidPublicKey, verifySignatureB64 } from './acdp-verify';
 
 const DID = 'did:web:agents.example.com';

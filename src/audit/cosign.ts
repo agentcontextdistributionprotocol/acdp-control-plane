@@ -47,7 +47,7 @@
  * All functions return outcome objects — they never throw on untrusted input.
  */
 import { createHash, sign as edSign, type KeyObject } from 'node:crypto';
-import { AcdpCanonicalizer, AcdpVerifier } from 'acdp';
+import { AcdpCanonicalizer, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 import { verifySignatureB64 } from '../auth/acdp-verify';
 import type { LogCheckpoint } from './log-verify';
 

@@ -47,7 +47,7 @@
  * loop for the rest.
  */
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { AcdpDid } from 'acdp';
+import { AcdpDid } from '@agentcontextdistributionprotocol/acdp';
 import { RegistryEnrollment } from '../db/schema';
 import { AppConfigService } from '../config/app-config.service';
 import { SafeFederationClient } from '../contexts/safe-federation-client';

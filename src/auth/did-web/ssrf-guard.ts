@@ -31,7 +31,7 @@
  */
 import * as dns from 'node:dns/promises';
 import { isIP } from 'node:net';
-import { AcdpSsrfPolicy } from 'acdp';
+import { AcdpSsrfPolicy } from '@agentcontextdistributionprotocol/acdp';
 
 export interface SsrfPolicyOptions {
   /** Allow `http://` (testing only). Default false. */

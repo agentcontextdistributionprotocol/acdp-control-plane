@@ -31,7 +31,7 @@
  * All functions return outcome objects — they never throw on untrusted input.
  */
 import { createHash } from 'node:crypto';
-import { AcdpCanonicalizer, AcdpVerifier } from 'acdp';
+import { AcdpCanonicalizer, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 import { verifySignatureB64 } from '../auth/acdp-verify';
 
 /** RFC-ACDP-0011 §7 step 6 / RFC-ACDP-0012 §9.3 step 4 skew allowance. */

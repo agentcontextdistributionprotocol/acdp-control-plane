@@ -16,7 +16,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { AcdpMerkle } from 'acdp';
+import { AcdpMerkle } from '@agentcontextdistributionprotocol/acdp';
 import {
   ConsistencyProof,
   InclusionProof,
