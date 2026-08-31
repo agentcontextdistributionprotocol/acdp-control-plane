@@ -380,3 +380,27 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
   (local + remote). No post-merge deploy triggered — `release.yml` is tag-triggered only
   (confirmed unchanged from Wave 1); nothing further to watch.
 - **What's next:** Phase 2 (CP-9, Dockerfile hardening) — Sonnet verify tier.
+
+### Phase 2 — CP-9 (Dockerfile hardening)
+- **Verdict:** DONE (PASS, round 1)
+- **Verifier tier:** Sonnet — CI/CD/build-config-shaped mechanical fix (per this plan's
+  own stated rationale), fresh subagent, independently re-ran the Docker build and
+  acceptance checks rather than trusting the executor's report.
+- **Rounds:** 1, clean PASS. Notable environment hiccup during execution: the local
+  Colima/Docker daemon was down/flaky mid-phase (a `colima restart` initially failed,
+  then briefly appeared to swap in a stale daemon state before stabilizing) — this cost
+  extra wall-clock time working around it but was infrastructure, not a code defect;
+  resolved by restarting Colima and rebuilding. Three independent build+verify passes
+  (one by the Sonnet executor, one by the orchestrator directly, one by the Sonnet
+  verifier) all converged on identical results: non-root UID 999 (`app`), correct
+  `HEALTHCHECK` config, zero `*.spec.js` files in the built image's `dist/`, correct
+  `app:app` ownership of `/app` (dist/node_modules/drizzle), and the verifier
+  additionally confirmed the `USER`/`chown` ordering is correct relative to the
+  root-requiring steps (`npm ci --omit=dev`, the builder-stage `COPY`s) and ran the
+  inline healthcheck script standalone to confirm it's functionally correct, not just
+  plausible-looking.
+- **Files touched:** `Dockerfile`, `plans/wave1-cp-8-9.md` (Status: DONE), `PROGRESS.md`
+  (this entry).
+- **Commit:** `e359b1b` on `fix/cp-9-dockerfile-hardening`.
+- **Both phases of this plan are now DONE.** Plan complete pending end-of-plan closeout
+  and `/ship`.
