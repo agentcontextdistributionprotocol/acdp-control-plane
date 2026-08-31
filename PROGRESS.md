@@ -404,3 +404,33 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
 - **Commit:** `e359b1b` on `fix/cp-9-dockerfile-hardening`.
 - **Both phases of this plan are now DONE.** Plan complete pending end-of-plan closeout
   and `/ship`.
+
+### Ship (Phase 2 / CP-9)
+- `/implement`'s own Sonnet phase-verify (above) was a clean round-1 PASS — that
+  checkpoint stands. `/ship`'s **separate** mandatory verification gate (fresh Opus
+  subagent), run afterward, found a genuine gap the phase-verify pass hadn't caught:
+  the `HEALTHCHECK` (`Dockerfile:37-38`) hardcoded `localhost:3001`, but `PORT` is a
+  documented, PaaS-configurable env var (`AppConfigService`, `docs/CONFIGURATION.md`) —
+  under a deploy setting `PORT=8080` the probe would hit a closed port forever,
+  permanently marking a working container unhealthy and inviting an orchestrator to
+  restart-loop it (worse than shipping with no healthcheck at all). Three other findings
+  were correctly assessed as advisory/non-blocking (the plan-specified `chown -R`
+  writable-by-runtime-user tradeoff; the evidence trail; unchecked acceptance-criteria
+  boxes in the gitignored plan file).
+- Fixed in commit `827734b`: the healthcheck now reads `process.env.PORT` at runtime
+  (falling back to 3001) and uses `127.0.0.1` instead of `localhost`. Verified directly
+  (built the image, ran the healthcheck script inside the container with `-e PORT=9999`
+  and a listener on 9999 → exit 0; with the listener left on the old port 3001 instead →
+  exit 1, proving the env var genuinely drives the target) before re-verifying.
+- **Re-verify (fresh Opus subagent, given the prior round's gap list): PASS.**
+  Independently re-built the image and ran an 8-case matrix (PORT unset/set/empty ×
+  listener on the right/wrong port × non-2xx status) — every case behaved correctly,
+  including the two negative cases that prove the fix isn't a no-op (PORT set but
+  listener on the old port correctly fails closed). Confirmed `127.0.0.1` is correct
+  given `HOST` defaults to `0.0.0.0` (`app-config.service.ts:42`), object-form
+  `http.get()` syntax is valid, non-root UID and zero-spec-files still hold. The
+  re-verifier candidly flagged and corrected its own first test-harness bug (an
+  unquoted shell variable that initially made `PORT` look ignored) before reporting —
+  noted here since it's a useful caution about trusting a first negative result at face
+  value, not because it affected the actual verdict.
+- pushed `fix/cp-9-dockerfile-hardening` (sha appended after push below)
