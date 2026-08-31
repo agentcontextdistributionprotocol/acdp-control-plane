@@ -14,7 +14,7 @@ FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci --no-audit --no-fund
-COPY tsconfig.json nest-cli.json ./
+COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY src ./src
 COPY drizzle ./drizzle
 RUN npm run build
@@ -29,5 +29,11 @@ RUN npm ci --omit=dev --no-audit --no-fund \
 COPY --from=builder /app/dist ./dist
 COPY drizzle ./drizzle
 
+RUN groupadd -r app && useradd -r -g app app \
+    && chown -R app:app /app
+USER app
+
 EXPOSE 3001
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD node -e "require('http').get({ host: '127.0.0.1', port: process.env.PORT || 3001, path: '/healthz' }, (res) => { process.exit(res.statusCode >= 200 && res.statusCode < 300 ? 0 : 1); }).on('error', () => process.exit(1));"
 CMD ["node", "dist/main.js"]
