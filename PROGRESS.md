@@ -466,3 +466,4 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
     Integration suite not run locally (Docker port conflict, unrelated to this change);
     deferred to CI.
   - Plan complete pending `/ship`.
+pushed feat/expose-service-version 734d7bd
