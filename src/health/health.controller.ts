@@ -1,13 +1,17 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/public.decorator';
+import { AppConfigService } from '../config/app-config.service';
 import { DatabaseService } from '../db/database.service';
 
 @ApiTags('health')
 @Controller()
 @Public()
 export class HealthController {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly config: AppConfigService,
+  ) {}
 
   @Get('healthz')
   @ApiOperation({ summary: 'Liveness probe.' })
@@ -19,7 +23,7 @@ export class HealthController {
       dbOk = false;
     }
     const ok = dbOk && !this.database.hasFatalError;
-    return { ok, service: 'acdp-control-plane' };
+    return { ok, service: 'acdp-control-plane', version: this.config.clientVersion };
   }
 
   @Get('readyz')
