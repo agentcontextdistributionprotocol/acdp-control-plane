@@ -434,3 +434,35 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
   noted here since it's a useful caution about trusting a first negative result at face
   value, not because it affected the actual verdict.
 - pushed `fix/cp-9-dockerfile-hardening` (sha appended after push below)
+
+## Plan: expose-service-version (issue #130)
+
+**Repo map** (for `/implement` to reuse, not re-scan):
+- `src/health/health.controller.ts` — the `/healthz`/`/readyz` controller; no
+  `HealthModule`, registered directly in `AppModule`.
+- `src/config/app-config.service.ts:32-37` — `clientVersion` readonly, already reads
+  `package.json`'s `version` at boot; already consumed by `src/main.ts:61` for the
+  Swagger doc version. Reused as-is for the new `/healthz` field.
+- `src/app.module.ts:101` — `HealthController` provider registration; `AppConfigService`
+  already provided at module scope, so no wiring change needed beyond the constructor.
+- No existing `health.controller.spec.ts` — first test file for this controller.
+
+### Phase checkpoint log
+
+- **2026-09-05 — Phase 1 (add `version` to `/healthz`, issue #130): DONE.** 1 verify
+  round, PASS (Opus-tier, trivial/low-risk single-file addition). Verifier confirmed all
+  4 acceptance criteria met exactly as planned, flagged the pre-existing `clientVersion`
+  naming as a mild (non-blocking) misnomer for its new consumer, confirmed no doc drift
+  beyond the already-updated `docs/API.md:604`, and suggested one optional
+  strengthening: an end-to-end `version` assertion in
+  `test/integration/health.integration.spec.ts` (added; local run blocked by an
+  unrelated host Docker port-5433 conflict with a stray non-project Postgres — CI runs
+  it in a clean environment).
+  - **Files touched:** `src/health/health.controller.ts`, `src/health/health.controller.spec.ts`
+    (new), `test/integration/health.integration.spec.ts`, `docs/API.md`,
+    `plans/expose-service-version.md` (Status: DONE).
+  - **Tests:** `npm test` — 68 suites, 766 passed (3 pre-existing unrelated skips);
+    `tsc --noEmit` clean; `npm run lint` clean; `npm run check:conventions` clean.
+    Integration suite not run locally (Docker port conflict, unrelated to this change);
+    deferred to CI.
+  - Plan complete pending `/ship`.

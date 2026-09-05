@@ -14,10 +14,12 @@ describe('Health Probes (integration)', () => {
     await ctx.app.close();
   });
 
-  it('GET /healthz returns ok=true and service name', async () => {
+  it('GET /healthz returns ok=true, service name, and a version string', async () => {
     const res = (await client.healthz()) as Record<string, unknown>;
     expect(res.ok).toBe(true);
     expect(res.service).toBe('acdp-control-plane');
+    expect(typeof res.version).toBe('string');
+    expect((res.version as string).length).toBeGreaterThan(0);
   });
 
   it('GET /readyz reports database status', async () => {

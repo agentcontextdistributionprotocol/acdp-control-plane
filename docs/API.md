@@ -601,7 +601,7 @@ the `did:web` document to resolve.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET`  | `/healthz` | Liveness (`{ ok, service }`); pings DB. **Public.** |
+| `GET`  | `/healthz` | Liveness (`{ ok, service, version }`); pings DB. **Public.** |
 | `GET`  | `/readyz` | Readiness (`{ ok, database }`). **Public.** |
 | `GET`  | `/metrics` | Prometheus text-format metrics. **Public.** |
 | `GET`  | `/docs` | Swagger UI (dev / opt-in). |
