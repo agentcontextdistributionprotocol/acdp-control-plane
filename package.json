@@ -1,6 +1,6 @@
 {
   "name": "acdp-control-plane",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "ACDP Control Plane — ingests registry webhooks, correlates runs, broadcasts SSE.",
   "license": "Apache-2.0",
   "private": true,
