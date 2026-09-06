@@ -17,19 +17,19 @@ jobs:
     name: lint + tsc + jest (unit, coverage-gated)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Check out the ACDP spec (pinned)
         # Pinned so a spec-repo push cannot change this repo's CI result
         # without a commit here. The wit-001..004 / log-001 / log-003 golden
         # parity specs (cosign.spec.ts, log-verify.parity.spec.ts) need this
         # checkout — see CP-7. Bump deliberately when adopting new fixtures.
         # (spec main HEAD as of 2026-08-28)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: agentcontextdistributionprotocol/agentcontextdistributionprotocol
           ref: bff3cf3afbdcea619834916e8f0bcac7e82ba658
           path: acdp-spec
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -52,7 +52,7 @@ jobs:
           ACDP_REQUIRE_CONFORMANCE: '1'
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage/lcov.info
@@ -80,8 +80,8 @@ jobs:
       NODE_ENV: test
       CI: 'true'
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -96,11 +96,11 @@ jobs:
     name: docker build (no push)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Build image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: false
