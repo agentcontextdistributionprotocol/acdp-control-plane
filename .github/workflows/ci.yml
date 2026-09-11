@@ -40,6 +40,18 @@ jobs:
         run: npm run lint -- --max-warnings 0
       - name: TypeScript compile
         run: npx tsc --noEmit -p tsconfig.json
+      - name: Build emit shape (builds TWICE -- see script header)
+        # Guards two states where dist/ ends up unusable, both of which
+        # shipped as real regressions in the TypeScript 6 bump (issue #137
+        # Phase 8): emit relocated to dist/src/ (rootDir lost -- loud, TS5011),
+        # and -- only on a SECOND consecutive build, and EXITING 0 -- no emit
+        # at all, when the .tsbuildinfo escapes outDir and survives
+        # nest-cli.json's `deleteOutDir`. The silent one is the reason this
+        # step exists, and the reason the script builds twice. No other CI
+        # step runs `npm run build` outside Docker, so nothing else can catch
+        # either one.
+        run: bash scripts/check-build-emit.sh
+
       - name: Unit tests (coverage thresholds enforced from package.json)
         # ACDP_REQUIRE_CONFORMANCE fails the wit-*/log-* golden-parity specs
         # loudly if the pinned spec checkout above is ever missing, instead

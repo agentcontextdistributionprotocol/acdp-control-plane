@@ -494,8 +494,8 @@ across a mixed bump. Each PR goes through `/ship` in full before the next phase 
 | 5 | `eslint` 9 → 10, `eslint-config-prettier` 9 → 10, `@typescript-eslint` → 8.70 | Low — config pre-tested unmodified under eslint 10 |
 | 6 | `jest` 29 → 30, `@types/jest` 30 | Medium — thin *functions* coverage margin; fake-timers jump 2 majors |
 | 7 | `ioredis` 5 → 6 | Medium-high runtime — RESP3 default; unit spec mocks client away |
-| 8 | `typescript` 5.7 → 6.0.3 | Highest — 4 config-level breaks incl. a silent emit-path move |
-| 9 | `@nestjs/cli` + `@nestjs/schematics` 11 → 12 (build tooling only) | Medium — not throttler-blocked; removes the TS compiler split |
+| 8 | `typescript` 5.7 → 6.0.3 | Highest — 4 config-level breaks, plus a genuinely silent second-build no-emit regression the mitigations themselves introduced |
+| 9 | `@nestjs/cli` + `@nestjs/schematics` 11 → 12 (build tooling only) | Medium — not throttler-blocked; dependency hygiene (drops a redundant nested `typescript`). *Originally "removes the TS compiler split" — that split never existed; see Phase 8.* |
 | — | **NestJS 12 (runtime)** | **BLOCKED upstream — no phase** |
 
 **Corrections to issue #137 carried by this plan** (all verified empirically, not assumed):
@@ -1266,3 +1266,153 @@ fixes for:
     pending count. This matters disproportionately here: the defect this phase fixes
     presents as a job that runs FOREVER, not one that fails, so a watcher that treats
     "not yet reported" as "passed" is precisely blind to it.
+
+- **Phase 8 — `typescript` 5.7 → 6.0.3.** Branch `chore/typescript-6` off `main` @
+  `a97d311`. **The only phase that changes compiler SEMANTICS.**
+  - **Files:** `package.json`, `package-lock.json`, `tsconfig.json`,
+    `tsconfig.build.json`, `test/tsconfig.test.json`. **Zero changes under `src/` or
+    `test/`** — and, importantly, **zero suppressions**: `@ts-ignore` /
+    `@ts-expect-error` / `@ts-nocheck` remain at **0 repo-wide**. The migration passes on
+    merit, not by silencing the compiler.
+  - Version bump and tsconfig changes land in **one commit**, per the plan — splitting
+    them produces a knowingly-broken intermediate state.
+  - **All three mitigations PROVEN load-bearing by removing each and measuring**, rather
+    than applied on faith:
+
+    | mitigation | removed → | restored → |
+    |---|---|---|
+    | `types: ["node","jest"]` in `tsconfig.json` | **3315 errors** — 2160 `TS2304` (1832 × `expect`, 261 × `jest`, 32 × `beforeAll`, …), 1105 `TS2593`, 40 `TS2503`, 10 `TS7006`/`TS7031` | 0 |
+    | `rootDir: ".."` in `test/tsconfig.test.json` | **71 × `TS6059`** ("not under 'rootDir'") | 0 |
+    | `rootDir: "./src"` in `tsconfig.build.json` | **`TS5011`, `nest build` exits 1**; emit relocates to `dist/src/` and `dist/main.js` is ABSENT | `dist/main.js` present |
+
+    **Correction (verify round 1).** An earlier version of this entry claimed the third
+    mitigation's absence was "a silent, runtime-only break — the build still SUCCEEDS."
+    That was wrong, and the verifier caught it. Re-measured: removing the build `rootDir`
+    makes `nest build` exit **1** with `TS5011` ("The common source directory … must be
+    explicitly set"), and raw `tsc -p tsconfig.build.json` exits **2**. The relocation to
+    `dist/src/` and the absence of `dist/main.js` are real, but the failure is **loud**.
+    The plan itself listed `TS5011` as a hard error; the narrative contradicted it.
+    This mattered beyond bookkeeping: it inverted the risk a reviewer was being asked to
+    accept, and it attached the words "silent" and "exit 0" to the wrong mitigation —
+    while the change that genuinely *did* fail silently at exit 0 (below) went unnamed.
+  - **The `test/tsconfig.test.json` `rootDir` is the item the ROUND-0 PLAN MISSED** and
+    which would have failed its own criterion 4 outright. Round 1 caught it; this phase
+    confirms the measurement exactly (71, predicted 70-72). `TS6059` fires even under
+    `--noEmit`, so it would also have broken ts-jest's integration transform, which points
+    at that same config (`test/jest.integration.config.ts:11`).
+  - **There is NO two-compiler split — I claimed one twice, and both times it was wrong.**
+    `npm ls typescript` shows `6.0.3` top-level plus a nested `5.9.3` under
+    `@nestjs/cli@11.0.24`, and I concluded from that listing that `nest build` emits with
+    5.9.3. It does not. `@nestjs/cli`'s `typescript-loader.js` resolves the compiler with
+    **`process.cwd()` first**, and npm scripts run with cwd = package root, so
+    `nest build` loads the **top-level 6.0.3**. The nested copy is installed but never
+    executed. Proven three ways: the loader's own `load().version` reports `6.0.3`;
+    moving the nested install aside entirely leaves `npm run build` green at 133 files;
+    and removing the build `rootDir` makes `npm run build` fail with `TS5011 … Visit
+    https://aka.ms/ts6` — a TypeScript **6.0-only** diagnostic, emitted through the CLI.
+    **Round 1's "correction" was itself wrong** and made things worse: it added the claim
+    that `@nestjs/cli` "discards config-level diagnostics," which that same `TS5011`
+    result directly falsifies — and the evidence contradicting it was already sitting in
+    this file's own mitigations table, unreconciled. The measurement round 1 *did* make
+    (`@nestjs/cli/node_modules/typescript/bin/tsc` → `TS5103`) is real but exercises a
+    binary nothing ever runs, which is precisely why a wrong conclusion looked evidenced.
+    **Lesson worth keeping: `npm ls` describes what is INSTALLED, not what is LOADED.**
+    Resolution order decides, and it had to be read from the tool's source.
+    Consequences: the assumption is **WITHDRAWN**, not left unconfirmed; the two nodes in
+    `npm ls typescript` are cosmetic; and **Phase 9 is dependency hygiene, not compiler
+    unification** — every compiler the repo runs is already 6.0.3.
+  - **Emit parity is CROSS-VERSION and stronger than first recorded:** `main` @ `a97d311`
+    built with 5.9.3 vs this branch built with 6.0.3 — all 133 `.js` and every `.d.ts`
+    **byte-identical**, decorator metadata equal on both sides (`__metadata` 287/287,
+    `design:paramtypes` 109/109, `design:type` 135/135). That is what actually licenses
+    this bump, and it holds independently of the split confusion above.
+  - **`baseUrl` deleted, `ignoreDeprecations: "6.0"` added.** Under 6.0 these are HARD
+    errors, not warnings (`TS5101` for `baseUrl`, `TS5107` for `moduleResolution: node10`).
+    `baseUrl: "./"` was safely deletable — no `paths`, every import relative or a bare
+    package specifier. Kept node10 resolution behind `ignoreDeprecations`:
+    switching to `nodenext` imposes ESM/CJS interop strictness on 100+ files, drizzle's
+    exports map, and the NAPI binding all at once — a separate migration, not a bump.
+    **Correction (verify round 1):** criterion 3 requires that deferral to carry a TODO
+    referencing the TS 7 removal, and this commit originally claimed one while `tsconfig.json`
+    had none. Now added — with the forward risk measured rather than asserted: against
+    `typescript@7.0.2` this exact config yields exactly one error, `TS5108: Option
+    'moduleResolution=node10' has been removed`, and `ignoreDeprecations` itself stops
+    working in 7.0, so there is no second reprieve. The TODO also records that TS 6.0 newly
+    permits `module: commonjs` with `moduleResolution: bundler` (TS5095 in 5.9), making
+    `bundler` a materially smaller escape than the `nodenext` migration rejected here.
+  - **Verified, not assumed, for the changes the plan called "already satisfied":** legacy
+    `module Foo {}` namespace syntax → **0 hits**; `target: ES2022` (es5 deprecated /
+    `downlevelIteration` removed — neither in play); `module: commonjs` (amd/umd/systemjs
+    removed); `alwaysStrict` not set; `experimentalDecorators` + `emitDecoratorMetadata`
+    still **true** — load-bearing for every NestJS decorator and `class-validator` DTO,
+    and unaffected by 6.0.
+  - **BLOCKING defect found at the verify gate, and it was self-inflicted by this very
+    phase.** Adding `rootDir: "./src"` moves the DEFAULT `.tsbuildinfo` out of `outDir` —
+    tsc resolves it as `resolve(outDir, relative(rootDir, <config>))`, which lands it at
+    the **repo root**. `nest-cli.json` sets `deleteOutDir: true`, so `dist/` is wiped while
+    the build state survives; tsc then concludes everything is up to date and **emits
+    nothing, exiting 0**. Measured on the branch:
+
+    ```
+    build 1: exit=0  js=133
+    build 2: exit=0  js=0     <-- dist/ DOES NOT EXIST, and the build reports success
+    ```
+
+    `npm run start` / `start:dev` — the documented dev loop in `CLAUDE.md` — died with
+    `Cannot find module '.../dist/main'`. **This is the mirror image of Phase 7's defect:**
+    that one was CI-only, this one is local-only. CI never runs `npm run build` outside
+    Docker (`ci.yml` used `npx tsc --noEmit`), and the Dockerfile's explicit `COPY` list
+    never copies a root `tsbuildinfo`, so **CI stayed green while local development was
+    broken**. Criterion 7 (`rm -rf dist && npm run build`) structurally cannot catch it —
+    deleting `dist` does not delete a root-level buildinfo, and the first build always
+    looks fine.
+    **I saw the symptom and misfiled it.** The `.gitignore` hunk I added in this same
+    commit describes the relocation as untracked-file hygiene. It was a build-correctness
+    regression, and I documented it as tidiness.
+    **Fix:** `tsBuildInfoFile: "./dist/tsconfig.build.tsbuildinfo"` in
+    `tsconfig.build.json`, putting the state back inside `outDir` so it shares `dist/`'s
+    lifecycle. Three consecutive builds now emit 133 files each. The `.gitignore` entry
+    stays as belt-and-braces.
+  - **New regression guard: `scripts/check-build-emit.sh`** (`npm run check:build`), wired
+    into CI's unit job. The plan recommended an emit-shape smoke check and Phase 8
+    originally shipped without one — it was the exact control needed. It asserts
+    `dist/main.js` + `dist/db/migrate.js` exist, no `dist/src/`, ≥100 `.js` emitted, no
+    stray root `.tsbuildinfo`, and that `dist/main.js` actually loads (module graph intact,
+    not just file-present). Crucially it **builds TWICE** — a single build cannot detect
+    the defect above. Proven to have teeth in both directions: reverting `tsBuildInfoFile`
+    → fails on build 2; removing build `rootDir` → fails on `TS5011`.
+  - **Verify gate:** Opus, **3 rounds**.
+    - **Round 1 = `GAPS`** — 1 blocking (buildinfo escape), 1 high (false split-safety
+      claim), 4 smaller (loud-vs-silent mischaracterisation, missing TS 7 TODO, missing
+      emit guard, wrong error-code attribution).
+    - **Round 2 = `GAPS`** — 5 of 6 confirmed closed, but **the round-1 fix to the split
+      claim was itself wrong**: it replaced one false mechanism with another (see above),
+      propagating it into four documents plus the plan. Also found that
+      `check-build-emit.sh` had a `set -euo pipefail` defect where `find` on a missing
+      `dist/` aborted the script mid-report — CI still went red, but the run omitted the
+      stray-`.tsbuildinfo` line that names the root cause. Both fixed; the guard now
+      prints its full report under the regression, and additionally asserts that build 1
+      and build 2 emit the *same* count.
+    - **Round 3 = `GAPS` (prose only)** — mechanism confirmed correct and every gate
+      green, but the round-2 correction had been applied to most, not all, of the places
+      carrying the false claim: 6 residual spots, including the Phase 8 entry's own
+      closing line still saying Phase 9's "whole point is retiring the split above", 100
+      lines after the entry withdrew it. All corrected, then verified by an exhaustive
+      `command grep` sweep over tracked *and* gitignored docs rather than spot checks.
+      No code, config or gate was affected. **This is the round cap** — the phase is not
+      re-verified a fourth time, since the remaining work was enumerated line-by-line and
+      mechanically checkable.
+    - The round-2 finding is the one worth remembering: **`npm ls` tells you what is
+      installed, not what is loaded.** Two rounds of confident, evidenced-looking claims
+      rested on reading a dependency tree instead of the resolver. The fix was to read
+      `@nestjs/cli`'s loader source and then delete the nested install to see if anything
+      broke. Nothing did.
+  - **Gates (re-run after the gap fixes):** tsc **0 on both projects**; build 0 with
+    identical emit **and stable across three consecutive builds**; `check:build` green;
+    lint 0; conventions 0; unit **69 suites / 770 passed / 3 skipped**; integration
+    **26 suites / 158 passed**.
+  - **Next:** Phase 9 — `@nestjs/cli` + `@nestjs/schematics` 11 → 12. Hard-depends on this
+    phase (CLI 12 pins `typescript: ~6.0.2`). **Its value is dependency hygiene, not
+    compiler unification** — it drops the redundant nested `typescript@5.9.3` and realigns
+    the CLI's declared dependency with the version already in use. There is no split to
+    retire; see the correction above.

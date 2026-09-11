@@ -144,3 +144,57 @@
   on CI's Node 22. Bounded by CI itself catching it as a test failure rather than it
   reaching production, and by Docker already running 26.
 - **Status:** UNCONFIRMED
+
+## TypeScript 6: the "two-compiler split" does not exist — assumption WITHDRAWN
+- **Plan:** `plans/dep-migrations-137.md` (Phase 8)
+- **Assumed (WRONG, twice):** that `npm run build` emits with `@nestjs/cli@11.0.24`'s
+  nested `typescript@5.9.3` while CI typechecks with the top-level `6.0.3`, leaving the
+  repo with a genuine two-compiler split to be retired in Phase 9.
+- **What is actually true.** `nest build` uses the **top-level `typescript@6.0.3`**. The
+  nested 5.9.3 is installed but never loaded. `@nestjs/cli`'s
+  `lib/compiler/typescript-loader.js` resolves the compiler with **`process.cwd()` first**:
+
+  ```js
+  const tsBinaryPath = require.resolve('typescript', {
+    paths: [process.cwd(), ...this.getModulePaths()],
+  });
+  ```
+
+  and npm scripts always run with cwd = package root. Three independent proofs:
+  1. `new TypeScriptBinaryLoader().load().version` → **`6.0.3`**.
+  2. Move `node_modules/@nestjs/cli/node_modules/typescript` aside entirely and
+     `npm run build` still exits 0 with all 133 files. The nested copy is **inert**.
+  3. Remove `rootDir` from `tsconfig.build.json` and `npm run build` fails with
+     `TS5011 … Visit https://aka.ms/ts6 for migration information` — a **TypeScript
+     6.0-only** diagnostic, surfaced *through the CLI*, exit 1.
+
+  Proof 3 also falsifies the second thing this entry used to claim — that `@nestjs/cli`
+  "discards config-level diagnostics." It does not: `TS5011` **is** a config-level
+  diagnostic and it is fatal. The one true statement in the previous version of this
+  entry — that `./node_modules/@nestjs/cli/node_modules/typescript/bin/tsc` rejects this
+  config with `TS5103` — is irrelevant, because that binary is never executed. It was a
+  real measurement of a code path nothing uses, and it is what made the wrong conclusion
+  look evidenced.
+- **Consequences of the correction:**
+  - There is no compiler split and nothing to resolve. Every compiler the repo actually
+    runs — `tsc`, `nest build`, `ts-jest`, `ts-node`, `eslint` — is **6.0.3**.
+  - `npm ls typescript` showing two nodes is **cosmetic**: a `node_modules` artifact of
+    `@nestjs/cli` declaring an exact `typescript` dependency that npm must nest.
+  - **Phase 9's value is restated.** Bumping `@nestjs/cli`/`@nestjs/schematics` to 12 is
+    dependency hygiene (it drops the redundant nested install and puts the declared and
+    used versions back in agreement), **not** compiler unification — that is already
+    true. Phase 9's criterion 1 still reads usefully, but it verifies tidiness rather
+    than correctness, and Phase 8 does not depend on it for safety.
+  - The `overrides` fix considered in round 1 was correctly rejected, but for a better
+    reason than the one recorded then: **there is nothing to override.**
+- **What survives the correction, and is stronger than documented.** Emit parity was
+  re-measured across the *real* versions — `main`@`a97d311` built with 5.9.3 versus this
+  branch built with 6.0.3 — and every `.js` and `.d.ts` of the 133 is **byte-identical**,
+  with decorator metadata equal on both sides (`__metadata` 287/287, `design:paramtypes`
+  109/109, `design:type` 135/135). So this is genuine **cross-version** emit parity, not
+  the same-version parity the earlier framing implied.
+- **Blast radius:** none outstanding. The risk this entry was created to track was
+  imaginary. It is retained rather than deleted because the wrong version of it was
+  committed, cited in a commit message, and used to justify a decision.
+- **Status:** WITHDRAWN — superseded by direct evidence (loader source + removal
+  experiment), not merely unconfirmed.

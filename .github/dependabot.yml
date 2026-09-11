@@ -8,8 +8,9 @@ updates:
     ignore:
       # typescript majors track the compiler ahead of the lint toolchain:
       # @typescript-eslint caps `typescript` at <6.1.0, so a TS 7 bump can't
-      # resolve (npm ci ERESOLVE). Stay on 5.x majors until typescript-eslint
+      # resolve (npm ci ERESOLVE). Stay on 6.x majors until typescript-eslint
       # supports a newer major, then lift this. Minor/patch still flow.
+      # (Said "5.x" until issue #137 Phase 8 moved the repo to TypeScript 6.)
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
     # Pattern groups stay (they collapse their own churn); the two

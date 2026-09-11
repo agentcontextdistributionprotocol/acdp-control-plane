@@ -9,7 +9,6 @@
     "target": "ES2022",
     "sourceMap": true,
     "outDir": "./dist",
-    "baseUrl": "./",
     "incremental": true,
     "skipLibCheck": true,
     "strictNullChecks": true,
@@ -20,8 +19,23 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "moduleResolution": "node",
+    // TODO(TS 7.0, issue #137): `moduleResolution: "node"` is the legacy
+    // node10 algorithm. TS 6.0 made it a DEPRECATION ERROR (TS5107) and TS
+    // 7.0 REMOVES it -- measured against typescript@7.0.2, this exact config
+    // yields one error: `TS5108: Option 'moduleResolution=node10' has been
+    // removed.` `ignoreDeprecations` only silences it through 6.x; the option
+    // itself stops working in 7.0, so there is no second reprieve.
+    //   Migration note: TS 6.0 newly allows `module: "commonjs"` together
+    //   with `moduleResolution: "bundler"`, which 5.9 rejected (TS5095). That
+    //   makes `bundler` a materially smaller migration than the `node16`/
+    //   `nodenext` move Phase 8 rejected -- it needs no `.js` import
+    //   extensions. Re-evaluate both before adopting TS 7.
+    // Deleting `baseUrl` (also TS5101-deprecated) is already done; this is
+    // the last remaining option keeping `ignoreDeprecations` necessary.
+    "ignoreDeprecations": "6.0",
     "strict": true,
-    "strictPropertyInitialization": false
+    "strictPropertyInitialization": false,
+    "types": ["node", "jest"]
   },
   "include": ["src/**/*", "test/**/*"],
   "exclude": ["node_modules", "dist"]
