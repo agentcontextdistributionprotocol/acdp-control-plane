@@ -645,3 +645,50 @@ fixes for:
     (e.g. `aitp_control_plane_test`, the squatter on 5433) still passes — that case is
     caught by `global-setup.ts`'s loud connection error, not by this guard.
   - **Next:** Phase 1 — prune dead deps (`uuid`, `nestjs-pino`, `pino-http`).
+- **2026-09-11 — Phase 1 (prune dead deps `uuid`/`nestjs-pino`/`pino-http`, issue #137): DONE.**
+  1 verify round, **PASS** first time. Opus-tier (manifest + docs, no `src/` change, trivially
+  reversible — Fable not warranted).
+  - **Files touched:** `package.json`, `package-lock.json`, `docs/README.md`,
+    `scripts/ci-conventions.sh` (comment only — grep patterns byte-identical), plus
+    `CLAUDE.md:28` as **local-only** hygiene (gitignored, deliberately not in the PR).
+  - **Two of issue #137's eight migrations dissolved here.** `uuid` 11→14 and the
+    `pino-http` 10→11 half of item 4 are not bumps — the packages were never imported.
+    Bumping `uuid` as the issue asked would have pulled a version that **dropped CommonJS
+    support** into this `"module": "commonjs"` project: real breakage risk added to a
+    package with zero call sites.
+  - **Verifier's independent findings:** exhaustive `command grep` sweeps (the
+    gitignore-safe form) found zero static, dynamic, `require`, or string references
+    anywhere in `src/ test/ e2e/ scripts/ drizzle/ .github/ Dockerfile docker-compose*
+    nest-cli.json eslint.config.js tsconfig*`; confirmed every `uuid` identifier in
+    `src/db/schema.ts` is Drizzle's `uuid()` column helper from `drizzle-orm/pg-core`
+    (imported at `:12`), not the package; node-by-node lockfile diff = exactly 3 nodes
+    removed, **0 added, 0 version changes**; `pino-http`'s transitive deps survive because
+    they have other parents (`pino-std-serializers`/`process-warning` ← `pino`,
+    `get-caller-file` ← `yargs`); and a **negative test** of `ci-conventions.sh` in a
+    scratch dir proved all three rules still fail on real violations rather than passing
+    vacuously.
+  - **Gates:** `npm run build` 0, `tsc --noEmit` 0, `lint --max-warnings 0` 0,
+    `check:conventions` 0, unit **68 suites / 766 passed / 3 skipped** (identical to
+    baseline — the meaningful signal: removing three deps changed nothing), clean
+    `npm ci` from a wiped `node_modules` 0.
+  - **Boot proof (criterion 6), both branches of the `isDevelopment` fork** — the only
+    claim here no static gate can make, since the `require.resolve('pino-pretty')` guard
+    at `src/common/pino-logger.ts:11` is reachable only at boot:
+    production → `/healthz` = `{"ok":true,"service":"acdp-control-plane","version":"0.1.4"}`
+    with ~68 pino JSON lines incl. "Nest application successfully started";
+    development → colorized `pino-pretty`, **0** raw JSON lines.
+  - **Executor error worth recording:** the first two boot attempts were bad measurements,
+    not bad code — one invoked `timeout` (absent on macOS) and reported a shell error as
+    the log line; the next read 3 lines of an 86-line log and mistook `migrate.ts`'s
+    exempt `console.log` preamble for a failure. The change was fine both times. A gate
+    that never ran the thing it claims to test is the same failure class this plan keeps
+    finding in the repo.
+  - **Out-of-scope bug found during boot verification (NOT fixed here, pre-existing on
+    `main`):** SIGTERM raises `Error: Called end on pool more than once`
+    (`src/db/database.service.ts:30`). `src/main.ts:73` calls `enableShutdownHooks()`
+    — which registers its own SIGTERM/SIGINT handler calling `close()` — *and*
+    `src/main.ts:81-82` registers manual `process.on('SIGINT'|'SIGTERM', …)` handlers that
+    also call `app.close()`, so `onModuleDestroy` runs twice. Unrelated to dependencies.
+    Deserves its own issue.
+  - **Next:** Phase 2 — align the `express` declaration to `5.2.1` + add the missing
+    `/agents/*did` route-shape test.

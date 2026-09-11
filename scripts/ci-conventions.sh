@@ -7,7 +7,7 @@
 #    jwks-client, revocation-poller, pinned-keys loader, tenant/domain-pack
 #    config parsing). This list is a RATCHET — do not add to it for new code;
 #    throw AppException instead.
-# 2. No `console.*` — runtime logging is nestjs-pino via the Nest Logger.
+# 2. No `console.*` — runtime logging is a pino-backed LoggerService via the Nest Logger.
 # 3. No `process.env` outside AppConfigService + the documented exemptions.
 set -u
 

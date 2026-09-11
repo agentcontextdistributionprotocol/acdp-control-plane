@@ -76,7 +76,8 @@ reads and writes (see [TENANCY.md](./TENANCY.md)).
 ## Conventions (enforced)
 
 - Business errors → `AppException(ErrorCode.X, msg, httpStatus)`, normalized by `GlobalExceptionFilter`. Never `throw new Error()` on request paths.
-- Logging via `nestjs-pino` (`new Logger(ClassName.name)`); never `console.*`.
+- Logging via a `pino`-backed `LoggerService` (`src/common/pino-logger.ts`), passed to
+  `NestFactory.create` in `src/main.ts`; use `new Logger(ClassName.name)`, never `console.*`.
 - All `process.env` reads live in `AppConfigService` (a few documented exemptions).
 - All prom-client metrics constructed in `InstrumentationService`.
 - Protocol crypto/SSRF/DID come from the `acdp` SDK (Rust `acdp-rs` via NAPI), never hand-rolled.
