@@ -692,3 +692,55 @@ fixes for:
     Deserves its own issue.
   - **Next:** Phase 2 — align the `express` declaration to `5.2.1` + add the missing
     `/agents/*did` route-shape test.
+||||||| parent of b214486 (chore(deps): align the express declaration with the version actually running)
+- **2026-09-11 — Phase 2 (align `express` declaration to 5.2.1, issue #137): DONE.**
+  1 verify round, **PASS** + 2 LOW findings (both closed) + 1 INFO. Opus-tier.
+  - **Files:** `package.json` (one line), `package-lock.json`,
+    **new** `test/integration/agents-routes.integration.spec.ts`; `CLAUDE.md:105-106`
+    local-only. **No `src/` change** — the point of the phase.
+  - **The issue's premise was wrong, and the root cause is worth remembering.**
+    #137 budgeted an Express 4→5 routing migration across five endpoints. The app has
+    served Express 5 all along (`@nestjs/platform-express@11.2.3` depends on
+    `express@5.2.1` + `path-to-regexp@8.4.2` **directly**), and the routes moved to
+    `*name` syntax in `03586d1`. The issue's `:ctxId*` / `:did*` strings came from
+    `CLAUDE.md:104-105` — a **gitignored, untracked** file that was months stale.
+    `docs/API.md` (tracked) has been correct throughout. **A plan derived from an
+    untracked doc inherited an error the tracked docs did not have.**
+  - **Tree before → after:** shadow `express@4.22.2` (consumed by nothing) and its
+    `path-to-regexp@0.1.13` removed; single deduped `express@5.2.1`; `path-to-regexp`
+    8.4.2 only.
+  - **THREE transitive moves, not the "pure relocation" first claimed** (10 of 12
+    top-level version changes are relocation at identical running versions; these are
+    genuine):
+    | package | from | to | assessment |
+    |---|---|---|---|
+    | `body-parser` | 2.2.2 | **2.3.0** | **fixes GHSA-v422-hmwv-36x6 / CVE-2026-12590** |
+    | `content-type` | 1.0.5 | **2.1.0** | major; 2.x stops throwing on malformed input, body-parser 2.3.0 adapted in the same release — charset path behaviourally identical |
+    | `negotiator` | 1.0.0 | **1.1.0** | zero blast radius: repo does no content negotiation |
+    **`npm audit`: 7 → 5 vulnerabilities.** The CVE (invalid `limit` → `bytes.parse()`
+    returns `null` → body-size enforcement silently disabled) was live on the parser
+    guarding `/ingest/acdp`. Executor initially framed this as *risk*; it is a *fix*, and
+    the `content-type` major was missed entirely until the gate caught it.
+  - **Raw-body/HMAC path verified unchanged** (the security-relevant question, since
+    `/ingest/acdp` HMACs the raw bytes): `verify` callback still forces
+    `opts.encoding = null`, so `req.rawBody` is the exact wire buffer; `raw-body` stayed
+    3.0.2, `iconv-lite` 0.7.2. The new `limit` TypeError cannot fire — `readNumber`
+    (`app-config.service.ts:9-14`) guarantees a finite number.
+  - **Exact pin (`5.2.1`) over the plan's `^5.2.1`:** `platform-express` depends on
+    *exactly* `5.2.1`, so a caret would install 5.3.0 at the root while the serving path
+    stayed 5.2.1 — recreating this phase's own shadow-dependency bug and buying no patch
+    coverage. Upgrades ride `@nestjs/platform-express`; Dependabot still tracks an exact pin.
+  - **New spec is mutation-tested, not merely green.** Breaking `.join('/')`
+    (`agents.controller.ts:26`) fails exactly the multi-segment case; disabling
+    `@Get('*did')` fails three cases. **Gate finding (closed):** case 4 originally
+    asserted only `status === 404` and *survived* the route-disabling mutant, because
+    Nest's no-route fallback is also a 404 — it asserted a guarantee it did not deliver.
+    Now matches the handler's own message. Re-mutated to confirm it kills.
+  - **Gates:** no `src/` diff; build/tsc/lint/conventions 0; unit 68 / 766 / 3 (unchanged);
+    integration **25 suites / 155 tests** (was 24/151). New spec passed 4/4 on the
+    **pre-change** tree too — which is what makes the post-change green mean anything.
+  - **INFO (follow-up, out of scope):** the sibling wildcard joins at
+    `contexts.controller.ts:45` and `capability.controller.ts:147` still lack
+    multi-segment coverage — `federation-proxy` uses `encodeURIComponent` and
+    `capabilities` uses a slash-free DID, so neither exercises the multi-element array.
+  - **Next:** Phase 3 — `pino` 9 → 10.
