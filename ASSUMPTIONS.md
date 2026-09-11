@@ -143,7 +143,12 @@
 - **Blast radius if wrong:** A future commit could type-check locally and fail at runtime
   on CI's Node 22. Bounded by CI itself catching it as a test failure rather than it
   reaching production, and by Docker already running 26.
-- **Status:** UNCONFIRMED
+- **Status:** RESOLVED (2026-09-11) — **decided by the repo owner during the §4
+  finalization pass: raise CI to Node 26.** Applied in the finalization commit: all three
+  `node-version: '22'` pins (both `ci.yml` jobs + `release.yml`) are now `'26'`, matching
+  the Dockerfile's `node:26-bookworm-slim`, with the rationale recorded inline in `ci.yml`
+  so it is not silently reverted. CI now validates the same Node major that ships.
+  This deferral was raised in phases 4, 6, 8 and 9 before being settled.
 
 ## TypeScript 6: the "two-compiler split" does not exist — assumption WITHDRAWN
 - **Plan:** `plans/dep-migrations-137.md` (Phase 8)
@@ -234,6 +239,13 @@
 - **Blast radius if wrong:** a contributor on Node 23 or 25 sees EBADENGINE warnings and
   no explanation. Installs still succeed; nothing at runtime is affected. Cost to reverse
   is one line in `package.json`.
-- **Status:** UNCONFIRMED — needs a decision on the standing Node-version question
-  (raise CI to 26 / declare `engines` / accept the divergence), not a decision about
-  Phase 9.
+- **Status:** RESOLVED (2026-09-11) — the standing Node-version question was settled in
+  favour of **raising CI to Node 26**, not declaring `engines`. That removes the reason
+  this entry existed: CI, Docker and the reference workstation now all sit on Node 26,
+  comfortably inside the `>=26.0.0` arm of the transitive floor, so nothing in the
+  pipeline can trip it. `package.json` still declares no `engines` field — deliberately,
+  and now harmlessly, since no environment this project controls is outside the range.
+  The residual case is a contributor on Node 23 or 25, who sees `EBADENGINE` **warnings**
+  with `npm ci` still exiting 0; that is documented in `docs/TROUBLESHOOTING.md` under
+  "`npm warn EBADENGINE Unsupported engine` on install". Revisit only if someone wants a
+  hard floor enforced at install time.

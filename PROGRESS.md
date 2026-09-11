@@ -1476,3 +1476,56 @@ fixes for:
     conventions 0; unit **69 suites / 770 passed / 3 skipped**; integration **26 suites /
     158 passed**; `npm ci` from clean 0; docker green with 133 `.js`, `dist/main.js`, no
     `dist/src/`.
+
+- **§4 Finalization (issue #137, whole-feature pass).** Branch `chore/nestjs-cli-12`,
+  on top of Phase 9.
+  - **Phase 9 verify gate:** Opus, 1 round = `GAPS`. The code was clean — all 7 criteria
+    re-verified independently, and the three riskiest claims survived direct attack,
+    including the `node:22` install I had NOT run (the verifier did: exit 0, zero
+    EBADENGINE on v22.23.2, the exact version `setup-node: '22'` resolves to). The gaps
+    were all close-out:
+    1. **BLOCKING — `Closes #137` would have closed an issue with unaddressed scope.**
+       #137's item 1 is runtime NestJS 11→12, hard-blocked on `@nestjs/throttler`
+       (latest 6.5.0 peers `@nestjs/common ^7||…||^11`, no v7 exists). Downgraded to
+       `Refs #137`, and the follow-ups filed as **#155** (throttler blocker), **#156**
+       (TS 6 → 7 runway — `node10` and `baseUrl` are REMOVED in 7.0, measured as
+       `TS5108`), **#157** (evaluate adopting `nestjs-pino`). The fourth follow-up the
+       plan called for — CI-Node-22-vs-Docker-26 — was **resolved in this pass instead of
+       filed**, see below; filing an issue for something fixed in the same commit is noise.
+    2. `docs/TROUBLESHOOTING.md`'s "Two TypeScript versions" section went counterfactual
+       the moment Phase 9 deduped them to one. Reframed around the loader-resolution
+       point that actually matters, which is the part worth keeping.
+    3. **"`diff -rq` reports no differences" was false.** It reports exactly one:
+       `dist/tsconfig.build.tsbuildinfo`. Every *emitted* artifact is identical; the
+       build-state file is not one. Corrected — this is the third time in this series
+       that over-confident phrasing outran the measurement.
+    4. "check:build's first real consumer" was wrong — Phase 8 shipped the script AND the
+       CI step, so CI ran it on PR #154. Phase 9 is the second consumer.
+    5. CLI 12 also drops `webpack-node-externals` + `tsconfig-paths-webpack-plugin`, and
+       `nest build --webpack` now fails. Unused here, fails loudly, recorded.
+  - **NEW seam test: `test/integration/quota-store-lifecycle.integration.spec.ts`.** The
+    §4 question is what the phases collectively introduced that no single phase's tests
+    cover. Answer: Phase 7's blocking defect had only *unit* coverage of
+    `RedisQuotaStore.close()` against a hand-written fake. Nothing proved the two things
+    that actually failed — that the factory picks the in-memory store when Redis is
+    configured but no tenants are, and that `QuotaModule.onModuleDestroy` closes a REAL
+    client on app shutdown. Both are seams between a module, a factory, a lifecycle hook
+    and a live socket, which a faked unit test cannot reach. 4 tests, live Redis, same
+    never-skip-in-CI policy as `redis-live`. **Proven to have teeth:** reintroducing the
+    exact Phase 7 defect (`if (config.redisUrl)` without the tenant check) fails it at the
+    designed assertion. Restored and verified byte-identical to HEAD afterwards.
+  - **Node-version question SETTLED by the repo owner: raise CI to Node 26.** All three
+    pins (`ci.yml` × 2, `release.yml`) 22 → 26, matching the Dockerfile's
+    `node:26-bookworm-slim`, with the rationale recorded inline so it is not silently
+    reverted. CI now validates the Node major that actually ships. This had been deferred
+    in phases 4, 6, 8 and 9. Both related `ASSUMPTIONS.md` entries move to **RESOLVED**;
+    `engines` stays undeclared, now harmlessly, since no environment this project controls
+    is outside the transitive floor.
+  - **Tracked-file sweep found a real gap:** six merged phases (1, 2, 3, 5, 6, 7) still
+    read `Status: TODO` in the plan despite being merged weeks earlier. Marked DONE with
+    their merge SHAs. Also caught two more survivals of the withdrawn compiler-split claim
+    in this file's own plan-re-verification notes — phrasing my earlier sweep missed
+    because I grepped for my wording, not the wording that round used.
+  - **Process error worth recording:** I edited this repo while the Phase 9 verifier was
+    running in it, which dirtied its working tree and made it report an unexplained
+    concurrent writer. Harmless here, but a verifier's tree should be left alone.

@@ -31,7 +31,13 @@ jobs:
           path: acdp-spec
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          # Matches the Dockerfile (node:26-bookworm-slim) so CI tests the same
+          # runtime that ships. Previously '22', which meant CI validated a Node
+          # major that production never ran -- flagged in issue #137 phases 4, 6,
+          # 8 and 9 and settled here. It also clears the floor that
+          # @nestjs/schematics@12 / @angular-devkit@22 introduced
+          # (node ^22.22.3 || ^24.15.0 || >=26.0.0), which excludes Node 23 and 25.
+          node-version: '26'
           cache: 'npm'
       - run: npm ci
       - name: Convention greps (CLAUDE.md CI grep rules)
@@ -117,7 +123,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '26'
           cache: 'npm'
       - run: npm ci
       - name: Integration tests
