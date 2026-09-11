@@ -744,3 +744,50 @@ fixes for:
     multi-segment coverage — `federation-proxy` uses `encodeURIComponent` and
     `capabilities` uses a slash-free DID, so neither exercises the multi-element array.
   - **Next:** Phase 3 — `pino` 9 → 10.
+- **2026-09-11 — Phase 3 (`pino` 9 → 10, issue #137): DONE.** 1 verify round, **PASS**
+  first time + 2 plan-prose corrections. Opus-tier.
+  - **Files:** `package.json` (one line), `package-lock.json`, **new**
+    `src/common/pino-logger.spec.ts`. **No `src/` source change** — `pino.Logger` and
+    `pino.TransportSingleOptions` both survive the major, so the five-touchpoint surface
+    in `src/common/pino-logger.ts` compiles untouched.
+  - **Cleanest lockfile of the plan so far — zero unrelated drift** (contrast Phase 2):
+    `pino` 9.14.0→10.3.1, `pino-abstract-transport` 2.0.0→3.0.0, `thread-stream`
+    3.2.0→4.2.0 — all three are pino's own declared deps. `pino-pretty` **not bumped**
+    (13.1.3 already speaks `pino-abstract-transport@^3`). The tree got *simpler*: the
+    nested `pino-pretty/node_modules/pino-abstract-transport@3.0.0` is gone, deduped to a
+    single top-level copy.
+  - **Output shape measured, not assumed.** The verifier diffed actual emitted lines
+    between pino 9 and 10 on Node 26 across plain objects, the repo's exact
+    `{context, trace}` error shape, nulls/undefined/arrays/nested/unicode/escaped quotes,
+    serialized `Error`s and printf `%s/%d/%o`: **character-for-character identical** after
+    normalising `time`/`pid`/`hostname`. `levels.values` unchanged, `time` still epoch-ms
+    integer, key order unchanged. **No downstream log-consumer risk.**
+  - **Two plan-prose corrections (plan file updated):** (1) the
+    `pino-abstract-transport` ^2→^3 + `thread-stream` →v4 moves landed in **10.1.1**, not
+    10.2.0. (2) "`pino-pretty` must resolve >= 13.1.3" **overstated the facts** —
+    `pino-abstract-transport@3.0.0`'s whole changelog is "drop tap and Node 18", **zero
+    API change**, so a nested `pat@2` would have worked; the dedupe is a bonus, not a
+    requirement.
+  - **Executor framing corrected:** the `try/catch` at `pino-logger.ts:10-15` wraps
+    **only `require.resolve`** — `pino({...transport})` at `:17` is outside it, so a
+    transport that resolves but fails to *load* throws loudly at boot. The silent path is
+    narrower than stated: it covers only "pino-pretty absent", which is the intended
+    production behaviour (`Dockerfile` runs `npm ci --omit=dev`).
+  - **NEW: `src/common/pino-logger.spec.ts` — beyond plan, deliberately.** The plan said
+    the manual boot smoke was sufficient proof. But this was the **second** phase whose
+    only evidence for the dev transport was a hand-run boot, six phases remain, and the
+    verifier validated the mechanism before it was written. The file had **no spec at
+    all**. **Mutation-verified:** removing the transport (simulating the silent
+    fallback-to-JSON this guards) fails the test; restored, it passes.
+  - **Gates:** tsc (both projects) 0, build 0, lint 0, conventions 0, no `src/` source
+    diff; unit **69 suites / 768 passed / 3 skipped** (was 68/766/3 — the new spec);
+    integration 25 suites / 155 tests; `npm ci --dry-run` 0.
+    Coverage **rose** on every metric: 73.25→73.43 stmt, 62.40→62.44 br, 58.62→59.41 fn,
+    74.01→74.21 ln; thresholds (70/58/55/70) unchanged and met.
+  - **Boot proof, both fork branches** (independently reproduced by the verifier):
+    production → `/healthz` 200, 69 pino JSON lines, "Nest application successfully
+    started"; development → `/healthz` 200, **0** raw JSON lines, colorized ANSI.
+  - `npm audit` delta: **zero** — no pino-family package appears in the 12 pre-existing
+    findings. `thread-stream@4` adds `engines: node >=20`, the only new floor (CI 22,
+    Docker 26 — satisfied).
+  - **Next:** Phase 4 — `@types/node` 22→26, `@types/supertest` 6→7.
