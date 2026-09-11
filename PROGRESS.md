@@ -937,3 +937,162 @@ fixes for:
     genuinely uncertain evidence — a jest-30 trial showed `67 / 748 / 21`, and the tidy
     explanation for that delta was **disproved in Phase 0**, so any deviation must be
     investigated, not waved through.
+
+- **Phase 6 — `jest` 29→30, `@types/jest` 29→30.** Branch `chore/jest-30` off `main` @
+  `5ab392f`. **No `ts-jest` bump** — `ts-jest@29.4.12` already peers
+  `jest: ^29.0.0 || ^30.0.0`.
+  - **Files:** `package.json`, `package-lock.json`. **Zero changes under `src/` or
+    `test/`**, and `coverageThreshold` is numerically untouched.
+  - **THE 18-TEST MYSTERY IS SOLVED — and it was never jest.** Two prior investigations
+    (the round-1 trial, then Phase 0) chased a `67 / 748 / 21` spec count against the
+    expected `.. / .. / 3`. Phase 0 tested the `ACDP_SPEC_DIR` hypothesis and correctly
+    **disproved** it, leaving the delta unexplained and flagged as "a possible real
+    jest-30 effect." It is neither. The cause is **location-dependent fixture
+    discovery**:
+    - `src/audit/cosign.spec.ts:46` and `log-verify.parity.spec.ts:39` locate conformance
+      fixtures via `path.resolve(__dirname, '../../../agentcontextdistributionprotocol/schemas/conformance')`
+      — a `__dirname`-relative **sibling** path, with `ACDP_SPEC_DIR` as the only override.
+    - From the canonical checkout that resolves to a real sibling repo → fixtures found →
+      conformance runs → **3 skips**.
+    - From **any other location** (a git worktree, a copied tree, a CI checkout without
+      the sibling) it resolves to a nonexistent path → `describe.skip` → **1 suite + 18
+      tests skip → 21 skips**.
+    - **Proved by reproducing it on jest 29**, not jest 30: the same commit run in a
+      worktree gives `68 / 750 / 21`; re-run with `ACDP_SPEC_DIR` pointed at the real
+      fixtures it gives `69 / 768 / 3`. The variable is the tree's filesystem location —
+      which nobody had thought to vary, because it is not a variable anyone expects.
+    - **The arithmetic closes exactly.** My reproduction is `68 / 750 / 21` while the
+      number being explained was `67 / 748 / 21`. The residual is not slack: `main` was
+      `68 / 766 / 3` when that older trial ran (Phases 2-3 had not yet added their
+      specs), and `68 − 1 suite = 67`, `766 − 18 tests = 748`. Same mechanism, older
+      baseline.
+    - **This invalidated my own first measurement**, which compared jest-29-in-a-worktree
+      against jest-30-in-the-main-tree — i.e. two different test sets. Discarded and redone.
+    - **The gate strengthened the proof**: it reproduced the split on **jest 30 alone**
+      (worktree without `ACDP_SPEC_DIR` → `68/750/21`; same tree with it → `69/768/3`),
+      which removes the jest version as a variable entirely rather than merely showing
+      jest 29 can also exhibit it.
+  - **CI is NOT exposed to that skip.** `ci.yml:27-31,51-52` checks the spec repo out to
+    `acdp-spec`, sets `ACDP_SPEC_DIR` explicitly, AND sets `ACDP_REQUIRE_CONFORMANCE=1`
+    so a missing checkout is a **hard failure** rather than a silent skip — the CP-7
+    lesson, already correctly applied. The silent skip only bites local runs from a
+    non-canonical path. Pre-existing; out of scope for a jest bump, but recorded because
+    it cost two investigations.
+  - **Spec counts identical to baseline.** Unit `69 suites / 768 passed / 3 skipped`;
+    integration `25 suites / 155 passed`. The feared delta did not occur.
+  - **Open handles — I reported a LOSS OF SIGNAL as good news. Corrected.** jest 29's
+    integration run reports `CustomGC` (the NAPI binding's native GC thread); jest 30
+    reports zero (`grep -ic` → 29: 2, 30: 0). I wrote that the handle is "**gone**". It
+    is not. The gate held Node (`v26.8.1`) and the SDK (`acdp@0.8.5`) constant across
+    both runs, leaving jest as the only variable — so **nothing stopped leaking; jest 30
+    stopped reporting it.** That is a small *reduction* in `detectOpenHandles` fidelity
+    on the integration config, not a fix.
+    **The feature is narrower, not dead** — the gate planted a real leak (a listening
+    `net.Server`) and jest 30 still reported it (`● TCPSERVERWRAP`). So the plan's
+    prediction (that jest 30 would surface MORE handles) was still wrong, but the right
+    reading is "one fewer native handle is reported", not "a leak was fixed".
+  - **Coverage: only BRANCH COUNTING changed. This is NOT a coverage improvement.**
+    Global branches rise 62.44 → 66.02, which looks like good news and isn't. Measured
+    raw, both runs at an identical `69/768/3`:
+
+    | | jest 29 | jest 30 |
+    |---|---|---|
+    | statements | 3723 / 5070 | **3723 / 5070** |
+    | functions | 448 / 754 | **448 / 754** |
+    | branches | 1362 / 2181 | 1852 / 2805 |
+
+    Statements and functions are **byte-identical in both numerator and denominator** —
+    that is the control, and it proves test *execution* is unchanged and only branch
+    **instrumentation** moved. jest 30 instruments **+624 branches (+28.6%)**, of which
+    490 happen to be covered. Consistent with its istanbul upgrade now counting `?.` and
+    `??` (359 occurrences in `src` alone, and `collectCoverageFrom` includes specs).
+    Branch % moved in **70 of 165 table ROWS in BOTH directions** — 57 better, **13
+    worse**. (Counting actual FILES rather than rows: `coverage-final.json` holds **132**
+    files in both runs with identical key sets, and branch % moved in **48 of 132**. The
+    165 is 132 files + 32 directory rows + the `All files` row — my earlier "70 of 165
+    files" used the wrong noun.)
+    **The 13 regressed rows span 8 source files — I originally listed only two, a 4×
+    undercount:**
+
+    | file | jest 29 | jest 30 |
+    |---|---|---|
+    | `auth-sweeper.service.ts` | 62.50 | 50.00 |
+    | `app-config.service.ts` | 73.55 | 68.55 |
+    | `safe-federation-client.ts` | 80.00 | 78.57 |
+    | `memory-stream-hub.strategy.ts` | 56.25 | 54.16 |
+    | `redis-stream-hub.strategy.ts` | 64.28 | 52.94 |
+    | `event-processor.service.ts` | 94.38 | 93.00 |
+    | `quota.guard.ts` | 93.75 | 90.90 |
+    | `data-retention.service.ts` | 66.66 | 64.70 |
+
+    All are instrumentation artifacts, and the only threshold is `global` (no per-file,
+    no per-glob), so none is at risk. Statements/functions/lines differ in **0** rows —
+    and per-file `statementMap`/`fnMap` entry counts differ in **0 of 132 files**,
+    which is the strongest form of the control.
+    Mechanism confirmed in the lockfile: **`babel-plugin-istanbul` 6.1.1 → 8.0.0**, with
+    the pinned `istanbul-lib-instrument@5.2.1` dropped.
+    **Do not report this as improved coverage.** The thresholds still pass on merit
+    (branches 66.02 vs 58), but the aggregate rise is a measurement artifact.
+  - **jest 30 adds TWO packages with install scripts, not one — I missed the riskier
+    one.** I flagged `unrs-resolver@1.12.2` (`postinstall: napi-postinstall … check`).
+    The lockfile diff also adds **`@parcel/watcher@2.6.0`**, whose script is
+    `install: node scripts/build-from-source.js` — a **compile-from-source** step,
+    strictly higher-risk than a check script and the one that could actually fail an
+    install on an unusual platform. Benign here (prebuilt bindings for all 12 platforms
+    are in the lockfile, and it is only used by `--watch`), but it was absent from my
+    blast-radius sweep.
+  - **Correction: my Dockerfile reasoning was half-wrong.** I wrote "the production image
+    builds `--omit=dev` so it never sees jest." Only the **runner** stage does.
+    `Dockerfile:16` is `RUN npm ci --no-audit --no-fund` in the **builder** stage, which
+    installs jest 30, `unrs-resolver` and `@parcel/watcher` *with* their scripts — and it
+    runs on every PR via CI's `docker` job. The conclusion (safe) survives; the stated
+    reason did not. Verified in fact: `npm run build` → 0.
+  - **A blocked postinstall does not break jest** — verified, not assumed. In a pristine
+    clone this npm blocked both scripts (`6 packages have install scripts not yet covered
+    by allowScripts`) and `npm ci` still exited **0**, with jest running **69/768/3** in
+    that tree. The native binding arrives via `optionalDependencies`, not the script; all
+    22 `@unrs/resolver-binding-*` platforms (incl. `linux-x64-gnu`/`-musl`) are in the
+    lockfile, so CI's ubuntu `npm ci` has no cross-platform gap. No `--ignore-scripts`
+    in any workflow or the `Dockerfile`; no `.npmrc`.
+  - **`@sinonjs/fake-timers` jumped 10 → 15** (two majors). Exposure is exactly one spec,
+    `src/contexts/safe-federation-client.spec.ts:305` (`advanceTimersByTimeAsync`) — passes.
+  - **Pre-flight sweep, all zero:** removed matcher aliases (`toBeCalled*`, `lastCalledWith`,
+    `nthCalledWith`, `toReturn*`, `lastReturnedWith`, `nthReturnedWith`, `toThrowError`),
+    `genMockFromModule`, `testPathPattern`, `--filter`. All three `jest.mock()` paths
+    case-match exactly (jest 30 made these case-sensitive). Both configs set
+    `moduleFileExtensions`/`testRegex`/`testEnvironment` explicitly, so jest 30's changed
+    defaults are not in play.
+  - **Gates:** tsc 0 on `tsconfig.json` **and** `test/tsconfig.test.json` (the latter is
+    what proves `@types/jest@30` globals still satisfy every spec); build 0; lint 0;
+    conventions 0; unit 69/768/3 with coverage thresholds met; integration 25/155.
+  - **Next:** Phase 7 — `ioredis` 5→6. Needs a **CI change, not just a bump**: a `redis:7`
+    service on the integration job plus a live-Redis spec that fails loudly when
+    `CI=true` and `REDIS_URL` is unset. Both existing Redis specs mock the client away
+    and prove nothing about v6's RESP3 default.
+  - **Verify gate also confirmed, independently, what I had NOT proven:**
+    - **No production-dependency drift from the lockfile regeneration** — the classic
+      defect for a phase of this shape. Every non-dev package diffed between `5ab392f`
+      and this branch: **0 added, 0 removed, 0 version changes, 0 dev-flag flips**.
+    - **No silent test SWAP behind an equal count.** `768 == 768` could hide a
+      substitution, so the gate exported `--json` from both jest versions on identical
+      trees and compared `file :: fullName :: status` triples: `771` vs `771`,
+      **0 only-in-29, 0 only-in-30**. Same tests, same statuses.
+    - **The suite still has teeth under jest 30** — three source mutations, all caught:
+      `log-verify.ts` §5.1 node-hash prefix `0x01→0x02` → 3 suites / 8 tests failed;
+      `tenantOf()` → always `DEFAULT_TENANT_ID` → 4 failed; `ingest.service.ts:103` HMAC
+      check → `if (false)` → 2 unit + **1 integration suite / 2 tests** failed (so the
+      integration suite has teeth too, not just the unit suite).
+    - **`@types/jest@30` did not loosen type checking.** It still uses the
+      DefinitelyTyped two-parameter `jest.fn<TReturn, TArgs>` shape, so jest 30's
+      advertised strict `CalledWith` inference does **not** apply — but that is
+      **identical under `@types/jest@29`**, i.e. pre-existing looseness, not a
+      regression. Real type errors are caught identically under both (`TS2345 ×2`,
+      `TS2322 ×1`). No `jest.Mocked`/`jest.SpyInstance`/`expect.extend` in the repo.
+    - **The one jest 30 change that could create FALSE PASSES was tested empirically** —
+      "non-enumerable properties excluded from object matchers". 45 `toMatchObject` call
+      sites, `message:` inside them → 0, and the asserted props are own-enumerable. Under
+      jest 30 both `toMatchObject({hidden:'WRONG'})` on a non-enumerable prop and
+      `toMatchObject({message:'WRONG'})` on an Error still **fail**. No teeth lost.
+    - `npm ls jest` → single `jest@30.5.1`, `ts-jest` deduped onto it, all `@jest/*` at
+      30.x, no 29.x stragglers. Snapshots: **0 total**, so every snapshot-format change
+      in jest 30 is inert. Docs carry no stale jest version strings.
