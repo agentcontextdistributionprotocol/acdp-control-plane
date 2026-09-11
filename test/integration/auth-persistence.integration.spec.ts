@@ -13,7 +13,7 @@ import { runRevocationRepositoryContract } from '../../src/auth/revocation-repos
 import { PostgresChallengeRepository } from '../../src/auth/postgres-challenge.repository';
 import { PostgresRevocationRepository } from '../../src/auth/postgres-revocation.repository';
 import { DatabaseService } from '../../src/db/database.service';
-import { TEST_DB_URL } from '../helpers/test-db';
+import { TEST_DB_URL, truncateAll } from '../helpers/test-db';
 import * as schema from '../../src/db/schema';
 import { runMigrations } from '../../src/db/migrate';
 
@@ -39,8 +39,17 @@ afterAll(async () => {
   await pool.end();
 });
 
+// Delegate to the shared helper rather than naming tables here. This spec is the
+// only writer of the auth tables (AUTH_PERSISTENCE defaults to `memory`, and
+// test-app.ts never overrides it), and it does NOT go through createTestApp, so
+// `truncateAll` was never reaching it. Its own literal list had drifted to cover
+// only 2 of the 4 auth tables — omitting `revocation_cursors`, which is what made
+// `getRevocationCursor returns null before any cursor is set` fail whenever this
+// spec ran twice against one database, or ran first in a full suite (jest's
+// sequencer orders previously-failed specs first, so one local failure would
+// reorder the next full run into failing too).
 async function clean() {
-  await pool.query('TRUNCATE TABLE auth_challenges, revoked_tokens');
+  await truncateAll(pool);
 }
 
 describe('PostgresChallengeRepository (integration)', () => {
