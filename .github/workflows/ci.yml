@@ -16,6 +16,11 @@ jobs:
   unit:
     name: lint + tsc + jest (unit, coverage-gated)
     runs-on: ubuntu-latest
+    # A hung job otherwise runs to GitHub's 6-hour default. This repo has already
+    # shipped one hang-after-green defect (a leaked ioredis client kept the event
+    # loop alive after jest reported), so every job gets an explicit ceiling: a
+    # hang should fail in minutes and say so, not silently occupy a runner.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - name: Check out the ACDP spec (pinned)
@@ -85,6 +90,7 @@ jobs:
     # "jest integration (Postgres + Redis)". The job does now also run Redis.
     name: jest integration (Postgres)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -135,6 +141,7 @@ jobs:
     # nothing is published; the gha cache is shared with release builds.
     name: docker build (no push)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - name: Set up Buildx
