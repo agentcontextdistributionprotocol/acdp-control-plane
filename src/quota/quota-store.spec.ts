@@ -37,6 +37,7 @@ describe('RedisQuotaStore', () => {
   it('returns count + ttl from a successful eval', async () => {
     const fakeRedis = {
       eval: jest.fn().mockResolvedValue([5, 42]),
+      quit: jest.fn().mockResolvedValue('OK'),
     };
     const s = new RedisQuotaStore(fakeRedis);
     const r = await s.increment('k', 60);
@@ -48,6 +49,7 @@ describe('RedisQuotaStore', () => {
   it('handles string return types from ioredis', async () => {
     const fakeRedis = {
       eval: jest.fn().mockResolvedValue(['7', '13']),
+      quit: jest.fn().mockResolvedValue('OK'),
     };
     const s = new RedisQuotaStore(fakeRedis);
     const r = await s.increment('k', 60);
@@ -59,6 +61,7 @@ describe('RedisQuotaStore', () => {
     const logs: string[] = [];
     const fakeRedis = {
       eval: jest.fn().mockRejectedValue(new Error('CONNREFUSED')),
+      quit: jest.fn().mockResolvedValue('OK'),
     };
     const logger = { warn: (m: string) => logs.push(m) };
     const s = new RedisQuotaStore(fakeRedis, logger);
@@ -68,8 +71,33 @@ describe('RedisQuotaStore', () => {
   });
 
   it('fails open on malformed eval result', async () => {
-    const fakeRedis = { eval: jest.fn().mockResolvedValue(null) };
+    const fakeRedis = {
+      eval: jest.fn().mockResolvedValue(null),
+      quit: jest.fn().mockResolvedValue('OK'),
+    };
     const s = new RedisQuotaStore(fakeRedis);
     expect(await s.increment('k', 60)).toEqual({ count: 0, ttlSeconds: 0 });
+  });
+
+  // close() exists because an unclosed ioredis client keeps Node's event loop
+  // alive — that is what hung the integration suite when REDIS_URL reached CI.
+  it('close() quits the client', async () => {
+    const fakeRedis = {
+      eval: jest.fn(),
+      quit: jest.fn().mockResolvedValue('OK'),
+    };
+    await new RedisQuotaStore(fakeRedis).close();
+    expect(fakeRedis.quit).toHaveBeenCalledTimes(1);
+  });
+
+  it('close() never throws, so a failing transport cannot block shutdown', async () => {
+    const logs: string[] = [];
+    const fakeRedis = {
+      eval: jest.fn(),
+      quit: jest.fn().mockRejectedValue(new Error('ECONNRESET')),
+    };
+    const s = new RedisQuotaStore(fakeRedis, { warn: (m: string) => logs.push(m) });
+    await expect(s.close()).resolves.toBeUndefined();
+    expect(logs[0]).toMatch(/ECONNRESET/);
   });
 });

@@ -228,10 +228,18 @@ vars. See [CONFIGURATION.md](./CONFIGURATION.md#startup-validation).
 ### Integration tests fail with `ECONNREFUSED localhost:5433`
 
 The test Postgres isn't running. `globalSetup` starts it via
-`docker compose -f docker-compose.test.yml up -d postgres-test`; if Docker isn't
-running, start it manually and keep it up:
+`docker compose -f docker-compose.test.yml up -d postgres-test redis-test`; if
+Docker isn't running, start them manually and keep them up:
 ```bash
-docker compose -f docker-compose.test.yml up -d postgres-test
+docker compose -f docker-compose.test.yml up -d postgres-test redis-test
 KEEP_TEST_DB=1 npm run test:integration
 ```
+
+### The live-Redis spec says "no Redis at redis://127.0.0.1:6380 — SKIPPING"
+
+`test/integration/redis-live.integration.spec.ts` needs the `redis-test`
+service (published on **6380**, not 6379, so it cannot collide with your own
+local Redis). Start it with the command above. The skip is local-only by
+design — in CI the spec fails loudly rather than skipping, because a
+wire-protocol spec that silently skips reports green while proving nothing.
 </content>

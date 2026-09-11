@@ -59,6 +59,12 @@ jobs:
           retention-days: 14
 
   integration:
+    # DO NOT RENAME. This exact string is a REQUIRED STATUS CHECK in main's
+    # branch protection (`contexts: ["jest integration (Postgres)", ...]`).
+    # Renaming it means the required check never reports and every PR is
+    # blocked forever with "the base branch policy prohibits the merge" —
+    # which is exactly what happened when this job was briefly renamed to
+    # "jest integration (Postgres + Redis)". The job does now also run Redis.
     name: jest integration (Postgres)
     runs-on: ubuntu-latest
     services:
@@ -75,8 +81,24 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # ioredis 6 defaults to RESP3. Both Redis unit specs mock the client
+      # away, so ONLY a live server proves the wire protocol still works.
+      # This must be a GitHub Actions service, not a docker-compose service:
+      # test/setup/global-setup.ts skips docker compose entirely when CI is
+      # set, so a compose-only Redis would never exist in CI and the live
+      # spec would skip forever while reporting green (the CP-7 failure).
+      redis:
+        image: redis:7
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5433/acdp_control_plane_test
+      REDIS_URL: redis://localhost:6380
       NODE_ENV: test
       CI: 'true'
     steps:

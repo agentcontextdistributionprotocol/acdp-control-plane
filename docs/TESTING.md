@@ -62,14 +62,27 @@ npm run test:integration -- ingest.integration # single spec (regex against path
 ### Database lifecycle
 
 - `test/setup/global-setup.ts` runs `docker compose -f docker-compose.test.yml up
-  -d postgres-test --wait` (skipped when `CI` is set — rely on a CI service
-  container instead), waits for connectivity, and points `DATABASE_URL` at the
-  test DB.
+  -d postgres-test redis-test --wait` (skipped when `CI` is set — rely on CI
+  service containers instead), waits for connectivity, and points `DATABASE_URL`
+  at the test DB.
+- **Redis is now a second prerequisite.** `redis-test` is published on **6380**
+  (not 6379, so it cannot collide with a developer's own local Redis) and backs
+  `test/integration/redis-live.integration.spec.ts`, which drives a REAL ioredis
+  client because both Redis unit specs mock the client away and therefore prove
+  nothing about the wire protocol (ioredis 6 speaks RESP3 by default).
+  That spec's skip policy is deliberate:
+  - `CI` set + `REDIS_URL` set → runs (the `integration` job supplies both)
+  - `CI` set + `REDIS_URL` unset → **fails loudly**, never skips
+  - local, no Redis on 6380 → skips, with a message telling you how to start one
+
+  Note `REDIS_URL` is NOT exported by `global-setup`: setting it process-wide
+  would flip `QuotaModule` onto the Redis store for every other spec. The live
+  spec connects on its own.
 - `test/setup/global-teardown.ts` tears the container down **unless** `CI` or
   `KEEP_TEST_DB` is set — keep it up for fast re-runs:
 
   ```bash
-  docker compose -f docker-compose.test.yml up -d postgres-test
+  docker compose -f docker-compose.test.yml up -d postgres-test redis-test
   KEEP_TEST_DB=1 npm run test:integration
   ```
 
