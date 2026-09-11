@@ -619,4 +619,3 @@ Key metrics (all constructed in `InstrumentationService`):
 
 Plus Node.js default metrics (`process_cpu`, gc, memory, event-loop lag, etc.)
 via `collectDefaultMetrics()`.
-</content>

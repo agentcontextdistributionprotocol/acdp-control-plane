@@ -275,4 +275,3 @@ seal once per event in `log_inclusion_audits`.
 - `TOKEN_ISSUANCE_ENABLED=true` with `AUTH_PERSISTENCE=memory` (state not shared).
 - `WITNESS_QUORUM_ENABLED=true` with empty `WITNESS_QUORUM_TRUSTED` (no
   cosignature can ever count toward quorum).
-</content>

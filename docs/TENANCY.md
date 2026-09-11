@@ -123,4 +123,3 @@ See [INGEST.md](./INGEST.md#registry-trust--enrollment).
 `test/integration/tenancy-isolation.integration.spec.ts` exercises cross-tenant
 read isolation and the header-spoofing rejections. Unit coverage lives in
 `src/tenant/*.spec.ts` and `src/auth/auth.guard.tenant.spec.ts`.
-</content>

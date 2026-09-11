@@ -242,7 +242,6 @@ service (published on **6380**, not 6379, so it cannot collide with your own
 local Redis). Start it with the command above. The skip is local-only by
 design — in CI the spec fails loudly rather than skipping, because a
 wire-protocol spec that silently skips reports green while proving nothing.
-</content>
 
 ## Build / TypeScript
 
@@ -318,8 +317,9 @@ node: ^22.22.3 || ^24.15.0 || >=26.0.0
 which **excludes Node 23 and 25 entirely**, plus any Node 22 below 22.22.3. This repo
 declares no `engines` field of its own, so npm reports the transitive constraint directly.
 
-Where it stands today: CI runs Node 22 (currently v22.23.2, above the floor), the Docker
-images are `node:26`, and both satisfy the range. If you see this warning locally you are
-on an excluded version — installs and tests still work, but moving to Node 22.22.3+, 24.15+
-or 26+ silences it. Only if you have `engine-strict=true` in your own npm config does the
-warning become a hard install failure.
+Where it stands today: CI and the Docker images both run **Node 26** (`node:26-bookworm-slim`
+in the Dockerfile, `node-version: '26'` in every workflow), which satisfies the range. CI ran
+Node 22 until issue #137's finalization pass raised it so the pipeline validates the same major
+that actually ships. If you see this warning locally you are on an excluded version — installs
+and tests still work, but moving to Node 22.22.3+, 24.15+ or 26+ silences it. Only if you have
+`engine-strict=true` in your own npm config does the warning become a hard install failure.

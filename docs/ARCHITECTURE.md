@@ -281,4 +281,3 @@ only on full success.
 - **Dev sandbox**: when `WEBHOOK_SECRET` is empty, HMAC verification is
   **skipped** (the config service fails startup in production). Never use in
   production.
-</content>

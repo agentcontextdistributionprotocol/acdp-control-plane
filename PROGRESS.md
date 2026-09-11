@@ -694,10 +694,10 @@ fixes for:
     — which registers its own SIGTERM/SIGINT handler calling `close()` — *and*
     `src/main.ts:81-82` registers manual `process.on('SIGINT'|'SIGTERM', …)` handlers that
     also call `app.close()`, so `onModuleDestroy` runs twice. Unrelated to dependencies.
-    Deserves its own issue.
+    Deserves its own issue. **Filed as #158** during the §4 finalization pass, with a
+    measured repro: the process exits **1**, not 0, and `stopTelemetry()` never runs.
   - **Next:** Phase 2 — align the `express` declaration to `5.2.1` + add the missing
     `/agents/*did` route-shape test.
-||||||| parent of b214486 (chore(deps): align the express declaration with the version actually running)
 - **2026-09-11 — Phase 2 (align `express` declaration to 5.2.1, issue #137): DONE.**
   1 verify round, **PASS** + 2 LOW findings (both closed) + 1 INFO. Opus-tier.
   - **Files:** `package.json` (one line), `package-lock.json`,
@@ -1529,3 +1529,63 @@ fixes for:
   - **Process error worth recording:** I edited this repo while the Phase 9 verifier was
     running in it, which dirtied its working tree and made it report an unexplained
     concurrent writer. Harmless here, but a verifier's tree should be left alone.
+
+- **2026-09-11 — §4 finalization, ROUND 2 (cumulative-diff verify: `GAPS` → closed): DONE.**
+  Fresh Opus verifier over the whole `e07fe6e~1..HEAD` range returned **`GAPS` — 4 items**,
+  all closed here. Verifier tier: Opus (the feature as a whole is reversible — no one-way
+  door — so Fable was not pulled in).
+  - **Gap 1 — a committed git conflict marker.** `PROGRESS.md:700` carried a bare diff3
+    `||||||| parent of b214486` line with no matching `<<<<<<<`/`=======`/`>>>>>>>`. It was
+    introduced by Phase 2 (`f4cdae4`, PR #143), **merged to `main`**, and survived seven
+    later phases plus a §4 pass whose own notes claimed a tracked-file sweep. Removed;
+    verified no content was duplicated around it (single Phase 2 entry) and that it was the
+    only such marker in the repo.
+  - **Gap 2 — `docs/TROUBLESHOOTING.md` falsified by our own change.** It still read "CI runs
+    Node 22 (currently v22.23.2)" after the same finalization commit moved all three pins to
+    `'26'`. Fixed, and `ASSUMPTIONS.md`'s "Measured, not assumed" block — which a RESOLVED
+    entry points readers at — now dates its measurements as pre-§4 rather than current.
+    Same failure class that seeded #137's false premises: a doc describing an architecture
+    the repo no longer has.
+  - **Gap 3 — the §4 seam spec was itself defective** (found independently while the verifier
+    ran; it confirmed the same). Two distinct bugs:
+    1. `:46` defaulted `REDIS_URL` to a hardcoded URL outside CI, so `:103`'s
+       `REDIS_URL ? describe : describe.skip` was **always truthy** — the documented
+       "local, no Redis → skip" branch and its instruction `console.warn` were **unreachable
+       dead code**. The docblock claimed to mirror `redis-live.integration.spec.ts`'s policy;
+       the reachability probe that policy depends on was never implemented.
+    2. Every test called `await close()` as its **last statement**, so a failed assertion
+       skipped cleanup and leaked a reconnecting ioredis client.
+    Combined effect, **measured**: against a closed port the suite ran `1 failed / 3 passed`
+    and then **never exited** (observed >600s; two such processes were still alive hours
+    later and had to be killed). No workflow declared `timeout-minutes`, so in CI that burns
+    to GitHub's **6-hour** default. The spec written to prevent a hang-after-green reproduced
+    exactly that in its own failure path.
+    Fixed with a real `beforeAll` probe (`lazyConnect`, `maxRetriesPerRequest: 1`, and the
+    load-bearing `retryStrategy: () => null`), cleanup moved into `withApp`'s `finally` and
+    time-bounded with a `disconnect()` fallback, and `clientOf` made non-vacuous — a rename
+    of the private `redis` field now throws instead of turning `toBeUndefined()` into a
+    tautology. **Re-measured:** unreachable Redis → skips and **exits 0 in 7s**; defect
+    reintroduced → `1 failed / 3 passed`, **jest exit code 1**, exits in 6s.
+    Defence in depth: every job in `ci.yml`/`release.yml` now declares `timeout-minutes`.
+    Job `name:` lines verified **byte-identical to `origin/main`** so branch protection's
+    required contexts still match.
+  - **Gap 4 — two dead devDependencies.** `ts-loader` and `tsconfig-paths` had zero
+    references outside `package.json`. `tsconfig-paths` became provably inert once Phase 8
+    deleted `baseUrl` (the repo declares no `paths`); `ts-loader` served only
+    `nest build --webpack`, which `nest-cli.json` never enables. Removed — **648 lines of
+    lockfile**, and `webpack@5.107.2` went with them (CLI 12 declares webpack an *optional*
+    peer, so `ts-loader` was the only thing pulling it in). Both survived Phase 1's and
+    Phase 4's "delete, don't bump" sweeps.
+  - **Also fixed (pre-existing, not a verifier gap):** all nine `docs/*.md` ended with a
+    stray literal `</content>`, and `docs/README.md` also had `</invoke>` — leaked tool-call
+    fragments from `e3d079f` (#62). Harmless at EOF, but the §4 pass appended ~80 lines after
+    `TROUBLESHOOTING.md`'s, leaving it mid-document. All ten removed.
+  - **Tooling note:** `npx prettier --write` was reformatting specs to double quotes — this
+    repo has **no prettier config at all**, so prettier applies its own defaults against a
+    single-quote codebase. Reverted and hand-edited in-style. Do not run bare `prettier`
+    here.
+  - **Gates, all from a clean tree:** tsc 0 (both projects) · lint 0 · conventions 0 ·
+    `check:build` passed (133 `.js`, both builds agree) · unit **69 suites / 770 passed /
+    3 skipped** · integration **27 suites / 162 passed**, exit 0.
+  - **Next:** push, PR (`Refs #137`, not `Closes` — #155 scope is deliberately undelivered),
+    CI on Node 26 (first run), merge. Then #158 (SIGTERM) as its own PR.
