@@ -18,3 +18,9 @@ temp/
 CLAUDE.md
 .claude/
 memory/
+
+# TypeScript incremental build state (`incremental: true` in tsconfig.json).
+# `nest build` keeps this under dist/, but a direct `tsc -p tsconfig.build.json`
+# writes it to the repo root, where it is otherwise untracked and easy to commit
+# by accident.
+*.tsbuildinfo

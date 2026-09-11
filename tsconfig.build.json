@@ -1,5 +1,17 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    // `rootDir` moves the DEFAULT .tsbuildinfo path: tsc resolves it as
+    // resolve(outDir, relative(rootDir, <config>)), which with rootDir=./src
+    // lands it at the REPO ROOT instead of inside dist/. nest-cli.json sets
+    // `deleteOutDir: true`, so dist/ gets wiped while the stale build state
+    // survives -- tsc then believes everything is up to date and emits
+    // NOTHING, exiting 0. Result: every build after the first produces no
+    // dist/ at all and `nest start` dies with MODULE_NOT_FOUND. Pinning the
+    // file back inside outDir makes the state share dist/'s lifecycle again.
+    "tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo"
+  },
   "exclude": [
     "node_modules",
     "dist",

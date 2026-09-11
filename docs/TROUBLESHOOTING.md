@@ -243,3 +243,63 @@ local Redis). Start it with the command above. The skip is local-only by
 design — in CI the spec fails loudly rather than skipping, because a
 wire-protocol spec that silently skips reports green while proving nothing.
 </content>
+
+## Build / TypeScript
+
+### `npm run start` fails with `Cannot find module '.../dist/main'`, but `npm run build` exited 0
+
+Almost certainly stale incremental build state that escaped `dist/`.
+
+`tsconfig.build.json` sets `rootDir: "./src"` (so emit lands at `dist/main.js` rather
+than `dist/src/main.js`). A side effect: TypeScript derives the default `.tsbuildinfo`
+path as `resolve(outDir, relative(rootDir, <config>))`, which with that `rootDir` points
+at the **repo root**, not `dist/`. `nest-cli.json` sets `deleteOutDir: true`, so `dist/`
+is wiped on every build while the build state survives — tsc then concludes the program
+is up to date and **emits nothing, exiting 0**. The first build looks fine; every build
+after it produces no `dist/` at all.
+
+The config pins `tsBuildInfoFile` back inside `outDir` to prevent this, so it should not
+recur. If it does:
+
+```bash
+rm -f *.tsbuildinfo && rm -rf dist && npm run build
+npm run check:build      # builds TWICE and asserts the emit shape
+```
+
+`npm run check:build` (also a CI step) is the guard: it checks `dist/main.js` and
+`dist/db/migrate.js` exist, that there is no `dist/src/`, that no stray `.tsbuildinfo`
+sits at the repo root, and that `dist/main.js` actually loads. It builds twice because a
+single build cannot detect this failure mode.
+
+### `error TS5107: Option 'moduleResolution=node10' is deprecated`
+
+Expected under TypeScript 6 and silenced by `ignoreDeprecations: "6.0"` in
+`tsconfig.json`. If you removed that line, put it back. Note TS 7.0 **removes** both the
+option and the escape hatch (`TS5108`) — see the TODO in `tsconfig.json` for the
+migration options.
+
+### Two TypeScript versions in `npm ls typescript`
+
+Cosmetic. `@nestjs/cli` v11 declares `typescript` as an exactly-pinned direct dependency,
+so npm nests its own copy under `node_modules/@nestjs/cli/node_modules/typescript`
+alongside the repo's top-level one. **The nested copy is never loaded.** `@nestjs/cli`
+resolves the compiler with `process.cwd()` first:
+
+```js
+// node_modules/@nestjs/cli/lib/compiler/typescript-loader.js
+const tsBinaryPath = require.resolve('typescript', {
+  paths: [process.cwd(), ...this.getModulePaths()],
+});
+```
+
+and npm scripts run with cwd = package root, so `nest build` uses the **top-level**
+TypeScript — the same compiler as `tsc`, `ts-jest`, `ts-node` and `eslint`. To confirm on
+any given checkout:
+
+```bash
+node -e "const {TypeScriptBinaryLoader}=require('@nestjs/cli/lib/compiler/typescript-loader');
+         console.log(new TypeScriptBinaryLoader().load().version)"
+```
+
+Don't infer the compiler in use from `npm ls` — it reports what is *installed*, not what
+is *loaded*.

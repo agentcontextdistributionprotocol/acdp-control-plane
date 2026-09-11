@@ -16,6 +16,7 @@ npm test -- -t "rejects spoofed tenant"    # filter by test name
 npm run test:watch                # watch mode
 npm run test:cov                  # coverage → coverage/ (thresholds enforced)
 npm run check:conventions         # CI grep rules (no console.*, process.env, raw throws)
+npm run check:build               # build emit shape (builds twice; catches silent no-emit)
 ```
 
 Coverage thresholds live in the `jest.coverageThreshold` block in `package.json`

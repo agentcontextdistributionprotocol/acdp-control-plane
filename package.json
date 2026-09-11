@@ -14,6 +14,7 @@
     "migrate:prod": "node dist/db/migrate.js",
     "lint": "eslint \"{src,test}/**/*.ts\" --max-warnings 0",
     "check:conventions": "bash scripts/ci-conventions.sh",
+    "check:build": "bash scripts/check-build-emit.sh",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -71,7 +72,7 @@
     "ts-loader": "^9.6.2",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.7.2"
+    "typescript": "^6.0.3"
   },
   "jest": {
     "moduleFileExtensions": [
