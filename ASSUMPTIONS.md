@@ -214,9 +214,11 @@
   dependency tree has had a non-trivial opinion about Node. Note what that range
   **excludes**: Node **23** and Node **25** entirely, plus every Node 22 below 22.22.3.
   The repo itself declares **no `engines` field at all**, so nothing records this.
-- **Measured, not assumed:**
-  - CI (`node-version: '22'`) resolves to **v22.23.2**, above the `22.22.3` floor. Safe
-    today, and safe going forward — the 22.x line only moves forward from here.
+- **Measured, not assumed** (measurements taken while CI was still pinned to Node 22;
+  the §4 pass has since moved all three pins to `'26'` — see the RESOLVED status below,
+  and `docs/TROUBLESHOOTING.md` for the current state):
+  - CI (then `node-version: '22'`) resolved to **v22.23.2**, above the `22.22.3` floor.
+    Safe at the time, and safe going forward — the 22.x line only moves forward.
   - Docker (`node:26-bookworm-slim`) and this workstation (v26.8.1) satisfy `>=26.0.0`.
   - On an excluded version (`node:23-bookworm-slim`, v23.11.1), `npm ci` emits
     `npm warn EBADENGINE Unsupported engine … @angular-devkit/schematics@22.1.5` and
@@ -249,3 +251,32 @@
   with `npm ci` still exiting 0; that is documented in `docs/TROUBLESHOOTING.md` under
   "`npm warn EBADENGINE Unsupported engine` on install". Revisit only if someone wants a
   hard floor enforced at install time.
+
+## Removing `ts-loader` and `tsconfig-paths` rather than keeping them for a possible webpack build (§4, issue #137)
+- **Plan:** `plans/dep-migrations-137.md`
+- **Assumed:** nothing in this repo builds through webpack, now or in the near future, so
+  the two devDependencies that exist only to serve that path are dead weight rather than
+  a capability held in reserve.
+- **Measured, not assumed:**
+  - `git grep` over the whole tree finds `ts-loader`/`tsconfig-paths` **only** in
+    `package.json` itself and in plan/PROGRESS prose describing CLI peer changes. No
+    source, config, script, workflow or Dockerfile reference.
+  - `nest-cli.json` sets only `deleteOutDir`; it never enables `"webpack": true`, and no
+    npm script passes `--webpack`. `nest build` therefore runs tsc.
+  - No tsconfig in the repo declares `paths`, and `baseUrl` was deleted in Phase 8 — so
+    `tsconfig-paths` cannot be doing anything even in principle.
+  - Removing both dropped **648 lines** of `package-lock.json` and took `webpack@5.107.2`
+    with it: `npm ls webpack` goes from a populated tree to `(empty)`. `@nestjs/cli@12`
+    declares webpack an **optional** peer, so `ts-loader` was the sole installer.
+  - `npm run check:build` still emits **133** `.js` files across both builds, unchanged.
+- **Chose:** delete both, consistent with the "delete, don't bump" ruling this plan already
+  applied to `uuid`, `nestjs-pino`, `pino-http` (Phase 1) and `supertest`/`@types/supertest`
+  (Phase 4). Those sweeps simply missed these two.
+- **Alternatives:** keep them so `nest build --webpack` stays available without a reinstall.
+  Rejected: Phase 9 recorded that path as broken and unused, and carrying a whole webpack
+  toolchain in the lockfile to preserve an untested build mode is a supply-chain and
+  install-time cost for no current benefit. Re-adding is one `npm i -D` away.
+- **Blast radius if wrong:** low and immediately visible. If anyone wants a webpack build,
+  `nest build --webpack` fails at once with a missing-loader error rather than degrading
+  silently. Nothing in CI, Docker or the runtime touches either package.
+- **Status:** UNCONFIRMED
