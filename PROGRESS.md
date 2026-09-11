@@ -469,3 +469,179 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
 pushed feat/expose-service-version 734d7bd
 PR #134 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/134
 merged #134
+
+## Plan: dep-migrations-137 (issue #137 — split of closed PR #133)
+
+Plan: `plans/dep-migrations-137.md` (gitignored). Repo map lives in that file's
+"Repo map" section — later phases read it instead of re-scanning.
+
+**PR strategy: one PR per phase, sequential** (ten phases after re-verify round 1 — see
+table; Phase 0 may fold into Phase 1's PR if it needs no code change). Bundling is exactly what made
+#133 unreviewable and unmergeable, and the issue itself asks for individual review. One
+PR per dependency migration keeps each atomically revertable, so a regression traced to
+(say) ioredis 6 in production is a single clean `git revert` rather than archaeology
+across a mixed bump. Each PR goes through `/ship` in full before the next phase starts.
+
+**Phases (least-risky-first):**
+
+| # | Phase | Risk |
+|---|---|---|
+| 0 | Establish a green integration baseline (prerequisite, no bump) | Blocking — 5 phases gate on `test:integration`, which does not run locally today |
+| 1 | Prune dead deps: `uuid`, `nestjs-pino`, `pino-http` | Lowest — zero imports anywhere |
+| 2 | `express` → `5.2.1` (declaration alignment) | Low — no route changes; needs new `/agents/*did` test |
+| 3 | `pino` 9 → 10 | Low — only 10.0.0 break is dropping Node 18 |
+| 4 | `@types/node` 22 → 26, `@types/supertest` 6 → 7 | Low-medium — `Buffer` generics across 34 files |
+| 5 | `eslint` 9 → 10, `eslint-config-prettier` 9 → 10, `@typescript-eslint` → 8.70 | Low — config pre-tested unmodified under eslint 10 |
+| 6 | `jest` 29 → 30, `@types/jest` 30 | Medium — thin *functions* coverage margin; fake-timers jump 2 majors |
+| 7 | `ioredis` 5 → 6 | Medium-high runtime — RESP3 default; unit spec mocks client away |
+| 8 | `typescript` 5.7 → 6.0.3 | Highest — 4 config-level breaks incl. a silent emit-path move |
+| 9 | `@nestjs/cli` + `@nestjs/schematics` 11 → 12 (build tooling only) | Medium — not throttler-blocked; removes the TS compiler split |
+| — | **NestJS 12 (runtime)** | **BLOCKED upstream — no phase** |
+
+**Corrections to issue #137 carried by this plan** (all verified empirically, not assumed):
+1. NestJS 12 is hard-blocked by `@nestjs/throttler` (no v7; peers cap at `@nestjs/common ^11`).
+   `npm install` with `@nestjs/*@^12` fails ERESOLVE on exactly this. The issue blamed a
+   TypeScript/`@typescript-eslint` conflict instead.
+2. There is no `@typescript-eslint` v9. Latest 8.70.0 is a MINOR bump that already supports
+   `eslint ^10` and `typescript <6.1.0`.
+3. The app ALREADY runs Express 5 — `@nestjs/platform-express@11.2.3` pins `express@5.2.1`
+   + `path-to-regexp@8.4.2` as dependencies; the repo's own `express@^4.21.0` is an
+   unreferenced shadow. The routes were migrated to `*ctxId`/`*did` syntax in `03586d1`.
+   The issue's `:ctxId*`/`:did*` strings came from stale `CLAUDE.md:104-105`.
+4. `uuid` is never imported (the `uuid()` hits in `src/db/schema.ts` are Drizzle's column
+   helper). uuid v12 dropped CommonJS, so bumping would be harmful — deletion is correct.
+5. Missed by the issue: `nestjs-pino` + `pino-http` are also dead, and `CLAUDE.md:28` /
+   `docs/README.md:79` document a `nestjs-pino` architecture the repo does not have.
+
+**Baseline recorded (2026-09-10, `main` @ 5323edd, clean tree):** `tsc --noEmit`, lint
+(`--max-warnings 0`), and `check:conventions` all exit 0; unit suite 68 suites / 766
+passed / 3 skipped / 769 total in ~22.5s. Pre-existing warning "A worker process has
+failed to exit gracefully" — a jest-29 teardown leak, and a known hazard for Phase 6.
+
+### Phase checkpoint log
+
+
+**Plan re-verification (fresh Opus agent, round 1): GAPS → all closed.** The pass
+independently reproduced and confirmed the NestJS-12 blocker, the Express-5 shadow-dep
+story, the pino/ioredis/tsconfig surfaces, the zero removed-jest-30 matchers, commit
+`03586d1`, and the unit baseline byte-for-byte. It then found, and the plan now carries
+fixes for:
+- **BLOCKER:** Phase 8 patched `tsconfig.build.json`'s `rootDir` but missed
+  `test/tsconfig.test.json`, which `include`s `../src/**` with no `rootDir` — measured
+  **70-72 `TS6059`** under TS 6.0.3, which fire even under `--noEmit` and would also break
+  ts-jest's integration transform. Fixed by adding `"rootDir": ".."` (verified: 0 errors).
+- **Wrong causal claim:** Phase 3's blocker is `pino-http@10.5.0` (constrains `pino ^9`),
+  **not** `nestjs-pino@4.6.1`, which already permits pino 10. The "three-package lockstep"
+  argument was wrong; the action (delete all three) survives.
+- **False dependency edge:** Phase 5 → Phase 8 does not exist — the *currently declared*
+  `@typescript-eslint@8.68`/parser `8.63` already peer `typescript <6.1.0`. Edge removed;
+  4→6 downgraded to soft ordering.
+- **`CLAUDE.md` is gitignored and untracked**, so Phases 1 and 2 listed doc fixes that
+  could never reach a PR. Reclassified as local-only hygiene. Root cause worth keeping:
+  this shell's `grep` is a **gitignore-respecting wrapper**, which is why the original
+  repo-wide "zero hits" sweeps silently skipped it — use `command grep` for exhaustiveness.
+- **Unmeasurable gates:** no integration baseline existed and the suite does not run here
+  (port 5433 is held by another project's container; `docker compose --wait` *succeeds*,
+  so the symptom differs from the documented hazard). Five phases gated on it → new
+  **Phase 0**.
+- **Missing coverage:** `@nestjs/cli` + `@nestjs/schematics` 11→12 are 2 of #133's 18
+  packages, are **not** throttler-blocked (neither peers `@nestjs/core`/`common`), and had
+  no phase → new **Phase 9**, which also retires Phase 8's compiler-divergence workaround.
+- **Trivially-passing criteria** rewritten: Phase 8's `grep -c '"types"'` (passed on
+  `"types": []`), Phase 8's docker-build claim (proves nothing under option (a); CI only
+  builds, never runs `HEALTHCHECK`), Phase 5's `--print-config` rule count (183 entries, 4
+  non-off — not decidable) now a byte-diff against a recorded baseline.
+- **Measured corrections:** jest 30 coverage moves `73.25|62.40|58.62|74.01` →
+  `73.03|65.77|58.09|73.78` — **branches go UP**; the thin margin is *functions* (58.09 vs
+  threshold 55). And Phase 6's 766-test gate must be re-recorded with `ACDP_SPEC_DIR` set,
+  since a jest-30 trial showed 748/21-skipped purely from the conformance suite skipping.
+- Plus ~15 corrected `file:line` citations (most `package.json` line numbers in the phase
+  Files lists were off by 2-4).
+
+- **2026-09-10 — Phase 0 (green integration baseline, issue #137): DONE.** 1 verify round,
+  `GAPS` → all 7 closed → re-verified green. Opus-tier (test-infrastructure change, no
+  `src/` file touched, fully reversible — Fable not warranted).
+
+  **Planned as a no-code phase; it found two pre-existing defects and fixed one in code.**
+
+  1. **Host port 5433 is owned by a second Docker daemon.** `colima` is the active
+     context and holds this repo's compose container; a Docker Desktop daemon (socket
+     unreachable from this sandbox) holds an unrelated `aitp-*` project's container on
+     5433. Ours starts, reports Healthy, publishes `0.0.0.0:5433`, and is silently
+     shadowed. Proof: one endpoint, two answers — `docker exec` into our container lists
+     `acdp_control_plane_test`, a host connect to `localhost:5433` lists
+     `aitp_control_plane_test`. **Not fixed** (another project's container, and lane
+     sessions are live) — worked around on port 55433 via `DATABASE_URL`, which
+     `global-setup.ts` already honors. See `ASSUMPTIONS.md`.
+  2. **`truncateAll()` had drifted 5 tables behind the schema** (`agent_capabilities`,
+     `auth_challenges`, `issuance_ledger`, `revocation_cursors`, `revoked_tokens` — 14 of
+     19 covered), making the integration suite **non-idempotent**: run 1 green, run 2
+     failing `revocation-repository.contract.ts:86` with a cursor left from the prior run.
+     Invisible in CI, which provisions a fresh Postgres service per run. **Fixed.**
+
+  - **Verify round 1 — `GAPS` (7), all closed.** The gate's headline finding: *the fix
+    did not close the defect*. `truncateAll` only runs via `createTestApp().cleanup()`,
+    and `auth-persistence.integration.spec.ts` never calls it — it had its own `clean()`
+    covering 2 of 4 auth tables, still omitting `revocation_cursors`. The "three
+    consecutive green runs" offered as proof were sequencing luck (10 specs happen to run
+    after it); the gate reproduced the failure with the fix applied by running that spec
+    alone twice. It also found that jest's sequencer orders previously-failed specs
+    **first**, so one local failure reorders the next full run into failing too — exactly
+    the phantom-failure-blamed-on-a-dependency-bump this plan exists to prevent.
+    Other gaps: acceptance criteria 1-2 unrecorded; `truncateAll` became an unbounded
+    "wipe every table in `public`" aimed at whatever `DATABASE_URL` says (a live footgun
+    given this phase's own workaround, and understated in the first `ASSUMPTIONS.md`
+    entry); the new error message printed the password; SQL not schema-qualified
+    (`search_path`-dependent); no `ORDER BY` (unstable lock order, invites the very
+    `40P01` the retry loop absorbs); comment wording inaccurate.
+  - **Fixes:** `clean()` delegates to `truncateAll(pool)`; `global-setup` truncates once
+    at startup so a run's outcome no longer depends on the previous run's final state;
+    `assertTestDatabase` refuses any database not ending in `_test`; `redactUrl()` strips
+    credentials; SQL schema-qualified and `ORDER BY tablename`.
+  - **Files touched:** `test/helpers/test-db.ts`, `test/setup/global-setup.ts`,
+    `test/integration/auth-persistence.integration.spec.ts`, `PROGRESS.md`,
+    `ASSUMPTIONS.md`, `plans/dep-migrations-137.md`. No `src/` file.
+
+  **Baselines recorded (the point of the phase — Phases 2/4/6/7/8/9 gate on these):**
+  - Integration: **24 suites / 151 tests**, exit 0. Reproducible: full suite twice on ONE
+    database, plus the gate's repro (`auth-persistence` alone twice → 20/20 both).
+    One pre-existing open handle: `CustomGC` from the `acdp` NAPI binding. The spec
+    that happens to load the binding first varies with suite order (observed via both
+    `src/audit/checkpoint-witness.service.ts:50` and `src/auth/acdp-verify.ts:17`), so
+    treat the handle *count* (1) as the baseline, not the stack.
+  - Unit, CI-equivalent (`ACDP_SPEC_DIR` + `ACDP_REQUIRE_CONFORMANCE=1`): **68 suites /
+    766 passed / 3 skipped / 769 total**, coverage **73.25 | 62.4 | 58.62 | 74.01**
+    (statements | branches | functions | lines), exit 0.
+  - **This is byte-identical to the plain local run — `ACDP_SPEC_DIR` changes nothing.**
+    Confirmed the conformance suites genuinely run (`cosign` + `log-verify.parity` = 2
+    suites / 26 tests passed), and the 3 skips are unrelated SDK feature-detection
+    fallbacks.
+  - **Therefore the round-1 hypothesis for Phase 6 is DISPROVED.** That pass attributed a
+    jest-30 trial's `67 suites / 748 passed / 21 skipped` to the conformance suite
+    skipping without `ACDP_SPEC_DIR`. It cannot be — the env var makes no difference on
+    jest 29. The 18-test delta is unexplained and must be treated as a **possible real
+    jest-30 effect** when Phase 6 runs, not a known-benign artifact. Phase 6's criterion 2
+    was updated accordingly.
+  - **Caveat on "changes nothing" — it is machine-local.** The plain run finds fixtures
+    through the *sibling-path fallback* (`cosign.spec.ts:46`,
+    `log-verify.parity.spec.ts:40`) resolving to a sibling
+    `agentcontextdistributionprotocol/schemas/conformance` checkout that exists on this
+    machine. On CI there is no sibling, so `ACDP_SPEC_DIR` IS load-bearing there. This
+    does not weaken the disproof above — the jest-30 trial ran on this same machine, with
+    the same fallback available.
+  - Caveat: the local spec checkout is at `d1f06d0`; CI pins `bff3cf3`. Fixture sets may
+    differ, so CI remains the authority on conformance results.
+  - Gates: `tsc -p tsconfig.json` 0, `tsc -p test/tsconfig.test.json` 0,
+    `lint --max-warnings 0` 0, `check:conventions` 0.
+  - Negative paths proven, not assumed: guard refuses `production_db` (password redacted
+    in the refusal); `redactUrl` → `postgres://user:***@localhost:5433/...`.
+  - **Re-verify round 2 — 6 of 7 closed, gap 3 `PARTIAL`, now fixed.** The guard validated
+    `TEST_DB_URL` while truncating a caller-supplied `pool`, so it never saw the database
+    it was protecting; the gate demonstrated the hole by truncating a real `production_db`
+    through a passed-in pool (3 rows → 0). Fixed by deriving the name from
+    `select current_database()` **on the pool being truncated**, which cannot drift from
+    the target. Re-proved with the gate's own exploit: refusal raised, rows intact at 3.
+    Documented limit kept honest in the code: a foreign database that ends in `_test`
+    (e.g. `aitp_control_plane_test`, the squatter on 5433) still passes — that case is
+    caught by `global-setup.ts`'s loud connection error, not by this guard.
+  - **Next:** Phase 1 — prune dead deps (`uuid`, `nestjs-pino`, `pino-http`).
