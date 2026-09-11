@@ -546,9 +546,14 @@ fixes for:
   **Phase 0**.
 - **Missing coverage:** `@nestjs/cli` + `@nestjs/schematics` 11→12 are 2 of #133's 18
   packages, are **not** throttler-blocked (neither peers `@nestjs/core`/`common`), and had
-  no phase → new **Phase 9**, which also retires Phase 8's compiler-divergence workaround.
+  no phase → new **Phase 9**. *(That round also justified Phase 9 as retiring "Phase 8's
+  compiler-divergence workaround". Phase 8's verify round 3 later established there was no
+  compiler divergence — `nest build` already loaded the top-level compiler — so Phase 9's
+  real value is dependency hygiene. Left here as written, corrected in place, because this
+  block is a record of what that round concluded.)*
 - **Trivially-passing criteria** rewritten: Phase 8's `grep -c '"types"'` (passed on
-  `"types": []`), Phase 8's docker-build claim (proves nothing under option (a); CI only
+  `"types": []`), Phase 8's docker-build claim (*asserted then* to prove nothing under option (a) —
+  false, per Phase 8 round 3: the image does exercise the TS 6 emit; CI only
   builds, never runs `HEALTHCHECK`), Phase 5's `--print-config` rule count (183 entries, 4
   non-off — not decidable) now a byte-diff against a recorded baseline.
 - **Measured corrections:** jest 30 coverage moves `73.25|62.40|58.62|74.01` →
@@ -1416,3 +1421,58 @@ fixes for:
     compiler unification** — it drops the redundant nested `typescript@5.9.3` and realigns
     the CLI's declared dependency with the version already in use. There is no split to
     retire; see the correction above.
+
+- **Phase 9 — `@nestjs/cli` + `@nestjs/schematics` 11 → 12 (build tooling only).** Branch
+  `chore/nestjs-cli-12` off `main` @ `ed51bbb`. Final phase of #137.
+  - **Files:** `package.json`, `package-lock.json`. No source, config or CI changes.
+  - **Criterion 1 met, and it retires Phase 8's open item:** `npm ls typescript` now shows
+    **exactly one** node, `6.0.3`. The nested `typescript@5.9.3` under `@nestjs/cli` is
+    gone, because CLI 12 pins `typescript: ~6.0.2` which our `^6.0.3` satisfies, so npm
+    dedupes it.
+  - **The empirical close on Phase 8's round-3 correction.** The compiler `nest build`
+    *loads* was `6.0.3` before this phase and `6.0.3` after — measured both times via
+    `TypeScriptBinaryLoader().load().version`. Only the *installed* tree changed. Emit is
+    **byte-identical** between CLI 11 and CLI 12: `diff -rq -x '*.tsbuildinfo'` over both
+    `dist/` trees reports nothing across all 400 emitted artifacts (133 `.js` + 133 `.d.ts`
+    + 133 `.js.map`, plus one). **Precisely:** the unfiltered `diff` does report exactly
+    one difference — `dist/tsconfig.build.tsbuildinfo`, the incremental build-state file,
+    whose program graph lost one entry (`buffer@5.7.1`, removed with `ora@5`). Every
+    *emitted* file is identical; the build-state file is not an artifact. Saying "no
+    differences" unqualified was false, and over-confident phrasing of exactly this shape
+    is what Phase 8 shipped twice. That is what "dependency hygiene, not compiler unification"
+    looks like when measured rather than argued.
+  - **Exercised two paths a CLI major could break that the plan did not list:**
+    `nest start` and `nest start --watch` both compile, emit 133 files, reach Nest
+    bootstrap and fail only on the absent DB — so the `chokidar` 4 → 5 bump inside the CLI
+    did not break watch mode.
+  - **Wider transitively than "build tooling only" suggests**, though none of it reaches
+    runtime: `@angular-devkit/*` 19 → 22, `@inquirer/*` majors, `chokidar` 4 → 5, and CLI
+    12 **drops** `webpack`, `fork-ts-checker-webpack-plugin`, `webpack-node-externals` and
+    `tsconfig-paths-webpack-plugin` to optional peers (28 fewer packages overall).
+    **A real capability regression, unused here:** `nest build --webpack` worked on CLI 11
+    and now fails with *"The `webpack-node-externals` package is required when using the
+    webpack compiler but could not be found."* Nothing in this repo invokes that path
+    (`command grep` finds zero references to `webpack`/`--builder`/`swc`/`rspack`
+    anywhere outside the lockfile) and it fails loudly with an actionable message, so it is
+    informational rather than a defect — but it is a capability this repo no longer has.
+    Note `webpack@5.107.2` is still installed top-level, as `ts-loader`'s non-optional
+    peer, not from the CLI. Safe here because `nest-cli.json` declares no `webpack`/`plugins`
+    — the build is the plain tsc path. Criterion 2 confirms runtime Nest was not dragged
+    along: `@nestjs/{core,common}` still **11.2.3**.
+  - **NEW FINDING — the first real Node floor in this repo's tree.**
+    `@nestjs/schematics@12` and `@angular-devkit@22` require
+    `node: ^22.22.3 || ^24.15.0 || >=26.0.0`, which excludes Node **23** and **25**
+    outright. CI is safe (`node-version: '22'` → v22.23.2, above the floor, and 22.x only
+    moves forward); Docker `node:26` and this workstation satisfy it. On an excluded
+    version (`node:23`, v23.11.1) `npm ci` emits `EBADENGINE` **warnings and still exits
+    0**. The repo declares no `engines` field, so nothing records any of this.
+    **Deliberately not fixed here** — see `ASSUMPTIONS.md`; it is the standing
+    Node-version question (now raised by phases 4, 6, 8 and 9), and declaring `engines`
+    would hard-fail installs for anyone running `engine-strict`.
+  - **Gates:** tsc 0 on both projects; `npm run build` green, emit byte-identical to
+    Phase 8; `check:build` green (the plan called Phase 9 its "first real consumer" — not so: the
+    script, the npm script and the CI step all shipped in Phase 8 itself, so CI already ran
+    it on PR #154 and Phase 9 is the second consumer); lint 0;
+    conventions 0; unit **69 suites / 770 passed / 3 skipped**; integration **26 suites /
+    158 passed**; `npm ci` from clean 0; docker green with 133 `.js`, `dist/main.js`, no
+    `dist/src/`.

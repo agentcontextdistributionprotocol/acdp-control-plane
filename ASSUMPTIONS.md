@@ -198,3 +198,42 @@
   committed, cited in a commit message, and used to justify a decision.
 - **Status:** WITHDRAWN — superseded by direct evidence (loader source + removal
   experiment), not merely unconfirmed.
+
+## Not declaring an `engines` field, despite Phase 9 introducing a real Node floor
+- **Plan:** `plans/dep-migrations-137.md` (Phase 9)
+- **Assumed:** it is better to surface the new Node-version constraint and let the repo
+  owner set policy than to declare `engines` unilaterally inside a build-tooling phase.
+- **What Phase 9 actually introduced.** `@nestjs/schematics@12.0.1` and
+  `@angular-devkit/{core,schematics}@22.1.5` declare
+  `engines.node: "^22.22.3 || ^24.15.0 || >=26.0.0"`. This is the first time this repo's
+  dependency tree has had a non-trivial opinion about Node. Note what that range
+  **excludes**: Node **23** and Node **25** entirely, plus every Node 22 below 22.22.3.
+  The repo itself declares **no `engines` field at all**, so nothing records this.
+- **Measured, not assumed:**
+  - CI (`node-version: '22'`) resolves to **v22.23.2**, above the `22.22.3` floor. Safe
+    today, and safe going forward — the 22.x line only moves forward from here.
+  - Docker (`node:26-bookworm-slim`) and this workstation (v26.8.1) satisfy `>=26.0.0`.
+  - On an excluded version (`node:23-bookworm-slim`, v23.11.1), `npm ci` emits
+    `npm warn EBADENGINE Unsupported engine … @angular-devkit/schematics@22.1.5` and
+    **still exits 0**. Degradation is noise, not breakage — `engine-strict` is not set
+    and there is no `.npmrc`.
+- **Chose:** to log this and leave `package.json` untouched. Three reasons: (1) declaring
+  `engines` is a repo-wide policy decision, not build tooling, and Phase 9 is scoped to
+  build tooling; (2) it has real blast radius — any contributor or CI system running with
+  `engine-strict=true` turns today's warning into a **hard install failure**; (3) the
+  Node-version question has now surfaced in four separate phases (4, 6, 8, 9) and is an
+  open question awaiting the repo owner, so pre-empting it here would decide it by
+  accident.
+- **Alternatives:** (a) add `"engines": { "node": "^22.22.3 || ^24.15.0 || >=26.0.0" }`,
+  mirroring the strictest transitive constraint — most honest, but inherits a range that
+  is really `@angular-devkit`'s rather than this service's, and would need revisiting
+  whenever that dep moves. (b) Add a looser `">=22.22.3"` reflecting what the service
+  itself needs — less churn, but silently permits Node 23/25, which the toolchain
+  excludes. (c) Pin CI to an exact Node version instead of the floating `'22'` — narrows
+  the drift surface but does not document anything for contributors.
+- **Blast radius if wrong:** a contributor on Node 23 or 25 sees EBADENGINE warnings and
+  no explanation. Installs still succeed; nothing at runtime is affected. Cost to reverse
+  is one line in `package.json`.
+- **Status:** UNCONFIRMED — needs a decision on the standing Node-version question
+  (raise CI to 26 / declare `engines` / accept the divergence), not a decision about
+  Phase 9.
