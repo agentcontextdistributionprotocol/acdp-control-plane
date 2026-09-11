@@ -143,7 +143,12 @@
 - **Blast radius if wrong:** A future commit could type-check locally and fail at runtime
   on CI's Node 22. Bounded by CI itself catching it as a test failure rather than it
   reaching production, and by Docker already running 26.
-- **Status:** UNCONFIRMED
+- **Status:** RESOLVED (2026-09-11) — **decided by the repo owner during the §4
+  finalization pass: raise CI to Node 26.** Applied in the finalization commit: all three
+  `node-version: '22'` pins (both `ci.yml` jobs + `release.yml`) are now `'26'`, matching
+  the Dockerfile's `node:26-bookworm-slim`, with the rationale recorded inline in `ci.yml`
+  so it is not silently reverted. CI now validates the same Node major that ships.
+  This deferral was raised in phases 4, 6, 8 and 9 before being settled.
 
 ## TypeScript 6: the "two-compiler split" does not exist — assumption WITHDRAWN
 - **Plan:** `plans/dep-migrations-137.md` (Phase 8)
@@ -198,3 +203,80 @@
   committed, cited in a commit message, and used to justify a decision.
 - **Status:** WITHDRAWN — superseded by direct evidence (loader source + removal
   experiment), not merely unconfirmed.
+
+## Not declaring an `engines` field, despite Phase 9 introducing a real Node floor
+- **Plan:** `plans/dep-migrations-137.md` (Phase 9)
+- **Assumed:** it is better to surface the new Node-version constraint and let the repo
+  owner set policy than to declare `engines` unilaterally inside a build-tooling phase.
+- **What Phase 9 actually introduced.** `@nestjs/schematics@12.0.1` and
+  `@angular-devkit/{core,schematics}@22.1.5` declare
+  `engines.node: "^22.22.3 || ^24.15.0 || >=26.0.0"`. This is the first time this repo's
+  dependency tree has had a non-trivial opinion about Node. Note what that range
+  **excludes**: Node **23** and Node **25** entirely, plus every Node 22 below 22.22.3.
+  The repo itself declares **no `engines` field at all**, so nothing records this.
+- **Measured, not assumed** (measurements taken while CI was still pinned to Node 22;
+  the §4 pass has since moved all three pins to `'26'` — see the RESOLVED status below,
+  and `docs/TROUBLESHOOTING.md` for the current state):
+  - CI (then `node-version: '22'`) resolved to **v22.23.2**, above the `22.22.3` floor.
+    Safe at the time, and safe going forward — the 22.x line only moves forward.
+  - Docker (`node:26-bookworm-slim`) and this workstation (v26.8.1) satisfy `>=26.0.0`.
+  - On an excluded version (`node:23-bookworm-slim`, v23.11.1), `npm ci` emits
+    `npm warn EBADENGINE Unsupported engine … @angular-devkit/schematics@22.1.5` and
+    **still exits 0**. Degradation is noise, not breakage — `engine-strict` is not set
+    and there is no `.npmrc`.
+- **Chose:** to log this and leave `package.json` untouched. Three reasons: (1) declaring
+  `engines` is a repo-wide policy decision, not build tooling, and Phase 9 is scoped to
+  build tooling; (2) it has real blast radius — any contributor or CI system running with
+  `engine-strict=true` turns today's warning into a **hard install failure**; (3) the
+  Node-version question has now surfaced in four separate phases (4, 6, 8, 9) and is an
+  open question awaiting the repo owner, so pre-empting it here would decide it by
+  accident.
+- **Alternatives:** (a) add `"engines": { "node": "^22.22.3 || ^24.15.0 || >=26.0.0" }`,
+  mirroring the strictest transitive constraint — most honest, but inherits a range that
+  is really `@angular-devkit`'s rather than this service's, and would need revisiting
+  whenever that dep moves. (b) Add a looser `">=22.22.3"` reflecting what the service
+  itself needs — less churn, but silently permits Node 23/25, which the toolchain
+  excludes. (c) Pin CI to an exact Node version instead of the floating `'22'` — narrows
+  the drift surface but does not document anything for contributors.
+- **Blast radius if wrong:** a contributor on Node 23 or 25 sees EBADENGINE warnings and
+  no explanation. Installs still succeed; nothing at runtime is affected. Cost to reverse
+  is one line in `package.json`.
+- **Status:** RESOLVED (2026-09-11) — the standing Node-version question was settled in
+  favour of **raising CI to Node 26**, not declaring `engines`. That removes the reason
+  this entry existed: CI, Docker and the reference workstation now all sit on Node 26,
+  comfortably inside the `>=26.0.0` arm of the transitive floor, so nothing in the
+  pipeline can trip it. `package.json` still declares no `engines` field — deliberately,
+  and now harmlessly, since no environment this project controls is outside the range.
+  The residual case is a contributor on Node 23 or 25, who sees `EBADENGINE` **warnings**
+  with `npm ci` still exiting 0; that is documented in `docs/TROUBLESHOOTING.md` under
+  "`npm warn EBADENGINE Unsupported engine` on install". Revisit only if someone wants a
+  hard floor enforced at install time.
+
+## Removing `ts-loader` and `tsconfig-paths` rather than keeping them for a possible webpack build (§4, issue #137)
+- **Plan:** `plans/dep-migrations-137.md`
+- **Assumed:** nothing in this repo builds through webpack, now or in the near future, so
+  the two devDependencies that exist only to serve that path are dead weight rather than
+  a capability held in reserve.
+- **Measured, not assumed:**
+  - `git grep` over the whole tree finds `ts-loader`/`tsconfig-paths` **only** in
+    `package.json` itself and in plan/PROGRESS prose describing CLI peer changes. No
+    source, config, script, workflow or Dockerfile reference.
+  - `nest-cli.json` sets only `deleteOutDir`; it never enables `"webpack": true`, and no
+    npm script passes `--webpack`. `nest build` therefore runs tsc.
+  - No tsconfig in the repo declares `paths`, and `baseUrl` was deleted in Phase 8 — so
+    `tsconfig-paths` cannot be doing anything even in principle.
+  - Removing both dropped **648 lines** of `package-lock.json` and took `webpack@5.107.2`
+    with it: `npm ls webpack` goes from a populated tree to `(empty)`. `@nestjs/cli@12`
+    declares webpack an **optional** peer, so `ts-loader` was the sole installer.
+  - `npm run check:build` still emits **133** `.js` files across both builds, unchanged.
+- **Chose:** delete both, consistent with the "delete, don't bump" ruling this plan already
+  applied to `uuid`, `nestjs-pino`, `pino-http` (Phase 1) and `supertest`/`@types/supertest`
+  (Phase 4). Those sweeps simply missed these two.
+- **Alternatives:** keep them so `nest build --webpack` stays available without a reinstall.
+  Rejected: Phase 9 recorded that path as broken and unused, and carrying a whole webpack
+  toolchain in the lockfile to preserve an untested build mode is a supply-chain and
+  install-time cost for no current benefit. Re-adding is one `npm i -D` away.
+- **Blast radius if wrong:** low and immediately visible. If anyone wants a webpack build,
+  `nest build --webpack` fails at once with a missing-loader error rather than degrading
+  silently. Nothing in CI, Docker or the runtime touches either package.
+- **Status:** UNCONFIRMED

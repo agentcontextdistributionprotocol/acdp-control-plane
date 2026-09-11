@@ -174,4 +174,3 @@ plus a `Retry-After: 42` header.
 request limiter (`THROTTLE_LIMIT` per `THROTTLE_TTL_MS`, with a tighter override
 on `/auth/challenge` + `/auth/token`). `QuotaGuard` is the *business* quota:
 per-tenant, per-action, and only where opted in. They are independent layers.
-</content>

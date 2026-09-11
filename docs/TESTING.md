@@ -182,4 +182,3 @@ it needs Docker plus an OpenAI key and is **not** wired into CI. See
 Release tags additionally gate the GHCR push on the unit suite and a container
 smoke test (boot against Postgres, assert `/healthz` + `/readyz`) — see
 `.github/workflows/release.yml`.
-</content>

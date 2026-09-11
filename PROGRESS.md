@@ -546,9 +546,14 @@ fixes for:
   **Phase 0**.
 - **Missing coverage:** `@nestjs/cli` + `@nestjs/schematics` 11→12 are 2 of #133's 18
   packages, are **not** throttler-blocked (neither peers `@nestjs/core`/`common`), and had
-  no phase → new **Phase 9**, which also retires Phase 8's compiler-divergence workaround.
+  no phase → new **Phase 9**. *(That round also justified Phase 9 as retiring "Phase 8's
+  compiler-divergence workaround". Phase 8's verify round 3 later established there was no
+  compiler divergence — `nest build` already loaded the top-level compiler — so Phase 9's
+  real value is dependency hygiene. Left here as written, corrected in place, because this
+  block is a record of what that round concluded.)*
 - **Trivially-passing criteria** rewritten: Phase 8's `grep -c '"types"'` (passed on
-  `"types": []`), Phase 8's docker-build claim (proves nothing under option (a); CI only
+  `"types": []`), Phase 8's docker-build claim (*asserted then* to prove nothing under option (a) —
+  false, per Phase 8 round 3: the image does exercise the TS 6 emit; CI only
   builds, never runs `HEALTHCHECK`), Phase 5's `--print-config` rule count (183 entries, 4
   non-off — not decidable) now a byte-diff against a recorded baseline.
 - **Measured corrections:** jest 30 coverage moves `73.25|62.40|58.62|74.01` →
@@ -689,10 +694,10 @@ fixes for:
     — which registers its own SIGTERM/SIGINT handler calling `close()` — *and*
     `src/main.ts:81-82` registers manual `process.on('SIGINT'|'SIGTERM', …)` handlers that
     also call `app.close()`, so `onModuleDestroy` runs twice. Unrelated to dependencies.
-    Deserves its own issue.
+    Deserves its own issue. **Filed as #158** during the §4 finalization pass, with a
+    measured repro: the process exits **1**, not 0, and `stopTelemetry()` never runs.
   - **Next:** Phase 2 — align the `express` declaration to `5.2.1` + add the missing
     `/agents/*did` route-shape test.
-||||||| parent of b214486 (chore(deps): align the express declaration with the version actually running)
 - **2026-09-11 — Phase 2 (align `express` declaration to 5.2.1, issue #137): DONE.**
   1 verify round, **PASS** + 2 LOW findings (both closed) + 1 INFO. Opus-tier.
   - **Files:** `package.json` (one line), `package-lock.json`,
@@ -1416,3 +1421,171 @@ fixes for:
     compiler unification** — it drops the redundant nested `typescript@5.9.3` and realigns
     the CLI's declared dependency with the version already in use. There is no split to
     retire; see the correction above.
+
+- **Phase 9 — `@nestjs/cli` + `@nestjs/schematics` 11 → 12 (build tooling only).** Branch
+  `chore/nestjs-cli-12` off `main` @ `ed51bbb`. Final phase of #137.
+  - **Files:** `package.json`, `package-lock.json`. No source, config or CI changes.
+  - **Criterion 1 met, and it retires Phase 8's open item:** `npm ls typescript` now shows
+    **exactly one** node, `6.0.3`. The nested `typescript@5.9.3` under `@nestjs/cli` is
+    gone, because CLI 12 pins `typescript: ~6.0.2` which our `^6.0.3` satisfies, so npm
+    dedupes it.
+  - **The empirical close on Phase 8's round-3 correction.** The compiler `nest build`
+    *loads* was `6.0.3` before this phase and `6.0.3` after — measured both times via
+    `TypeScriptBinaryLoader().load().version`. Only the *installed* tree changed. Emit is
+    **byte-identical** between CLI 11 and CLI 12: `diff -rq -x '*.tsbuildinfo'` over both
+    `dist/` trees reports nothing across all 400 emitted artifacts (133 `.js` + 133 `.d.ts`
+    + 133 `.js.map`, plus one). **Precisely:** the unfiltered `diff` does report exactly
+    one difference — `dist/tsconfig.build.tsbuildinfo`, the incremental build-state file,
+    whose program graph lost one entry (`buffer@5.7.1`, removed with `ora@5`). Every
+    *emitted* file is identical; the build-state file is not an artifact. Saying "no
+    differences" unqualified was false, and over-confident phrasing of exactly this shape
+    is what Phase 8 shipped twice. That is what "dependency hygiene, not compiler unification"
+    looks like when measured rather than argued.
+  - **Exercised two paths a CLI major could break that the plan did not list:**
+    `nest start` and `nest start --watch` both compile, emit 133 files, reach Nest
+    bootstrap and fail only on the absent DB — so the `chokidar` 4 → 5 bump inside the CLI
+    did not break watch mode.
+  - **Wider transitively than "build tooling only" suggests**, though none of it reaches
+    runtime: `@angular-devkit/*` 19 → 22, `@inquirer/*` majors, `chokidar` 4 → 5, and CLI
+    12 **drops** `webpack`, `fork-ts-checker-webpack-plugin`, `webpack-node-externals` and
+    `tsconfig-paths-webpack-plugin` to optional peers (28 fewer packages overall).
+    **A real capability regression, unused here:** `nest build --webpack` worked on CLI 11
+    and now fails with *"The `webpack-node-externals` package is required when using the
+    webpack compiler but could not be found."* Nothing in this repo invokes that path
+    (`command grep` finds zero references to `webpack`/`--builder`/`swc`/`rspack`
+    anywhere outside the lockfile) and it fails loudly with an actionable message, so it is
+    informational rather than a defect — but it is a capability this repo no longer has.
+    Note `webpack@5.107.2` is still installed top-level, as `ts-loader`'s non-optional
+    peer, not from the CLI. Safe here because `nest-cli.json` declares no `webpack`/`plugins`
+    — the build is the plain tsc path. Criterion 2 confirms runtime Nest was not dragged
+    along: `@nestjs/{core,common}` still **11.2.3**.
+  - **NEW FINDING — the first real Node floor in this repo's tree.**
+    `@nestjs/schematics@12` and `@angular-devkit@22` require
+    `node: ^22.22.3 || ^24.15.0 || >=26.0.0`, which excludes Node **23** and **25**
+    outright. CI is safe (`node-version: '22'` → v22.23.2, above the floor, and 22.x only
+    moves forward); Docker `node:26` and this workstation satisfy it. On an excluded
+    version (`node:23`, v23.11.1) `npm ci` emits `EBADENGINE` **warnings and still exits
+    0**. The repo declares no `engines` field, so nothing records any of this.
+    **Deliberately not fixed here** — see `ASSUMPTIONS.md`; it is the standing
+    Node-version question (now raised by phases 4, 6, 8 and 9), and declaring `engines`
+    would hard-fail installs for anyone running `engine-strict`.
+  - **Gates:** tsc 0 on both projects; `npm run build` green, emit byte-identical to
+    Phase 8; `check:build` green (the plan called Phase 9 its "first real consumer" — not so: the
+    script, the npm script and the CI step all shipped in Phase 8 itself, so CI already ran
+    it on PR #154 and Phase 9 is the second consumer); lint 0;
+    conventions 0; unit **69 suites / 770 passed / 3 skipped**; integration **26 suites /
+    158 passed**; `npm ci` from clean 0; docker green with 133 `.js`, `dist/main.js`, no
+    `dist/src/`.
+
+- **§4 Finalization (issue #137, whole-feature pass).** Branch `chore/nestjs-cli-12`,
+  on top of Phase 9.
+  - **Phase 9 verify gate:** Opus, 1 round = `GAPS`. The code was clean — all 7 criteria
+    re-verified independently, and the three riskiest claims survived direct attack,
+    including the `node:22` install I had NOT run (the verifier did: exit 0, zero
+    EBADENGINE on v22.23.2, the exact version `setup-node: '22'` resolves to). The gaps
+    were all close-out:
+    1. **BLOCKING — `Closes #137` would have closed an issue with unaddressed scope.**
+       #137's item 1 is runtime NestJS 11→12, hard-blocked on `@nestjs/throttler`
+       (latest 6.5.0 peers `@nestjs/common ^7||…||^11`, no v7 exists). Downgraded to
+       `Refs #137`, and the follow-ups filed as **#155** (throttler blocker), **#156**
+       (TS 6 → 7 runway — `node10` and `baseUrl` are REMOVED in 7.0, measured as
+       `TS5108`), **#157** (evaluate adopting `nestjs-pino`). The fourth follow-up the
+       plan called for — CI-Node-22-vs-Docker-26 — was **resolved in this pass instead of
+       filed**, see below; filing an issue for something fixed in the same commit is noise.
+    2. `docs/TROUBLESHOOTING.md`'s "Two TypeScript versions" section went counterfactual
+       the moment Phase 9 deduped them to one. Reframed around the loader-resolution
+       point that actually matters, which is the part worth keeping.
+    3. **"`diff -rq` reports no differences" was false.** It reports exactly one:
+       `dist/tsconfig.build.tsbuildinfo`. Every *emitted* artifact is identical; the
+       build-state file is not one. Corrected — this is the third time in this series
+       that over-confident phrasing outran the measurement.
+    4. "check:build's first real consumer" was wrong — Phase 8 shipped the script AND the
+       CI step, so CI ran it on PR #154. Phase 9 is the second consumer.
+    5. CLI 12 also drops `webpack-node-externals` + `tsconfig-paths-webpack-plugin`, and
+       `nest build --webpack` now fails. Unused here, fails loudly, recorded.
+  - **NEW seam test: `test/integration/quota-store-lifecycle.integration.spec.ts`.** The
+    §4 question is what the phases collectively introduced that no single phase's tests
+    cover. Answer: Phase 7's blocking defect had only *unit* coverage of
+    `RedisQuotaStore.close()` against a hand-written fake. Nothing proved the two things
+    that actually failed — that the factory picks the in-memory store when Redis is
+    configured but no tenants are, and that `QuotaModule.onModuleDestroy` closes a REAL
+    client on app shutdown. Both are seams between a module, a factory, a lifecycle hook
+    and a live socket, which a faked unit test cannot reach. 4 tests, live Redis, same
+    never-skip-in-CI policy as `redis-live`. **Proven to have teeth:** reintroducing the
+    exact Phase 7 defect (`if (config.redisUrl)` without the tenant check) fails it at the
+    designed assertion. Restored and verified byte-identical to HEAD afterwards.
+  - **Node-version question SETTLED by the repo owner: raise CI to Node 26.** All three
+    pins (`ci.yml` × 2, `release.yml`) 22 → 26, matching the Dockerfile's
+    `node:26-bookworm-slim`, with the rationale recorded inline so it is not silently
+    reverted. CI now validates the Node major that actually ships. This had been deferred
+    in phases 4, 6, 8 and 9. Both related `ASSUMPTIONS.md` entries move to **RESOLVED**;
+    `engines` stays undeclared, now harmlessly, since no environment this project controls
+    is outside the transitive floor.
+  - **Tracked-file sweep found a real gap:** six merged phases (1, 2, 3, 5, 6, 7) still
+    read `Status: TODO` in the plan despite being merged weeks earlier. Marked DONE with
+    their merge SHAs. Also caught two more survivals of the withdrawn compiler-split claim
+    in this file's own plan-re-verification notes — phrasing my earlier sweep missed
+    because I grepped for my wording, not the wording that round used.
+  - **Process error worth recording:** I edited this repo while the Phase 9 verifier was
+    running in it, which dirtied its working tree and made it report an unexplained
+    concurrent writer. Harmless here, but a verifier's tree should be left alone.
+
+- **2026-09-11 — §4 finalization, ROUND 2 (cumulative-diff verify: `GAPS` → closed): DONE.**
+  Fresh Opus verifier over the whole `e07fe6e~1..HEAD` range returned **`GAPS` — 4 items**,
+  all closed here. Verifier tier: Opus (the feature as a whole is reversible — no one-way
+  door — so Fable was not pulled in).
+  - **Gap 1 — a committed git conflict marker.** `PROGRESS.md:700` carried a bare diff3
+    `||||||| parent of b214486` line with no matching `<<<<<<<`/`=======`/`>>>>>>>`. It was
+    introduced by Phase 2 (`f4cdae4`, PR #143), **merged to `main`**, and survived seven
+    later phases plus a §4 pass whose own notes claimed a tracked-file sweep. Removed;
+    verified no content was duplicated around it (single Phase 2 entry) and that it was the
+    only such marker in the repo.
+  - **Gap 2 — `docs/TROUBLESHOOTING.md` falsified by our own change.** It still read "CI runs
+    Node 22 (currently v22.23.2)" after the same finalization commit moved all three pins to
+    `'26'`. Fixed, and `ASSUMPTIONS.md`'s "Measured, not assumed" block — which a RESOLVED
+    entry points readers at — now dates its measurements as pre-§4 rather than current.
+    Same failure class that seeded #137's false premises: a doc describing an architecture
+    the repo no longer has.
+  - **Gap 3 — the §4 seam spec was itself defective** (found independently while the verifier
+    ran; it confirmed the same). Two distinct bugs:
+    1. `:46` defaulted `REDIS_URL` to a hardcoded URL outside CI, so `:103`'s
+       `REDIS_URL ? describe : describe.skip` was **always truthy** — the documented
+       "local, no Redis → skip" branch and its instruction `console.warn` were **unreachable
+       dead code**. The docblock claimed to mirror `redis-live.integration.spec.ts`'s policy;
+       the reachability probe that policy depends on was never implemented.
+    2. Every test called `await close()` as its **last statement**, so a failed assertion
+       skipped cleanup and leaked a reconnecting ioredis client.
+    Combined effect, **measured**: against a closed port the suite ran `1 failed / 3 passed`
+    and then **never exited** (observed >600s; two such processes were still alive hours
+    later and had to be killed). No workflow declared `timeout-minutes`, so in CI that burns
+    to GitHub's **6-hour** default. The spec written to prevent a hang-after-green reproduced
+    exactly that in its own failure path.
+    Fixed with a real `beforeAll` probe (`lazyConnect`, `maxRetriesPerRequest: 1`, and the
+    load-bearing `retryStrategy: () => null`), cleanup moved into `withApp`'s `finally` and
+    time-bounded with a `disconnect()` fallback, and `clientOf` made non-vacuous — a rename
+    of the private `redis` field now throws instead of turning `toBeUndefined()` into a
+    tautology. **Re-measured:** unreachable Redis → skips and **exits 0 in 7s**; defect
+    reintroduced → `1 failed / 3 passed`, **jest exit code 1**, exits in 6s.
+    Defence in depth: every job in `ci.yml`/`release.yml` now declares `timeout-minutes`.
+    Job `name:` lines verified **byte-identical to `origin/main`** so branch protection's
+    required contexts still match.
+  - **Gap 4 — two dead devDependencies.** `ts-loader` and `tsconfig-paths` had zero
+    references outside `package.json`. `tsconfig-paths` became provably inert once Phase 8
+    deleted `baseUrl` (the repo declares no `paths`); `ts-loader` served only
+    `nest build --webpack`, which `nest-cli.json` never enables. Removed — **648 lines of
+    lockfile**, and `webpack@5.107.2` went with them (CLI 12 declares webpack an *optional*
+    peer, so `ts-loader` was the only thing pulling it in). Both survived Phase 1's and
+    Phase 4's "delete, don't bump" sweeps.
+  - **Also fixed (pre-existing, not a verifier gap):** all nine `docs/*.md` ended with a
+    stray literal `</content>`, and `docs/README.md` also had `</invoke>` — leaked tool-call
+    fragments from `e3d079f` (#62). Harmless at EOF, but the §4 pass appended ~80 lines after
+    `TROUBLESHOOTING.md`'s, leaving it mid-document. All ten removed.
+  - **Tooling note:** `npx prettier --write` was reformatting specs to double quotes — this
+    repo has **no prettier config at all**, so prettier applies its own defaults against a
+    single-quote codebase. Reverted and hand-edited in-style. Do not run bare `prettier`
+    here.
+  - **Gates, all from a clean tree:** tsc 0 (both projects) · lint 0 · conventions 0 ·
+    `check:build` passed (133 `.js`, both builds agree) · unit **69 suites / 770 passed /
+    3 skipped** · integration **27 suites / 162 passed**, exit 0.
+  - **Next:** push, PR (`Refs #137`, not `Closes` — #155 scope is deliberately undelivered),
+    CI on Node 26 (first run), merge. Then #158 (SIGTERM) as its own PR.

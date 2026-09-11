@@ -83,5 +83,3 @@ reads and writes (see [TENANCY.md](./TENANCY.md)).
 - Protocol crypto/SSRF/DID come from the `acdp` SDK (Rust `acdp-rs` via NAPI), never hand-rolled.
 
 See `CLAUDE.md` at the repo root for the full convention list and CI grep rules.
-</content>
-</invoke>

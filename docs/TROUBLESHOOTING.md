@@ -242,7 +242,6 @@ service (published on **6380**, not 6379, so it cannot collide with your own
 local Redis). Start it with the command above. The skip is local-only by
 design — in CI the spec fails loudly rather than skipping, because a
 wire-protocol spec that silently skips reports green while proving nothing.
-</content>
 
 ## Build / TypeScript
 
@@ -278,12 +277,12 @@ Expected under TypeScript 6 and silenced by `ignoreDeprecations: "6.0"` in
 option and the escape hatch (`TS5108`) — see the TODO in `tsconfig.json` for the
 migration options.
 
-### Two TypeScript versions in `npm ls typescript`
+### Which TypeScript does `nest build` actually use?
 
-Cosmetic. `@nestjs/cli` v11 declares `typescript` as an exactly-pinned direct dependency,
-so npm nests its own copy under `node_modules/@nestjs/cli/node_modules/typescript`
-alongside the repo's top-level one. **The nested copy is never loaded.** `@nestjs/cli`
-resolves the compiler with `process.cwd()` first:
+The top-level one — the same compiler as `tsc`, `ts-jest`, `ts-node` and `eslint`.
+
+This is worth stating explicitly because it is easy to get wrong by reading `npm ls`.
+`@nestjs/cli` resolves its compiler with `process.cwd()` **first**:
 
 ```js
 // node_modules/@nestjs/cli/lib/compiler/typescript-loader.js
@@ -292,14 +291,35 @@ const tsBinaryPath = require.resolve('typescript', {
 });
 ```
 
-and npm scripts run with cwd = package root, so `nest build` uses the **top-level**
-TypeScript — the same compiler as `tsc`, `ts-jest`, `ts-node` and `eslint`. To confirm on
-any given checkout:
+and npm scripts run with cwd = package root. So even when the CLI ships its own pinned
+`typescript` nested under `node_modules/@nestjs/cli/node_modules/`, that copy is **never
+loaded**. To confirm on any checkout:
 
 ```bash
 node -e "const {TypeScriptBinaryLoader}=require('@nestjs/cli/lib/compiler/typescript-loader');
          console.log(new TypeScriptBinaryLoader().load().version)"
 ```
 
-Don't infer the compiler in use from `npm ls` — it reports what is *installed*, not what
-is *loaded*.
+Don't infer the compiler in use from `npm ls` — it reports what is *installed*, not what is
+*loaded*. (On CLI 11 the two disagreed and `npm ls typescript` showed two nodes; since the
+CLI 12 bump it pins a range the repo already satisfies, so npm dedupes and there is one.)
+
+### `npm warn EBADENGINE Unsupported engine` on install
+
+Expected on some Node versions, and **not** fatal — `npm ci` still exits 0.
+
+`@nestjs/schematics@12` and `@angular-devkit/*@22` (build tooling, dev-only) declare:
+
+```
+node: ^22.22.3 || ^24.15.0 || >=26.0.0
+```
+
+which **excludes Node 23 and 25 entirely**, plus any Node 22 below 22.22.3. This repo
+declares no `engines` field of its own, so npm reports the transitive constraint directly.
+
+Where it stands today: CI and the Docker images both run **Node 26** (`node:26-bookworm-slim`
+in the Dockerfile, `node-version: '26'` in every workflow), which satisfies the range. CI ran
+Node 22 until issue #137's finalization pass raised it so the pipeline validates the same major
+that actually ships. If you see this warning locally you are on an excluded version — installs
+and tests still work, but moving to Node 22.22.3+, 24.15+ or 26+ silences it. Only if you have
+`engine-strict=true` in your own npm config does the warning become a hard install failure.
