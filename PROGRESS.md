@@ -1096,3 +1096,173 @@ fixes for:
     - `npm ls jest` → single `jest@30.5.1`, `ts-jest` deduped onto it, all `@jest/*` at
       30.x, no 29.x stragglers. Snapshots: **0 total**, so every snapshot-format change
       in jest 30 is inert. Docs carry no stale jest version strings.
+
+- **Phase 7 — `ioredis` 5→6.** Branch `chore/ioredis-6` off `main` @ `88bed02`. **The
+  first phase with real code + CI changes, not a manifest bump.**
+  - **Files:** `package.json`, `package-lock.json`,
+    `src/events/redis-stream-hub.strategy.ts`, `src/events/redis-stream-hub.strategy.spec.ts`
+    (comment only), `.github/workflows/ci.yml`, `docker-compose.test.yml`,
+    `test/setup/global-setup.ts`, **NEW** `test/integration/redis-live.integration.spec.ts`.
+  - **RESP3 verified against a LIVE server — the only thing that could verify it.**
+    `redis-stream-hub.strategy.spec.ts` mocks `ioredis` away and `quota-store.spec.ts`
+    duck-types `.eval`, so **neither proves anything about the wire protocol**. Stood up
+    a real `redis:7` and drove the exact three operations the repo depends on:
+    - pub/sub round-trip **delivered**, and `sub.mode === 'normal'` (as the plan predicted
+      — RESP3 uses push frames but ioredis does not flip `mode`)
+    - the quota Lua returned `[1,60]` then `[2,60]` — the exact 2-element numeric shape
+      `RedisQuotaStore.increment` reads at `quota-store.ts:97-102`
+    - `quit()` → `OK` on both clients
+    All three v6 defaults the plan flagged, confirmed on the live client: `protocol: 3`,
+    **`replyMapping: 'legacy'`** (this is what preserves the v5 reply shapes the Lua
+    reader depends on — do NOT set `resp3`), `keepAlive: 30000` (was `0`).
+  - **I proposed a bug and then DISPROVED IT MYSELF.** I expected the missing `'error'`
+    listener on `RedisStreamHubStrategy` to crash the process, since an EventEmitter
+    emitting `'error'` unhandled throws. **Tested on both ioredis 5 and 6: it does not.**
+    ioredis guards the EventEmitter default internally and prints
+    `[ioredis] Unhandled error event: …` on raw stderr. So the defect is **narrower than
+    I claimed**: that line bypasses the pino/Nest logger entirely, so a connection
+    failure is invisible to structured log aggregation while SSE fan-out silently stops.
+    Fixed by attaching handlers that route through the Nest logger. Written up as what it
+    is, not what I guessed.
+  - **"Normalizing the imports" was supposed to be cosmetic. It exposed a type that was
+    lying.** The plan (round 1) correctly established that both `require('ioredis')` and
+    `await import('ioredis')` work in v6, so normalizing is hygiene, not a fix. But
+    switching `require()` → `await import()` turns on **real typing**, and `tsc`
+    immediately failed: the hand-written duck type declared subscribe's callback as
+    `(err: Error | null) => void`, while ioredis's actual `Callback<T>` **also admits
+    `undefined`**. The untyped `require()` had been concealing the mismatch. Both clients
+    are now typed against ioredis's own `Redis` type via `import type` — erased at
+    runtime, so **no new runtime coupling**.
+  - **Checked, not assumed: does the unit mock survive the new import form?**
+    `jest.mock('ioredis', () => FakeRedis)` returns the class itself, which has **no
+    `.default`** — and the strategy now destructures one. `FakeRedis.default` is
+    `undefined`, so `new undefined()` would throw into `connect()`'s catch and **the spec
+    would still have passed while exercising nothing** (exactly the plan's item-5
+    concern). Verified empirically instead: the spec logs `Connected to Redis stream hub`,
+    so TypeScript's `esModuleInterop` helper synthesizes `.default` for the CommonJS mock
+    and the destructure resolves. Benign — but only because it was measured.
+  - **CI wiring done the way the plan insists — a GitHub Actions service, NOT compose.**
+    `global-setup.ts:10` skips docker-compose entirely when `CI` is set, so a
+    compose-only Redis **would never exist in CI** and the live spec would skip forever
+    while reporting green. That is the CP-7 defect this repo already fixed once. So:
+    `ci.yml` gets a `redis:7` **service** + `REDIS_URL` on the `integration` job (renamed
+    "jest integration (Postgres + Redis)"), and `docker-compose.test.yml` gets a
+    `redis-test` service on **6380** (not 6379, so it cannot collide with a developer's
+    own Redis) that `global-setup` now starts alongside `postgres-test`.
+  - **The new spec CANNOT report a false green — all four paths proven:**
+
+    | scenario | result |
+    |---|---|
+    | `CI=true`, `REDIS_URL` unset | **fails loudly** (`exit 1`), never skips |
+    | `CI=true`, Redis unreachable | **fails loudly** (`exit 1`) |
+    | pub/sub delivery broken (mutant: publish to wrong channel) | **fails** — `no message delivered within 5s` |
+    | Lua returns 1 element instead of 2 (mutant) | **fails** |
+
+    Local-without-Redis is the only skip path, and CI can never reach it.
+  - **Deliberate trade-off recorded:** each case early-returns when Redis is absent rather
+    than using `it.skip`, because reachability is not known at collection time. That path
+    is **local-only** — `beforeAll` throws in CI — so CI can never produce a
+    trivially-passing green.
+  - **Gates:** tsc 0 on both projects; build 0; lint 0; conventions 0; unit **69 suites /
+    768 passed / 3 skipped** (unchanged); integration **26 suites / 158 passed** (was
+    25/155 — exactly the three new cases).
+  - **Process note:** I briefly ran a second jest against the integration config while one
+    was already running. Both share `globalSetup`/`globalTeardown`, which start and
+    **remove** docker containers — so concurrent integration runs can tear down each
+    other's Postgres. No damage (the first run had already finished), but integration
+    runs must be serial.
+  - **Next:** Phase 8 — `typescript` 5.9→6.0.3. The only phase that changes compiler
+    *semantics*; needs `types: ["node","jest"]` in `tsconfig.json`, `rootDir` in BOTH
+    `tsconfig.build.json` and `test/tsconfig.test.json`, and `ignoreDeprecations: "6.0"`.
+  - **VERIFY GATE RETURNED *FAIL*. One blocking CI-only defect I introduced, plus a
+    vacuous assertion in the very spec whose selling point was "cannot report a false
+    green." Both fixed and re-proven.**
+    1. **BLOCKING — my CI change would have hung the integration job forever, AFTER
+       printing all-green.** Adding `REDIS_URL` to the job env makes `QuotaModule`'s
+       factory build a real, never-closed ioredis client in **24 of the 26** integration
+       specs (every one that boots `AppModule`). The open socket keeps Node's event loop
+       alive, so jest never exits: all tests pass, `npm run test:integration` never
+       returns, and the job burns to GitHub's 360-minute timeout. The gate proved it with
+       an A/B differing ONLY in `REDIS_URL` (`EXIT=0` in 3s vs killed at 60s; one attempt
+       ran >600s past the summary line) plus `lsof` on the hung PID showing the
+       ESTABLISHED socket to 6380.
+       **Why I missed it:** I proved the four false-green paths on the live spec **in
+       isolation**, and ran the FULL suite only **without** `REDIS_URL` — which is exactly
+       how it runs locally, since `global-setup` starts `redis-test` but deliberately
+       never exports `REDIS_URL`. I never once ran the full suite under the CI env I was
+       adding. *A CI-only change must be tested under the CI environment, not the local one.*
+       **Fixed two ways, both proven:**
+       - **`quota.module.ts` now honors the condition it already DOCUMENTED.** Its
+         docblock promises "no Redis traffic even when a Redis URL is configured" when
+         `TENANT_QUOTAS` is empty, and the factory comment claims it requires "(a) tenants
+         configured AND (b) REDIS_URL" — but the code only ever checked (b). Condition (a)
+         was documented and never implemented. Now `config.redisUrl && quotaConfig.byTenant.size > 0`.
+       - **`QuotaModule.onModuleDestroy` + `RedisQuotaStore.close()`** release the client
+         on shutdown, for the case where quotas ARE configured. `close()` never throws, so
+         a failing transport cannot block shutdown.
+       **Proof of the fix, under the EXACT CI env** (`CI=true REDIS_URL=redis://localhost:6380`,
+       full suite): **`EXIT=0` in 14s**, 26 suites / 158 passed, and **0 specs build a
+       Redis quota store**. Proof `onModuleDestroy` is not dead code: with
+       `TENANT_QUOTAS=acme:publish=100/min` the factory logs `Quota store: redis`, and
+       after `app.close()` the process **exits on its own** (`EXIT=0`).
+    2. **The RESP3 test was VACUOUS — it asserted a library constant.** It checked
+       `pub.options.protocol === 3`, but that is the **compile-time default**, and ioredis
+       deliberately never mutates it on a downgrade — it sets `condition.protocol = 2` and
+       leaves the option alone (`built/redis/event_handler.js`: *"so just warn — don't
+       touch the option"*). So a connection that had silently fallen back to RESP2 passed
+       green under a title claiming it "negotiates RESP3". **Measured against a real
+       `redis:5-alpine`: `options.protocol=3` while `condition.protocol=2`.** Now asserts
+       the NEGOTIATED value. **Teeth re-proven:** against redis:5 the fixed test FAILS
+       (`Expected: 3, Received: 2`) where the old one passed.
+    3. **Docs were stale** — the change added a Redis prerequisite that nothing documented.
+       Following `docs/TROUBLESHOOTING.md` verbatim brought up Postgres only, landing the
+       new spec on its local-skip path. Updated `docs/TESTING.md`, `docs/TROUBLESHOOTING.md`
+       (incl. a new entry for the skip message), and `README.md` with the `redis-test`
+       service, port 6380, and the skip policy. Also recorded WHY `global-setup` must not
+       export `REDIS_URL`: doing so flips `QuotaModule` onto the Redis store for every
+       other spec — which is defect 1.
+    4. **Image drift:** compose used `redis:7-alpine` while CI used `redis:7`. A
+       wire-protocol spec that verifies against a different server locally than in CI
+       defeats its own purpose. Both now `redis:7`.
+    5. **The new error handler flooded logs.** It logged at ERROR on *every* reconnect
+       attempt and ioredis 6 retries indefinitely — 14 ERROR lines in 4s against a dead
+       port. Now logs once per healthy→failed TRANSITION, with a matching `reconnected`
+       line on recovery. **Measured after the fix: 2 lines in 5s** (one per client).
+  - **Gate independently confirmed, clean:** the mock-survival claim (instrumented
+    `FakeRedis` with a constructor counter: `PROBE_CTOR_COUNT=2`, both clients are real
+    `FakeRedis` instances — `esModuleInterop` does synthesize `.default`); the no-crash
+    claim (ioredis `built/Redis.js:580-586` only emits when a listener exists, else
+    `console.error` and `return false`); every RESP3 live fact; ioredis 6's CHANGELOG
+    documents exactly **two** breaking changes (Node ≥20, RESP3 default) and neither
+    `Cluster`/`defineCommand`/`stringNumbers`/`reconnectOnError` nor changed
+    `maxRetriesPerRequest`/`enableReadyCheck`/`lazyConnect` defaults apply here; and
+    **`@opentelemetry/instrumentation-ioredis@0.70.0` declares `['>=2.0.0 <7']`, so
+    ioredis 6 is still instrumented** — a range miss there would have silently dropped
+    every Redis span.
+  - **Revised gates:** tsc 0 (both projects); build 0; lint 0; conventions 0; unit **69
+    suites / 770 passed / 3 skipped** (+2 — the new `close()` cases); integration **26
+    suites / 158 passed**, and critically **exits 0 in 14s under the full CI env**.
+  - **CI CONFIRMED the fix, then a COSMETIC RENAME blocked the merge — my error.**
+    PR #152's CI went fully green in 44s: `jest integration` **SUCCESS** with **26 suites
+    / 158 passed**, matching local exactly. That is conclusive that the live spec RAN
+    rather than skipped — in CI an unreachable Redis makes `beforeAll` throw and the
+    suite fail, so a green 26/158 proves it connected to the service container. It also
+    proves the `services:` block is valid and **the job did not hang**.
+    But the merge was refused: *"the base branch policy prohibits the merge."*
+    **Cause: I renamed the job to `jest integration (Postgres + Redis)`, and
+    `main`'s branch protection requires a status check named EXACTLY
+    `jest integration (Postgres)`** (`required_status_checks.contexts`). A renamed job
+    means the required check never reports, so the PR is blocked **forever** — not
+    failed, just permanently unmergeable. **Reverted the name** and added a DO-NOT-RENAME
+    comment citing the protection rule. Deliberately did NOT edit branch protection or
+    reach for `gh pr merge --admin`: the rename bought nothing, and weakening a
+    protection rule to accommodate cosmetics is the wrong trade.
+    **Lesson: a CI job's `name:` is an API contract with branch protection, not a label.**
+  - **Also fixed: my CI watcher reported a false green.** It declared all checks passed
+    while `jest integration` was still `IN_PROGRESS`. Cause: `jq`'s `.conclusion // .status`
+    only falls back on `null`/`false`, and an in-progress check carries `conclusion` as an
+    **empty string**, which is truthy — so the expression yielded `""` and the
+    pending-pattern never matched. Now gates on `status == "COMPLETED"` with an explicit
+    pending count. This matters disproportionately here: the defect this phase fixes
+    presents as a job that runs FOREVER, not one that fails, so a watcher that treats
+    "not yet reported" as "passed" is precisely blind to it.

@@ -61,7 +61,7 @@ npm run start:dev
 
 ```bash
 npm test                       # unit tests (mocked deps, no DB)
-npm run test:integration       # boots app + real Postgres on :5433
+npm run test:integration       # boots app + real Postgres on :5433 + Redis on :6380
 ```
 
 See [docs/TESTING.md](docs/TESTING.md) for the test harness, helpers, and how to

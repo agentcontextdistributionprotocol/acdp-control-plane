@@ -85,9 +85,26 @@ return {v, ttl}
   constructor(
     private readonly redis: {
       eval: (script: string, numKeys: number, ...args: (string | number)[]) => Promise<unknown>;
+      quit: () => Promise<unknown>;
     },
     private readonly logger?: { warn: (msg: string) => void },
   ) {}
+
+  /**
+   * Release the connection. An ioredis client is long-lived and keeps Node's
+   * event loop alive, so without this a process that configured quotas never
+   * exits cleanly — `QuotaModule.onModuleDestroy` calls this on shutdown.
+   * Never throws: shutdown must not be blocked by a failing transport.
+   */
+  async close(): Promise<void> {
+    try {
+      await this.redis.quit();
+    } catch (e) {
+      this.logger?.warn(
+        `redis quota quit failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
 
   async increment(
     key: string,

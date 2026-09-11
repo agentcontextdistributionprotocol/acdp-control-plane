@@ -45,7 +45,13 @@ class FakeRedis {
 
 jest.mock('ioredis', () => FakeRedis);
 
-// Imported AFTER the mock so the in-method `require('ioredis')` picks up the fake.
+// Imported AFTER the mock so the in-method `await import('ioredis')` picks up
+// the fake. The mock returns the FakeRedis class itself, which has no `.default`
+// — the strategy destructures one, and it still resolves because TypeScript's
+// esModuleInterop helper synthesizes `.default` for a CommonJS module. Verified
+// by the "Connected to Redis stream hub" log, not assumed: had it not resolved,
+// `new undefined()` would have thrown into connect()'s catch and these tests
+// would still have passed while exercising nothing.
 import { RedisStreamHubStrategy } from './redis-stream-hub.strategy';
 
 function event(overrides: Partial<AcdpStreamEvent> = {}): AcdpStreamEvent {

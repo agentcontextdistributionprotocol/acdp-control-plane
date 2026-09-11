@@ -3,6 +3,7 @@ import { Observable, Subject } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
 import { AcdpStreamEvent } from '../contracts/acdp';
 import { StreamHubStrategy } from './stream-hub.interface';
+import type { Redis as RedisClient } from 'ioredis';
 
 interface RedisEnvelope {
   scope: 'run' | 'global';
@@ -22,15 +23,13 @@ interface RedisEnvelope {
 export class RedisStreamHubStrategy implements StreamHubStrategy {
   private readonly logger = new Logger(RedisStreamHubStrategy.name);
   private readonly localSubject = new Subject<RedisEnvelope>();
-  private publisher: {
-    publish: (channel: string, message: string) => Promise<number>;
-    quit: () => Promise<string>;
-  } | null = null;
-  private subscriber: {
-    subscribe: (channel: string, cb?: (err: Error | null) => void) => void;
-    on: (event: string, cb: (...args: unknown[]) => void) => void;
-    quit: () => Promise<string>;
-  } | null = null;
+  // Typed against ioredis's real types rather than a hand-written duck type.
+  // `import type` is erased at runtime, so this adds no runtime coupling — and
+  // it caught a latent lie: the old duck type declared subscribe's callback as
+  // `(err: Error | null)`, but ioredis's `Callback<T>` also admits `undefined`.
+  // The untyped `require('ioredis')` had been hiding that mismatch.
+  private publisher: RedisClient | null = null;
+  private subscriber: RedisClient | null = null;
   private readonly channel = 'acdp:stream-hub';
 
   constructor(redisUrl: string) {
@@ -39,12 +38,50 @@ export class RedisStreamHubStrategy implements StreamHubStrategy {
 
   private async connect(redisUrl: string): Promise<void> {
     try {
-       
-      const Redis = require('ioredis');
+      // Normalized to the same dynamic-import form `quota.module.ts` uses.
+      // ioredis 6 still sets BOTH `module.exports = Redis` and `.default`, so
+      // `require('ioredis')` also worked — this is consistency, not a bug fix.
+      const { default: Redis } = await import('ioredis');
       this.publisher = new Redis(redisUrl);
       this.subscriber = new Redis(redisUrl);
 
-      this.subscriber!.subscribe(this.channel, (err: Error | null) => {
+      // Without an 'error' listener ioredis falls back to printing
+      // "[ioredis] Unhandled error event: ..." on raw stderr — bypassing the
+      // pino/Nest logger entirely, so a connection failure is invisible to
+      // structured log aggregation while SSE fan-out silently stops. (Verified:
+      // it does NOT crash the process on either ioredis 5 or 6 — the client
+      // guards the EventEmitter default internally.) ioredis 6 makes this more
+      // reachable: it sends `HELLO 3` on connect, so a RESP3 handshake failure
+      // is a new way to land here.
+      // Log on the TRANSITION only. ioredis 6 retries indefinitely with
+      // exponential backoff, so logging every attempt floods aggregation at
+      // ERROR severity for the whole duration of an outage (measured: 14 lines
+      // in 4s against a dead port). One line per healthy->failed transition,
+      // one per recovery, is the signal; the retry storm is noise.
+      const failed = new Set<string>();
+      const onError =
+        (which: string) =>
+        (...args: unknown[]): void => {
+          if (failed.has(which)) return;
+          failed.add(which);
+          const err = args[0];
+          this.logger.error(
+            `Redis ${which} error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        };
+      const onReady = (which: string) => (): void => {
+        if (failed.delete(which)) {
+          this.logger.log(`Redis ${which} reconnected`);
+        }
+      };
+      this.publisher!.on('error', onError('publisher'));
+      this.subscriber!.on('error', onError('subscriber'));
+      this.publisher!.on('ready', onReady('publisher'));
+      this.subscriber!.on('ready', onReady('subscriber'));
+
+      // `err` admits undefined in ioredis's Callback<T> — the old duck type
+      // declared `Error | null` only, which the untyped require() concealed.
+      void this.subscriber!.subscribe(this.channel, (err?: Error | null) => {
         if (err) {
           this.logger.error(`Failed to subscribe to Redis channel: ${err.message}`);
         } else {

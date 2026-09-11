@@ -14,3 +14,21 @@ services:
       interval: 2s
       timeout: 2s
       retries: 10
+
+  redis-test:
+    # Must match .github/workflows/ci.yml's `redis` service image: a
+    # wire-protocol spec that verifies against a different server locally than
+    # in CI defeats its own purpose.
+    image: redis:7
+    # Published on 6380, not 6379, so it cannot collide with a developer's own
+    # local Redis. `test/integration/redis-live.integration.spec.ts` defaults to
+    # this URL outside CI; in CI the `integration` job supplies REDIS_URL from a
+    # GitHub Actions service instead (global-setup skips docker compose when CI
+    # is set, so a compose service alone would never reach CI).
+    ports:
+      - '6380:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 10

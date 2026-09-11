@@ -11,12 +11,12 @@ export default async function globalSetup(): Promise<void> {
   if (!process.env.CI) {
     try {
       execSync(
-        'docker compose -f docker-compose.test.yml up -d postgres-test --wait',
+        'docker compose -f docker-compose.test.yml up -d postgres-test redis-test --wait',
         { stdio: 'inherit', cwd: process.cwd() },
       );
     } catch {
       console.warn(
-        'Could not start docker compose. Assuming postgres-test is already running.',
+        'Could not start docker compose. Assuming postgres-test and redis-test are already running.',
       );
     }
   }
