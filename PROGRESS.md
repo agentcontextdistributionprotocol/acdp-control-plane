@@ -833,3 +833,107 @@ fixes for:
     removed, `@types/node` 22.19.20→26.5.1 + transitive `undici-types` 6.21.0→8.9.0.
   - **Next:** Phase 5 — `eslint` 9→10, `eslint-config-prettier` 9→10,
     `@typescript-eslint` → 8.70.
+
+- **Phase 5 — `eslint` 9→10, `eslint-config-prettier` 9→10, `@typescript-eslint` → 8.70.**
+  Branch `chore/eslint-10` off `main` @ `6884e99`. Verify gate: **PASS-WITH-GAPS**,
+  Opus-tier, no functional defect found.
+  - **Files:** `package.json`, `package-lock.json`. **Zero changes under `src/`, `test/`,
+    or `eslint.config.js`** — the config file needed no migration for ESLint 10.
+  - **The enforced rule set is provably unchanged, across every config scope.** The
+    resolved config grows 183 → 363 entries, but **all 180 additions are `@stylistic/*`
+    at severity `0`**, contributed by eslint-config-prettier 10. Added-and-ENABLED 0,
+    removed 0, severity-changed 0, options-changed 0. Enforced set is exactly
+    `[@typescript-eslint/no-unused-vars, no-console, no-var, prefer-const]`.
+  - **Gate correction: my evidence covered 1 of 4 config scopes.** `eslint.config.js` has
+    three rule-bearing blocks, so a single-file probe cannot speak for the whole config.
+    The gate re-derived across all four: `.ts` files resolve 183→363, **`.spec.ts` files
+    resolve 184→364** (the extra entry is `@typescript-eslint/no-explicit-any`, off), and
+    `.js` files 178→358. All four scopes: 0 added-and-enabled, 0 removed, 0 changed.
+    Conclusion held; the evidence for it had been a quarter as broad as claimed.
+  - **Correction to my own claim: the enforced set is NOT identical across scopes.** I
+    wrote "enforced set is exactly [4 rules]" for every scope. It is 4 for `.ts` but
+    **3 for `.spec.ts`** — `no-console` is deliberately disabled there by the spec
+    override block (matching the `check:conventions` exemption for `*.spec.ts`). The
+    property that matters — enforced set **unchanged base→branch, per scope** — holds in
+    both: `.ts` 4→4 identical, `.spec.ts` 3→3 identical. "Identical across scopes" was my
+    wording, not the measurement.
+  - **Plan criterion 3 was itself wrong and was rewritten.** It demanded a *byte-identical*
+    resolved config, which fails benignly here — 180 entries legitimately appear, all
+    disabled. Replaced with "enforced rule set unchanged", which is the property that
+    actually protects us and which fails loudly (`exit 1`) on any add-and-enable,
+    removal, or severity change.
+  - **Fixed a real local/CI divergence the gate surfaced (`package.json:15`).** The `lint`
+    script was `eslint "{src,test}/**/*.ts"` with **no `--max-warnings 0`** — that flag
+    lived only in `ci.yml:40` / `release.yml:42`. Since **3 of the 4 enforced rules are
+    `warn`**, `npm run lint` exited **0** locally on code CI rejects. Moved the flag into
+    the script. Proven both directions: a file violating `prefer-const` + `no-console` now
+    exits **1** under bare `npm run lint` (it exited 0 before), and CI's
+    `npm run lint -- --max-warnings 0` is an idempotent duplicate, still exit 0.
+    Pre-existing bug, not introduced here.
+  - **Two silent-green failure modes ruled out by direct measurement**, since both would
+    have produced exactly the "clean lint" reported:
+    1. *Did the lint surface shrink?* **No.** ESLint 10 changed ignore semantics, so the
+       gate diffed the `filePath` set from `--format json`: **235 files on base, 235 on
+       branch, byte-identical lists**, 0 errors / 0 warnings both sides.
+    2. *Does lint still have teeth?* **Yes.** Each of the 4 enforced rules was violated
+       individually in a scratch file and each fired — `no-var` as `error`, the other
+       three as warnings failing under `--max-warnings 0`.
+  - **eslint-config-prettier 10 (a major) is safe here:** export shape unchanged (main
+    entry still exports `{rules}`, valid as a flat-config object), `require(...)` in
+    `eslint.config.js` still correct, **0 rules removed** (so nothing was silently
+    re-enabled), and it **touches none of the 4 enforced rules** — the prettier tail
+    cannot disable our enforcement.
+  - **No ESLint 10 breaking change applies.** Walked the migration guide item by item: no
+    `.eslintrc*`/`.eslintignore`, no `eslint-env` comments (now an error), no `.tsx/.jsx`,
+    no programmatic ESLint API, no removed CLI flags (`--no-eslintrc`, `--env`,
+    `--rulesdir`, `--ignore-path`, `--resolve-plugins-relative-to`) anywhere in
+    `package.json`/`.github/`/`scripts/`, single root config, no custom rules, and the
+    repo does not extend `eslint:recommended` so v10's three new recommended rules don't
+    land. `linterOptions.reportUnusedDisableDirectives` is unchanged — load-bearing for
+    the repo's three live `eslint-disable` comments.
+  - **Peers are officially satisfied, not forced:** `@typescript-eslint@8.70.0` declares
+    `peer eslint: ^8.57.0 || ^9.0.0 || ^10.0.0`. Single deduped `eslint@10.10.0`, no
+    shadow copy, `npm ci` clean with no `--force`/`--legacy-peer-deps` and no peer
+    warnings.
+  - **Gates:** lint 0 (both invocation forms); tsc 0; build 0; conventions 0; unit 69
+    suites / 768 passed / 3 skipped; integration 25 suites / 155 tests.
+  - **DEFERRED, third phase to raise it:** ESLint 10's engine floor is
+    `^20.19.0 || ^22.13.0 || >=24`. There is **no `engines` field, no `.nvmrc`, no
+    `engine-strict`** — nothing stops a contributor on Node 20.18 or 22.12 from installing
+    and hitting a runtime failure. CI's `node-version: '22'` satisfies the floor only
+    because it resolves to the latest 22.x. This compounds the Phase 4 divergence (CI 22 /
+    Docker 26 / types 26). Still its own PR. Logged UNCONFIRMED.
+  - **REBASED mid-flight onto #146.** A Dependabot bundle ("bump the minor-and-patch
+    group with 8 updates", `8cceb7b`) landed on `main` while PR #148 was open, touching
+    the same two manifests → `DIRTY`. Caught by the monitor's mergeability check on the
+    first poll, **before** CI ran. Notes:
+    - **#146 already bumped `@typescript-eslint/eslint-plugin` to `^8.70.0`**, so that
+      package is now main's and Phase 5's diff shrinks to `parser` + `eslint` +
+      `eslint-config-prettier` + the lint-script fix.
+    - **#146 also moved runtime deps my gates never covered** — the ACDP SDK
+      `0.8.3→0.8.5` and four OpenTelemetry packages. Every gate was therefore **re-run
+      from scratch** rather than carried forward, since the pre-rebase results described
+      a tree that no longer exists. All re-passed: lint 0, tsc 0 (both projects), build 0,
+      conventions 0, unit 69/768/3, integration 25/155.
+    - **All evidence above was re-derived against the new base `8cceb7b`**, not the
+      original `6884e99`: enforced sets identical per scope, and the lint surface is
+      **235 files on base, 235 on branch, byte-identical**.
+    - Resolution method: took main's `package.json` wholesale and re-applied exactly the
+      four edits (verified by `git diff origin/main -- package.json`), then regenerated
+      `package-lock.json` from main's rather than hand-merging 587 conflicted lines.
+    - **The Phase 2 rule ("branch each phase only after the previous merges") does not
+      prevent this** — Dependabot can land on `main` at any time. The monitor's
+      `DIRTY`/`CONFLICTING` check is the actual defense. Keep it in every phase.
+  - **Phase 6 intel — a named open handle.** The integration run reports exactly one:
+    **`CustomGC`**, the NAPI binding's native GC thread, triggered by importing
+    `@agentcontextdistributionprotocol/acdp` (`src/auth/acdp-verify.ts:17`). Pre-existing
+    and structurally unattributable to this diff (eslint devDependencies cannot reach
+    runtime NAPI threads). Jest 30's stricter teardown is expected to surface this exact
+    class of handle — so Phase 6 now has a *named* baseline handle to compare against
+    instead of a vague "a worker process failed to exit gracefully".
+  - **Next:** Phase 6 — `jest` 29→30, `@types/jest` 29→30. **Baseline must be re-recorded
+    first:** the plan gates against `68 suites / 766 passed / 3 skipped`, but Phases 2–3
+    added specs and `main` is now **69 / 768 / 3**. Phase 6 is also the one phase with
+    genuinely uncertain evidence — a jest-30 trial showed `67 / 748 / 21`, and the tidy
+    explanation for that delta was **disproved in Phase 0**, so any deviation must be
+    investigated, not waved through.
