@@ -39,7 +39,7 @@ updates:
         update-types: [minor, patch]
       major-updates:
         update-types: [major]
-  # Node runtime pin (node:22-bookworm-slim in the Dockerfile).
+  # Node runtime pin (node:26-bookworm-slim in the Dockerfile).
   - package-ecosystem: docker
     directory: /
     schedule:

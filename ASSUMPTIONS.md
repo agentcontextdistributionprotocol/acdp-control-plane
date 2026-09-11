@@ -96,3 +96,51 @@
   underlying `database "..." does not exist` instead of a bare "not reachable", so
   the next person diagnoses it in seconds rather than minutes.
 - **Status:** UNCONFIRMED
+
+## Deleting `supertest` + `@types/supertest` instead of bumping them (Phase 4, issue #137)
+- **Plan:** `plans/dep-migrations-137.md`
+- **Assumed:** `supertest@^7.0.0` and `@types/supertest@^6.0.2` are dead weight, not a
+  deliberate staging step toward replacing the hand-rolled test client.
+- **Chose:** deleted both rather than performing the planned `@types/supertest` 6→7
+  bump. Evidence: a gitignore-safe `command grep -rn "supertest"` across the whole tree
+  returns exactly two hits, both in `package.json`; zero imports in `src/`, `test/`,
+  `e2e/`, or any config; and `test/helpers/test-client.ts:1-3` builds requests on
+  `node:http`/`node:https` directly, with a comment at `:22` stating it is deliberately
+  dependency-free. This applies Phase 1's already-confirmed ruling on `uuid`: bumping a
+  package nothing imports adds churn and risk for no benefit.
+- **Alternatives:** (a) Bump `@types/supertest` 6→7 as planned — rejected: it types a
+  package with no consumers, so the bump is unverifiable by any test and pure noise.
+  (b) Delete `@types/supertest` but keep `supertest` — rejected as incoherent; the runtime
+  package is equally unused. (c) Leave both and document — rejected: that is what allowed
+  them to survive Phase 1's sweep.
+- **Blast radius if wrong:** Low and loudly reversible. If someone intended to migrate
+  `test-client.ts` onto supertest, that work now starts with `npm i -D supertest
+  @types/supertest` — one command. Nothing in CI, `docs/`, the Dockerfile, or any npm
+  script references either package. Verified after deletion: clean `npm ci` exit 0, `tsc`
+  0 on both projects, unit 69 suites / 768 passed / 3 skipped, integration 25 suites /
+  155 tests, coverage unchanged.
+- **Status:** UNCONFIRMED
+
+## Not raising CI to Node 26 in Phase 4 (issue #137)
+- **Plan:** `plans/dep-migrations-137.md`
+- **Assumed:** the Node-version divergence this bump widens is worth flagging but not
+  worth fixing inside a types PR.
+- **Chose:** left `.github/workflows/{ci,release}.yml` on `node-version: '22'` and did
+  not add an `engines` field. Corrected only the stale `.github/dependabot.yml:42`
+  comment, which claimed the Dockerfile pins `node:22-bookworm-slim` when it has been
+  `node:26-bookworm-slim` since `f49b3a7`.
+- **The actual concern:** `@types/node@26` now describes a NEWER runtime than CI executes
+  (CI 22, Docker 26). Before this bump the types were stricter than both runtimes — a
+  safe direction. Now they are looser than CI's, so the compiler will no longer catch a
+  Node-26-only API before it reaches a Node-22 CI run or deployment. Proven harmless
+  today: the verifier compiled the byte-identical `src/`+`test/` against
+  `@types/node@22.19.20` in a clean worktree and got exit 0, which is a stronger guarantee
+  than a grep — no Node-26-only API is in use.
+- **Alternatives:** (a) Raise CI to `node-version: '26'` — the cleanest fix, and it closes
+  a pre-existing divergence, but it changes what every future CI run executes and deserves
+  its own PR and its own green run, not a ride-along in a types bump. (b) Add
+  `"engines": {"node": ">=22"}` — documentation and an npm warning, not enforcement.
+- **Blast radius if wrong:** A future commit could type-check locally and fail at runtime
+  on CI's Node 22. Bounded by CI itself catching it as a test failure rather than it
+  reaching production, and by Docker already running 26.
+- **Status:** UNCONFIRMED

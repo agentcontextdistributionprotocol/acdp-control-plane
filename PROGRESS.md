@@ -791,3 +791,45 @@ fixes for:
     findings. `thread-stream@4` adds `engines: node >=20`, the only new floor (CI 22,
     Docker 26 — satisfied).
   - **Next:** Phase 4 — `@types/node` 22→26, `@types/supertest` 6→7.
+- **2026-09-11 — Phase 4 (`@types/node` 22→26; **delete** `supertest`+`@types/supertest`,
+  issue #137): DONE.** 1 verify round, **PASS** + 3 advisories (2 actioned, 1 deferred).
+  Opus-tier.
+  - **Files:** `package.json`, `package-lock.json`, `.github/dependabot.yml` (stale
+    comment). **Zero changes under `src/` or `test/`** — byte-identical to `main`.
+  - **Diverged from plan: `@types/supertest` DELETED, not bumped.** The gate found
+    `supertest` + `@types/supertest` are imported nowhere (`test/helpers/test-client.ts`
+    is a hand-rolled `node:http` client, deliberately dependency-free). **Phase 1's
+    dead-dep sweep missed them.** Applying Phase 1's own confirmed ruling, deletion beats
+    bumping a package nothing consumes. That makes **four** of #137's eighteen bundled
+    packages dead code rather than migrations (`uuid`, `nestjs-pino`, `pino-http`,
+    `supertest`). See `ASSUMPTIONS.md`.
+  - **Two plan premises disproved (plan file corrected):** (a) `Buffer<ArrayBufferLike>`
+    **already shipped in `@types/node@22.19.20`** — it was never friction for this jump.
+    (b) **No `Buffer` crosses into the `acdp` NAPI binding in production code** —
+    everything `src/` calls is string-in/string-out; `cosign.ts:757`'s `rawPub: Buffer` is
+    a local helper, and the only Buffer→binding crossings are two `.spec.ts` files.
+  - **Two hard questions answered with evidence, not assurance:**
+    1. *Is `skipLibCheck: true` hiding call-site errors?* **No.** Running with
+       `--skipLibCheck false` yields 66 errors, **zero** in `src`/`test` — all
+       `drizzle-orm` declaration bugs in dialects never imported. A purpose-written probe
+       confirmed call-site checking stays live *with* `skipLibCheck` on (a wrong
+       `Uint8Array` arg to the binding still errors `TS2345`).
+    2. *Does typing against Node 26 while CI runs Node 22 hide a Node-26-only API?* **No,
+       proven structurally.** Since `src`/`test` are byte-identical to `main`, the gate
+       compiled the SAME source against `@types/node@22.19.20` in a clean worktree →
+       exit 0. If a Node-26-only API were in use, that compile would have failed. Stronger
+       than any grep.
+  - **DEFERRED, needs a decision:** CI runs Node 22; Docker and now the types say Node 26.
+    Before this bump the types were *stricter* than both runtimes (safe direction); now
+    they are *looser* than CI's, so the compiler will no longer catch a Node-26-only API
+    before it reaches a Node-22 CI run. Harmless today (proven above), but unguarded.
+    Cleanest fix is raising CI to Node 26 — its own PR, its own risk. Logged UNCONFIRMED.
+  - **Gates:** tsc 0 on both projects; build 0; lint 0; conventions 0; **clean `npm ci` 0**
+    (the gate that matters when deleting a devDependency); no escape hatches added
+    (`@ts-nocheck`/`@ts-expect-error`/`@ts-ignore` still 0 repo-wide); unit 69 suites /
+    768 passed / 3 skipped; integration 25 suites / 155 tests; coverage unchanged
+    73.43 / 62.44 / 59.41 / 74.21. `npm audit` delta zero.
+  - **Lockfile:** zero packages added, `supertest`/`@types/supertest`/`@types/superagent`
+    removed, `@types/node` 22.19.20→26.5.1 + transitive `undici-types` 6.21.0→8.9.0.
+  - **Next:** Phase 5 — `eslint` 9→10, `eslint-config-prettier` 9→10,
+    `@typescript-eslint` → 8.70.
