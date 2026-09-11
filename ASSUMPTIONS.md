@@ -60,16 +60,28 @@
   "webhook_deliveries" does not exist`), whereas "every table in `public`" would
   cheerfully wipe whatever `DATABASE_URL` named — and this phase's own workflow is
   *pointing `DATABASE_URL` somewhere else*. Mitigated by `assertTestDatabase`,
-  which refuses any database whose name does not end in `_test`; verified by a
-  negative test (`production_db` → refused, with the password redacted in the
-  refusal). The remaining failure mode is a future table that must survive
+  which refuses any database whose name does not end in `_test`, reading the name
+  from `select current_database()` on the pool being truncated rather than from a
+  URL. **Correction (2026-09-11):** an earlier wording here claimed this was
+  "verified by a negative test". It was verified **manually**, once, during the
+  phase — there was no committed coverage, and a guard with a known history of
+  regressing (an earlier revision validated the module's default URL while
+  truncating a caller-supplied pool, and wiped a decoy database) had nothing
+  pinning it. Now automated in
+  `test/integration/test-db-guard.integration.spec.ts`, which drives `truncateAll`
+  against a live non-`_test` database and asserts the refusal, the credential
+  redaction, and that the rows survive. Teeth-proved: reintroducing the historical
+  URL-vs-connection bug fails 3 of its 5 tests, including the one asserting the
+  data is still there. The remaining failure mode is a future table that must survive
   truncation being cleared — a loud, immediate test failure whose fix is one entry
   in `PRESERVED_TABLES`. Reverting is a single file revert.
 - **Verified before landing:** the gate's own repro (`auth-persistence` alone,
   twice: 20/20 both times — it failed on run 2 before this fix), full suite twice
   against one database (24 suites / 151 tests, exit 0 each), unit suite unchanged
   from baseline, and `tsc`/`lint`/`check:conventions` all 0.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-11) — Fable-tier analysis (destructive operation,
+  see `DECISIONS.md`). Design upheld; the one gap it found (no committed coverage
+  of the guard) is closed by the spec above.
 
 ## Working around host port 5433 rather than stopping another project's container (Phase 0, issue #137)
 - **Plan:** `plans/dep-migrations-137.md`
@@ -95,7 +107,13 @@
   machine until the foreign container is stopped; `global-setup.ts` now reports the
   underlying `database "..." does not exist` instead of a bare "not reachable", so
   the next person diagnoses it in seconds rather than minutes.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-11) — decided by Opus analysis (see `DECISIONS.md`).
+  Moving the published port would have to change `docker-compose.test.yml:9` **and**
+  `.github/workflows/ci.yml:102,124` to work around one machine's conflict; the
+  `DATABASE_URL` escape hatch is already first-class in both readers. The analysis
+  found the *symptom* undocumented — `docs/TROUBLESHOOTING.md`'s `ECONNREFUSED`
+  section named only "Postgres isn't running", while a port squatter produces a
+  *successful* connect followed by `database "..." does not exist`. Documented now.
 
 ## Deleting `supertest` + `@types/supertest` instead of bumping them (Phase 4, issue #137)
 - **Plan:** `plans/dep-migrations-137.md`
@@ -119,7 +137,14 @@
   script references either package. Verified after deletion: clean `npm ci` exit 0, `tsc`
   0 on both projects, unit 69 suites / 768 passed / 3 skipped, integration 25 suites /
   155 tests, coverage unchanged.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-11) — decided by Opus analysis (see `DECISIONS.md`).
+  The analysis checked the four capabilities supertest would have bought rather than
+  restating the entry: cookies, redirects and multipart all have **zero surface** in
+  this API (Bearer/HMAC auth, JSON-only, no `res.redirect` in `src/`), and SSE — the
+  one real gap — is already served by the purpose-built `test/helpers/sse-client.ts`,
+  which supertest could not have replaced since superagent buffers to `end`.
+  `TestClient` earns its length on ACDP's `x-acdp-signature` HMAC signing, which
+  supertest gives nothing for.
 
 ## Not raising CI to Node 26 in Phase 4 (issue #137)
 - **Plan:** `plans/dep-migrations-137.md`
@@ -276,7 +301,28 @@
   Rejected: Phase 9 recorded that path as broken and unused, and carrying a whole webpack
   toolchain in the lockfile to preserve an untested build mode is a supply-chain and
   install-time cost for no current benefit. Re-adding is one `npm i -D` away.
+- **Two corrections (2026-09-11), from the reconcile analysis:**
+  1. The measurement above says removal "took `webpack@5.107.2` with it", which is
+     true, but the entry reads as though **both** packages left the tree. Only
+     webpack did. `tsconfig-paths@4.2.0` is **still installed**, as a *non-optional*
+     `dependency` of `@nestjs/cli@12.0.0` — `npm ls tsconfig-paths` still resolves
+     it and `node_modules/tsconfig-paths` exists. Removing the direct devDependency
+     removed the *declaration*, not the *install*. The verdict is unchanged, since
+     the package is inert either way with no `paths` declared anywhere.
+  2. `nest build --webpack` **deletes `dist/` before it fails**
+     (`@nestjs/cli` `build.action.js` runs `deleteOutDirIfEnabled` ahead of the
+     builder). It still exits 1 with a named "webpack package is required" error on
+     stderr, so the failure is loud — but the claim "fails loudly rather than
+     degrading silently" is worth stating precisely, given this repo was previously
+     bitten by a build that exited 0 while emitting nothing. The distinction holds:
+     there the compiler ran and concluded it was up to date, whereas here the
+     compiler is never constructed.
 - **Blast radius if wrong:** low and immediately visible. If anyone wants a webpack build,
   `nest build --webpack` fails at once with a missing-loader error rather than degrading
   silently. Nothing in CI, Docker or the runtime touches either package.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-09-11) — decided by Opus analysis (see `DECISIONS.md`).
+  Traced through the `@nestjs/cli@12` source: `loadWebpackDeps()` is the first
+  statement of the webpack defaults factory, so `require('webpack')` throws
+  `MODULE_NOT_FOUND` before any config is built and the action exits 1. The CLI now
+  also prints a deprecation notice steering users to rspack, so the capability
+  supposedly held in reserve is going away upstream regardless.

@@ -235,6 +235,49 @@ docker compose -f docker-compose.test.yml up -d postgres-test redis-test
 KEEP_TEST_DB=1 npm run test:integration
 ```
 
+### Integration tests fail with `database "acdp_control_plane_test" does not exist`
+
+Different failure from the one above, and easy to misread as it. Here the TCP
+connect **succeeds** — something is listening on 5433, it just isn't ours. Another
+project's Postgres is squatting the port, and because `docker compose --wait`
+reports its own container Healthy, everything looks fine right up to the query.
+
+This is structural rather than unlucky: this repo publishes `5433:5432`
+(`docker-compose.test.yml`), so any two ACDP-family projects on one machine collide.
+A second Docker daemon makes it worse — the squatter can be invisible to the
+context you are using.
+
+Diagnose, checking **every** Docker context rather than just the active one:
+
+```bash
+lsof -nP -iTCP:5433 -sTCP:LISTEN     # who actually holds the port
+docker context ls                    # more than one daemon?
+docker ps --format '{{.Names}} {{.Ports}}'
+```
+
+Then either stop the squatter, or leave it alone and publish this project's test
+Postgres somewhere else — `DATABASE_URL` is honored by both `global-setup.ts` and
+`test/helpers/test-db.ts`, so nothing in the repo needs changing:
+
+```bash
+docker run -d --name acdp-cp-itest-alt -p 55433:5432 \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=acdp_control_plane_test postgres:16-alpine
+DATABASE_URL='postgres://postgres:postgres@localhost:55433/acdp_control_plane_test' \
+  npm run test:integration
+```
+
+Prefer the override to editing the published port: that port is shared with CI
+(`.github/workflows/ci.yml`), so changing it to fix one machine changes it for
+everyone.
+
+> **Why `truncateAll` will not wipe the squatter.** It refuses any database whose
+> name does not end in `_test`, and it reads that name from
+> `select current_database()` on the connection it is about to truncate — never
+> from `DATABASE_URL`. A database that *does* end in `_test` but belongs to another
+> project still passes; that residual is deliberate and documented in
+> `test/helpers/test-db.ts`, and `test/integration/test-db-guard.integration.spec.ts`
+> pins the refusal path.
+
 ### The live-Redis spec says "no Redis at redis://127.0.0.1:6380 — SKIPPING"
 
 `test/integration/redis-live.integration.spec.ts` needs the `redis-test`
