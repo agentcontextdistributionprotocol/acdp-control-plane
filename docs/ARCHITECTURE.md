@@ -261,7 +261,13 @@ only on full success.
 - **Graceful shutdown** via `src/shutdown.ts`: a single idempotent handler on
   SIGINT/SIGTERM calls `app.close()` — which runs every `OnModuleDestroy`, so
   `DatabaseService` drains its pool, `StreamHubService` completes all Subjects and
-  background timers are cleared — then flushes OpenTelemetry, then exits 0.
+  background timers are cleared — then flushes OpenTelemetry, then exits 0. The
+  close is bounded by `SHUTDOWN_TIMEOUT_MS` (default 10s, keep it below the
+  platform's termination grace period): `http.Server.close()` waits for active
+  connections, so one in-flight request would otherwise hold shutdown open until
+  the orchestrator SIGKILLed the process. On overrun the handler drops lingering
+  sockets and exits **1**, because a shutdown that dropped live requests is not a
+  clean one.
   `enableShutdownHooks()` is deliberately **not** called: it would register Nest's
   own signal listeners *in addition* to ours, running the destroy hooks twice
   (`pool.end()` throws "Called end on pool more than once", the process exits 1 and

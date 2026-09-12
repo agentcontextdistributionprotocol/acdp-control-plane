@@ -1,19 +1,63 @@
 import { Logger } from '@nestjs/common';
 
-/** The signals we terminate on. SIGHUP is deliberately not handled: under a
- *  terminal it means "the terminal went away", and Node's default there is fine. */
-export const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
+/**
+ * The signals we terminate on.
+ *
+ * Deliberately NOT handled, and why — `enableShutdownHooks()` registered all
+ * eleven of Nest's `ShutdownSignal` values, so dropping any of them is a real
+ * behaviour change rather than an oversight:
+ *   - the fault signals (SIGSEGV, SIGABRT, SIGILL, SIGTRAP, SIGBUS, SIGFPE) —
+ *     trapping these masks a genuine crash and risks running destroy hooks on a
+ *     corrupted process. Letting Node die is correct.
+ *   - SIGHUP — under a terminal this means "the terminal went away"; Node's
+ *     default is fine.
+ *   - SIGUSR2 — used by nodemon and by Node's own inspector. Claiming it can
+ *     break both, and this service is not run under nodemon.
+ * SIGQUIT IS handled: `docker kill -s QUIT` and ctrl-\ are ordinary ways to stop
+ * a container, and they should drain the pool like any other stop.
+ */
+export const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGQUIT'] as const;
+
+/**
+ * How long the graceful close may take before we stop waiting and force the exit.
+ *
+ * This is not optional politeness. `app.close()` disposes the HTTP server, and
+ * `http.Server.close()` waits for every ACTIVE connection to finish — so a single
+ * in-flight request holds shutdown open indefinitely. Without a deadline the
+ * process never exits, the orchestrator SIGKILLs it after its grace period, and
+ * the result is exit 137: the same "looks like a crash" signature this module was
+ * written to eliminate, reached by a slower route. Ten seconds sits inside the
+ * common 30s termination grace period, leaving room for the forced path below.
+ */
+export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10_000;
 export type ShutdownSignal = (typeof SHUTDOWN_SIGNALS)[number];
 
 /** Everything the handler touches, injected so the sequencing can be tested
  *  without spawning a process or standing up a real Nest application. */
 export interface ShutdownDeps {
-  /** Closes the Nest application — runs every `OnModuleDestroy` hook. */
-  close: () => Promise<void>;
+  /**
+   * Closes the Nest application — runs every `OnModuleDestroy`,
+   * `BeforeApplicationShutdown` and `OnApplicationShutdown` hook.
+   *
+   * The signal is threaded through because `app.close(signal)` forwards it to
+   * `callBeforeShutdownHook`/`callShutdownHook`. Dropping it would hand a future
+   * `OnApplicationShutdown` implementer `undefined` where `enableShutdownHooks()`
+   * would have given it `'SIGTERM'` — a silent regression in the one interface
+   * this module took responsibility for.
+   */
+  close: (signal?: string) => Promise<void>;
   /** Flushes OpenTelemetry. Started before Nest exists, so it is shut down
    *  outside the Nest lifecycle too. */
   stopTelemetry: () => Promise<void>;
   exit: (code: number) => void;
+  /**
+   * Drop lingering sockets when the graceful close overruns `timeoutMs`. Wired to
+   * `http.Server.closeAllConnections()`; optional so the handler stays testable
+   * and usable without an HTTP server.
+   */
+  forceCloseConnections?: () => void;
+  /** Defaults to {@link DEFAULT_SHUTDOWN_TIMEOUT_MS}. */
+  timeoutMs?: number;
   logger?: Pick<Logger, 'error' | 'log'>;
 }
 
@@ -58,21 +102,61 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
   let inFlight: Promise<void> | undefined;
 
   const run = async (signal?: string): Promise<void> => {
-    logger.log(`received ${signal ?? 'shutdown'}, closing gracefully`);
     let failed = false;
 
+    // Outside every try below, so it cannot itself reject the memoized promise.
     try {
-      await deps.close();
-    } catch (err) {
-      failed = true;
-      logger.error(
-        `error closing the application: ${err instanceof Error ? err.message : String(err)}`,
-        err instanceof Error ? err.stack : undefined,
-      );
+      logger.log(`received ${signal ?? 'shutdown'}, closing gracefully`);
+    } catch {
+      // A logger that throws must not abort the shutdown it is narrating.
     }
 
-    // Deliberately outside the catch above: telemetry must be flushed even when
-    // the close failed. Its own failure must not mask the close result either.
+    const closePhase = (async () => {
+      try {
+        await deps.close(signal);
+      } catch (err) {
+        failed = true;
+        logger.error(
+          `error closing the application: ${err instanceof Error ? err.message : String(err)}`,
+          err instanceof Error ? err.stack : undefined,
+        );
+      }
+    })();
+
+    // Race the close against a deadline. `unref()` so the timer itself never
+    // keeps the process alive — if the close finishes first there is nothing
+    // left holding the loop open, and we must not be the thing that does.
+    const timeoutMs = deps.timeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+    let timer: NodeJS.Timeout | undefined;
+    let timedOut = false;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, timeoutMs);
+      timer.unref?.();
+    });
+
+    await Promise.race([closePhase, deadline]);
+    if (timer) clearTimeout(timer);
+
+    if (timedOut) {
+      failed = true;
+      logger.error(
+        `graceful close exceeded ${timeoutMs}ms — forcing shutdown. In-flight ` +
+          'requests are being dropped; a hung close usually means an open ' +
+          'connection (SSE, keep-alive) or a destroy hook that never settles.',
+      );
+      try {
+        deps.forceCloseConnections?.();
+      } catch {
+        // Best effort: we are already on the forced path.
+      }
+    }
+
+    // Deliberately outside the close handling: telemetry must be flushed even
+    // when the close failed or overran, because that is exactly when the traces
+    // explaining it matter.
     try {
       await deps.stopTelemetry();
     } catch (err) {
@@ -82,7 +166,12 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
       );
     }
 
-    deps.exit(failed ? 1 : 0);
+    try {
+      deps.exit(failed ? 1 : 0);
+    } catch {
+      // `exit` throwing would reject the memoized promise and surface as an
+      // unhandled rejection — the original #158 failure mode by another route.
+    }
   };
 
   return (signal?: string): Promise<void> => {
@@ -101,7 +190,12 @@ export function registerShutdownHandlers(
   proc: Pick<NodeJS.Process, 'on' | 'off'> = process,
 ): () => void {
   const listeners = SHUTDOWN_SIGNALS.map((signal) => {
-    const listener = (): void => void handler(signal);
+    // `.catch()` rather than `void`: `void` discards the value but does NOT mark
+    // the promise handled, so a rejection would still become an unhandledRejection
+    // and kill the process mid-shutdown.
+    const listener = (): void => {
+      handler(signal).catch(() => undefined);
+    };
     proc.on(signal, listener);
     return [signal, listener] as const;
   });

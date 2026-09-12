@@ -9,6 +9,13 @@
 #    throw AppException instead.
 # 2. No `console.*` — runtime logging is a pino-backed LoggerService via the Nest Logger.
 # 3. No `process.env` outside AppConfigService + the documented exemptions.
+# 4. No `app.enableShutdownHooks()` — it registers Nest's OWN signal listeners in
+#    ADDITION to the handler in src/shutdown.ts, so a single SIGTERM runs every
+#    OnModuleDestroy twice; pool.end() then throws "Called end on pool more than
+#    once" and the process exits 1 with telemetry unflushed (issue #158). This is
+#    a one-line regression that only manifests in production, which is exactly
+#    what a grep rule is for. app.close() already runs the destroy AND shutdown
+#    hooks on its own.
 set -u
 
 fail=0
@@ -37,5 +44,13 @@ check "no console.* (use Nest Logger)" \
 check "no process.env outside AppConfigService" \
   'process\.env' \
   '(app-config|main\.ts|telemetry/telemetry\.ts|db/migrate\.ts|\.spec\.ts|auth/pinned-keys\.service|auth/pinned-keys-admin\.controller|auth/auth\.module|domain-packs/domain-packs\.module)'
+
+# The exemption skips COMMENT lines (`// ...` and ` * ...` in a docblock), because
+# main.ts and shutdown.ts both explain at length why this call must not come back
+# — naming it is the point. An actual statement is never a comment line, so a real
+# re-introduction still trips the check.
+check "no enableShutdownHooks (see #158)" \
+  'enableShutdownHooks' \
+  '(\.spec\.ts|:[0-9]+: *(//|\*))'
 
 exit $fail

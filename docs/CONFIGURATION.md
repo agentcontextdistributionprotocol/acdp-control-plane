@@ -38,6 +38,7 @@ production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startu
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `DATABASE_URL` | string | `postgres://postgres:postgres@localhost:5432/acdp_control_plane` | Postgres connection string. |
+| `SHUTDOWN_TIMEOUT_MS` | `10000` | Max ms `app.close()` may take on SIGTERM/SIGINT/SIGQUIT before lingering sockets are dropped and the process exits 1. Keep below the platform termination grace period. |
 | `DB_POOL_MAX` | number | `20` | Max pool connections per replica. **Must be ≥ 2.** |
 | `DB_POOL_IDLE_TIMEOUT` | number (ms) | `30000` | Idle connection timeout. |
 | `DB_POOL_CONNECTION_TIMEOUT` | number (ms) | `5000` | Connection-acquisition timeout. |

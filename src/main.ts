@@ -82,9 +82,24 @@ async function bootstrap() {
 
   registerShutdownHandlers(
     createShutdownHandler({
-      close: () => app.close(),
+      // Thread the signal through. `NestApplicationContext.close(signal)`
+      // forwards it to callBeforeShutdownHook/callShutdownHook at runtime, but
+      // @nestjs/common's public interface still declares `close(): Promise<void>`
+      // — hence the cast. Without it a future OnApplicationShutdown implementer
+      // would receive `undefined` where `enableShutdownHooks()` gave it
+      // 'SIGTERM', which is the one behaviour removing that call would otherwise
+      // have cost us. Drop the cast if/when the published types catch up.
+      close: (signal) =>
+        (app.close as (signal?: string) => Promise<void>)(signal),
       stopTelemetry,
       exit: (code) => process.exit(code),
+      timeoutMs: config.shutdownTimeoutMs,
+      // Last resort when the graceful close overruns its deadline: an in-flight
+      // request otherwise holds http.Server.close() open indefinitely.
+      forceCloseConnections: () => {
+        const server = app.getHttpServer() as { closeAllConnections?: () => void };
+        server.closeAllConnections?.();
+      },
     }),
   );
 }

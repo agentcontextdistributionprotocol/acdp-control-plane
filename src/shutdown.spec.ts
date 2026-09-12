@@ -62,6 +62,9 @@ describe('createShutdownHandler', () => {
       const { handler, deps } = build(() => ({ close }));
 
       const first = handler('SIGTERM');
+      // Cross a microtask boundary before re-entering, so this also catches a
+      // guard that is correct synchronously but lost across an await.
+      await Promise.resolve();
       // Still in flight — this is the window the old code re-entered.
       const second = handler('SIGTERM');
       release();
@@ -123,6 +126,92 @@ describe('createShutdownHandler', () => {
   });
 });
 
+describe('the shutdown deadline', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('forces the exit when close() never settles, instead of hanging forever', async () => {
+    // This is the regression the first version of this fix introduced: app.close()
+    // disposes the HTTP server, and http.Server.close() waits for every ACTIVE
+    // connection — so one in-flight request held shutdown open indefinitely, the
+    // orchestrator SIGKILLed it, and the exit code was 137. A hang is strictly
+    // worse than the exit-1 bug this module exists to fix.
+    const forceCloseConnections = jest.fn();
+    const { handler, deps } = build(() => ({
+      close: jest.fn(() => new Promise<void>(() => undefined)), // never settles
+      forceCloseConnections,
+      timeoutMs: 25,
+    }));
+
+    await handler('SIGTERM');
+
+    expect(forceCloseConnections).toHaveBeenCalledTimes(1);
+    // Telemetry is still flushed on the forced path — that is when the traces
+    // explaining the hang matter most.
+    expect(deps.stopTelemetry).toHaveBeenCalledTimes(1);
+    // Non-zero: an overrun shutdown is not a clean one.
+    expect(deps.exit).toHaveBeenCalledWith(1);
+  });
+
+  it('does not force-close or penalise the exit code when close() is prompt', async () => {
+    const forceCloseConnections = jest.fn();
+    const { handler, deps } = build(() => ({ forceCloseConnections, timeoutMs: 10_000 }));
+
+    await handler('SIGTERM');
+
+    expect(forceCloseConnections).not.toHaveBeenCalled();
+    expect(deps.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('survives a forceCloseConnections that throws', async () => {
+    const { handler, deps } = build(() => ({
+      close: jest.fn(() => new Promise<void>(() => undefined)),
+      forceCloseConnections: jest.fn(() => {
+        throw new Error('socket teardown failed');
+      }),
+      timeoutMs: 25,
+    }));
+
+    await expect(handler('SIGTERM')).resolves.toBeUndefined();
+    expect(deps.exit).toHaveBeenCalledWith(1);
+  });
+});
+
+describe('signal threading', () => {
+  it('passes the signal to close(), for Before/OnApplicationShutdown hooks', async () => {
+    const { handler, deps } = build();
+    await handler('SIGTERM');
+    expect(deps.close).toHaveBeenCalledWith('SIGTERM');
+  });
+});
+
+describe('containment of the un-try-wrapped statements', () => {
+  it('still shuts down when the logger throws', async () => {
+    const throwingLogger = {
+      log: jest.fn(() => {
+        throw new Error('logger exploded');
+      }),
+      error: jest.fn(),
+    } as unknown as ShutdownDeps['logger'];
+    const { handler, deps } = build(() => ({ logger: throwingLogger }));
+
+    await expect(handler('SIGTERM')).resolves.toBeUndefined();
+    expect(deps.close).toHaveBeenCalledTimes(1);
+    expect(deps.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('does not reject when exit() itself throws', async () => {
+    // A rejected memoized promise would surface as an unhandledRejection and kill
+    // the process mid-shutdown — #158's failure mode by another route.
+    const { handler } = build(() => ({
+      exit: jest.fn(() => {
+        throw new Error('exit unavailable');
+      }),
+    }));
+
+    await expect(handler('SIGTERM')).resolves.toBeUndefined();
+  });
+});
+
 describe('registerShutdownHandlers', () => {
   it('handles every shutdown signal, passing the signal through', async () => {
     const proc = new EventEmitter() as unknown as NodeJS.Process;
@@ -135,6 +224,17 @@ describe('registerShutdownHandlers', () => {
     }
 
     expect(handler.mock.calls.map((c) => c[0])).toEqual([...SHUTDOWN_SIGNALS]);
+  });
+
+  it('defaults to the real process object', () => {
+    // Every other test injects an EventEmitter, so nothing exercised the default
+    // binding — a typo there would ship green while leaving the service with no
+    // shutdown handling at all.
+    const before = process.listenerCount('SIGTERM');
+    const unregister = registerShutdownHandlers(jest.fn(async (_s?: string) => undefined));
+    expect(process.listenerCount('SIGTERM')).toBe(before + 1);
+    unregister();
+    expect(process.listenerCount('SIGTERM')).toBe(before);
   });
 
   it('unregisters cleanly, leaving no listeners behind', () => {
