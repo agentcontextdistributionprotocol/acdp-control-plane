@@ -26,9 +26,21 @@ export class RequestLoggerMiddleware implements NestMiddleware {
         path,
         status_code: String(statusCode),
       });
-      this.logger.log(
-        JSON.stringify({ method, path: originalUrl, statusCode, durationMs: duration, requestId }),
-      );
+      // Structured fields, NOT a stringified message: pino puts an object
+      // message's own keys at the top level of the line, so an aggregator can
+      // filter on `statusCode` / `durationMs` / `requestId` without re-parsing
+      // `msg` per line. `msg` stays a short human-readable summary.
+      // `requestId` is read off the request rather than the ambient store
+      // because this fires from a `res` 'finish' listener, which is not
+      // guaranteed to run inside the AsyncLocalStorage context.
+      this.logger.log({
+        msg: `${method} ${originalUrl} ${statusCode} ${duration}ms`,
+        method,
+        path: originalUrl,
+        statusCode,
+        durationMs: duration,
+        requestId,
+      });
     });
 
     next();

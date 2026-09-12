@@ -285,9 +285,20 @@ only on full success.
   `did:web` `WITNESS_ID` whose host disagrees with `PUBLIC_HOST` is fatal at
   boot (RFC-ACDP-0015 §9), and cosigning without `LOG_WITNESS_ENABLED=true`
   refuses to start — the cosigner rides the checkpoint witness.
-- **Observability**: pino structured logs (per-request JSON), Prometheus metrics
+- **Observability**: pino structured logs, Prometheus metrics
   on `/metrics` (all constructed in `InstrumentationService`), optional OTel SDK
   (`OTEL_ENABLED=true`). Metric inventory in [API.md](./API.md#observability).
+- **Logging shape**: `CorrelationIdMiddleware` assigns (or honours an inbound)
+  `x-request-id`, echoes it on the response, and holds it in an
+  `AsyncLocalStorage` (`src/common/correlation.ts`). `PinoLogger` merges that
+  id into **every** line as `requestId`, so a failure logged inside a service
+  ties back to the request that caused it; outside a request — the retention,
+  receipt-audit and witness sweeps — the field is omitted rather than
+  placeholdered. An **object** passed as the message becomes top-level pino
+  fields (`msg` is the human summary), which is how the per-request HTTP
+  summary emits `method` / `path` / `statusCode` / `durationMs` / `requestId`
+  as indexable fields instead of a JSON string. `LOG_LEVEL` sets the
+  threshold; dev mode routes through `pino-pretty` when it resolves.
 - **Multi-instance**: requires `AUTH_PERSISTENCE=postgres` (shared challenge /
   revocation / ledger state), `STREAM_HUB_STRATEGY=redis`, and a Redis-backed
   quota store — otherwise per-process state diverges. Startup warns when it
