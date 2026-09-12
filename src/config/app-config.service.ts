@@ -214,6 +214,15 @@ export class AppConfigService implements OnModuleInit {
   readonly redisUrl = process.env.REDIS_URL ?? '';
   readonly streamSseHeartbeatMs = readNumber('STREAM_SSE_HEARTBEAT_MS', 15000);
 
+  // Graceful shutdown. How long `app.close()` may take on SIGTERM/SIGINT/SIGQUIT
+  // before the handler stops waiting, drops lingering sockets and exits. A single
+  // in-flight request otherwise holds `http.Server.close()` open indefinitely and
+  // the orchestrator SIGKILLs the process (exit 137). Keep this comfortably BELOW
+  // the platform's termination grace period — 30s on Kubernetes by default — so
+  // the forced path runs before the SIGKILL rather than after it. See
+  // `src/shutdown.ts` and issue #158.
+  readonly shutdownTimeoutMs = readNumber('SHUTDOWN_TIMEOUT_MS', 10000);
+
   // DB pool
   readonly dbPoolMax = readNumber('DB_POOL_MAX', 20);
   readonly dbPoolIdleTimeout = readNumber('DB_POOL_IDLE_TIMEOUT', 30000);

@@ -258,8 +258,22 @@ only on full success.
 - **Migrations** run programmatically at boot (`src/db/migrate.ts`) from SQL
   files committed under `drizzle/` (no `drizzle-kit` at runtime). Applied
   migrations are tracked in `_migrations`.
-- **Graceful shutdown** via `enableShutdownHooks()`: `DatabaseService` drains its
-  pool, `StreamHubService` completes all Subjects, background timers are cleared.
+- **Graceful shutdown** via `src/shutdown.ts`: a single idempotent handler on
+  SIGINT/SIGTERM calls `app.close()` — which runs every `OnModuleDestroy`, so
+  `DatabaseService` drains its pool, `StreamHubService` completes all Subjects and
+  background timers are cleared — then flushes OpenTelemetry, then exits 0. The
+  close is bounded by `SHUTDOWN_TIMEOUT_MS` (default 10s, keep it below the
+  platform's termination grace period): `http.Server.close()` waits for active
+  connections, so one in-flight request would otherwise hold shutdown open until
+  the orchestrator SIGKILLed the process. On overrun the handler drops lingering
+  sockets and exits **1**, because a shutdown that dropped live requests is not a
+  clean one.
+  `enableShutdownHooks()` is deliberately **not** called: it would register Nest's
+  own signal listeners *in addition* to ours, running the destroy hooks twice
+  (`pool.end()` throws "Called end on pool more than once", the process exits 1 and
+  telemetry is never flushed — issue #158). `app.close()` already runs the destroy
+  and shutdown hooks by itself, and nothing in `src/` implements
+  `OnApplicationShutdown`.
 - **Background services**: `WebhookService` retry sweep, `AuthSweeperService` (GCs
   expired challenges / revocations / ledger), `RevocationPollerService` (consumes
   peer feeds), `DataRetentionService` (off unless `DATA_RETENTION_ENABLED`),

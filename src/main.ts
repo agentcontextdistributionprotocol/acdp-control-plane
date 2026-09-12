@@ -10,6 +10,7 @@ import { PinoLogger } from './common/pino-logger';
 import { AppConfigService } from './config/app-config.service';
 import { runMigrations } from './db/migrate';
 import { GlobalExceptionFilter } from './errors/exception.filter';
+import { createShutdownHandler, registerShutdownHandlers } from './shutdown';
 import { startTelemetry, stopTelemetry } from './telemetry/telemetry';
 
 async function bootstrap() {
@@ -70,16 +71,37 @@ async function bootstrap() {
     SwaggerModule.setup(config.swaggerPath, app, document);
   }
 
-  app.enableShutdownHooks();
-
+  // NOTE: `app.enableShutdownHooks()` is deliberately NOT called. It registers
+  // Nest's own SIGTERM/SIGINT listeners, which would run the destroy hooks a
+  // SECOND time alongside the handler below — `pool.end()` then throws "Called
+  // end on pool more than once" and the process dies mid-shutdown with exit 1.
+  // `app.close()` already runs the destroy and shutdown hooks on its own, and
+  // nothing in src/ implements OnApplicationShutdown, so nothing is lost.
+  // See src/shutdown.ts and issue #158.
   await app.listen(config.port, config.host);
 
-  const shutdown = async () => {
-    await app.close();
-    await stopTelemetry();
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  registerShutdownHandlers(
+    createShutdownHandler({
+      // Thread the signal through. `NestApplicationContext.close(signal)`
+      // forwards it to callBeforeShutdownHook/callShutdownHook at runtime, but
+      // @nestjs/common's public interface still declares `close(): Promise<void>`
+      // — hence the cast. Without it a future OnApplicationShutdown implementer
+      // would receive `undefined` where `enableShutdownHooks()` gave it
+      // 'SIGTERM', which is the one behaviour removing that call would otherwise
+      // have cost us. Drop the cast if/when the published types catch up.
+      close: (signal) =>
+        (app.close as (signal?: string) => Promise<void>)(signal),
+      stopTelemetry,
+      exit: (code) => process.exit(code),
+      timeoutMs: config.shutdownTimeoutMs,
+      // Last resort when the graceful close overruns its deadline: an in-flight
+      // request otherwise holds http.Server.close() open indefinitely.
+      forceCloseConnections: () => {
+        const server = app.getHttpServer() as { closeAllConnections?: () => void };
+        server.closeAllConnections?.();
+      },
+    }),
+  );
 }
 
 bootstrap().catch((err) => {
