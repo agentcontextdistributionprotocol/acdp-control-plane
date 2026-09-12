@@ -118,3 +118,39 @@ analyzed by **Fable**. All four are reopenable from this record.
 by Fable analysis that found the catastrophic case already guarded. One code follow-up was
 produced and **landed in this same pass** (the guard regression spec); nothing blocks a
 future ship.
+
+---
+
+## 2026-09-12 — Logging: structured fields + request correlation (issue #159)
+
+Not a `/reconcile` pass — one design decision made while fixing #159, recorded here
+because it sets an internal API shape that later code will copy.
+
+### How a caller passes structured fields to `PinoLogger` — **DECIDED: object-as-message**
+- **Decided by:** Opus. Low blast radius: internal logging adapter, no wire contract,
+  no schema, reversible in a commit.
+- **Options:** (a) an object in the message slot, whose keys pino lifts to top level;
+  (b) a new `logStructured(bindings, msg, context)` method on `PinoLogger`;
+  (c) inject the raw pino instance into callers that want fields.
+- **Chose (a).** `LoggerService` already declares `log(message: any, ...optionalParams)`
+  and Nest's `Logger` facade forwards the message **untouched**, appending only its own
+  context — verified in `node_modules/@nestjs/common/services/logger.service.js`. So an
+  object message reaches the adapter intact through the ordinary
+  `new Logger(ClassName.name)` convention, with no new method, no DI change, and no
+  second logging path to keep in sync.
+- **Why not (b):** a second method is invisible through the `Logger` facade — callers
+  hold a `Logger`, not a `PinoLogger`, so they could not reach it without changing how
+  every service obtains its logger. That is a much larger diff for the same result.
+- **Why not (c):** it breaks the `CLAUDE.md` convention that every class logs through
+  `new Logger(ClassName.name)`, and re-introduces a second logging path.
+- **Cost if wrong:** a mechanical edit at each call site. Two today.
+- **Guarded by:** grep rule 5 in `scripts/ci-conventions.sh` (no `JSON.stringify` into a
+  log message), which spans lines because the regression form was a multi-line call.
+
+### Where the correlation `AsyncLocalStorage` lives — **DECIDED: `src/common/correlation.ts`**
+- **Decided by:** Opus. Pure code organisation; the middleware re-exports both symbols,
+  so no import path changed.
+- **Why:** `PinoLogger` must read the store, and `common/` importing `middleware/` would
+  drag express and the Nest DI decorators into the logging adapter. Extracting the store
+  to a leaf module both layers depend on removes that edge. `CorrelationIdMiddleware`
+  remains the only writer.

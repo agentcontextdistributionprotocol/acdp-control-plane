@@ -16,6 +16,12 @@
 #    a one-line regression that only manifests in production, which is exactly
 #    what a grep rule is for. app.close() already runs the destroy AND shutdown
 #    hooks on its own.
+# 5. No `logger.<level>(JSON.stringify(...))` — PinoLogger takes an OBJECT as the
+#    message and lifts its keys to top-level pino fields. Stringifying a payload
+#    into the message slot buries every field inside `msg` as an escaped string,
+#    so an aggregator cannot index or filter on it without re-parsing each line
+#    (issue #159). It looks correct, emits a line, and passes every other check —
+#    exactly the class of regression a grep rule catches and review does not.
 set -u
 
 fail=0
@@ -52,5 +58,29 @@ check "no process.env outside AppConfigService" \
 check "no enableShutdownHooks (see #158)" \
   'enableShutdownHooks' \
   '(\.spec\.ts|:[0-9]+: *(//|\*))'
+
+# Needs to span lines — the form this actually regressed as was
+#   this.logger.log(
+#     JSON.stringify({ ... }),
+#   );
+# so a line-based grep would miss it. BSD grep (macOS) has no -P and no
+# multiline mode, so this uses perl, which is present on macOS and on the CI
+# runners alike. Reports file:line like the greps above.
+stringify_hits=$(
+  find src -name '*.ts' ! -name '*.spec.ts' -print0 |
+    xargs -0 perl -0777 -ne '
+      while (/logger\.(?:log|warn|error|debug|verbose)\(\s*JSON\.stringify/gs) {
+        my $line = (substr($_, 0, pos($_)) =~ tr/\n//) + 1;
+        print "$ARGV:$line: logger.<level>(JSON.stringify(...))\n";
+      }
+    '
+)
+if [ -n "$stringify_hits" ]; then
+  echo "✗ no JSON.stringify into a log message (see #159) — forbidden occurrences:"
+  echo "$stringify_hits"
+  fail=1
+else
+  echo "✓ no JSON.stringify into a log message (see #159)"
+fi
 
 exit $fail

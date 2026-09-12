@@ -1,10 +1,15 @@
 import { Injectable, NestMiddleware } from '@nestjs/common';
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { NextFunction, Request, Response } from 'express';
+import { correlationStorage } from '../common/correlation';
 
-export const correlationStorage = new AsyncLocalStorage<string>();
 export const CORRELATION_HEADER = 'x-request-id';
+
+// The store and its reader live in `common/correlation` so `PinoLogger` can
+// read them without pulling express + the DI decorators into `common/`.
+// Re-exported here because this middleware is the only writer, and so
+// existing imports of `getCorrelationId` from this path keep resolving.
+export { correlationStorage, getCorrelationId } from '../common/correlation';
 
 @Injectable()
 export class CorrelationIdMiddleware implements NestMiddleware {
@@ -14,8 +19,4 @@ export class CorrelationIdMiddleware implements NestMiddleware {
     (req as unknown as Record<string, unknown>).requestId = requestId;
     correlationStorage.run(requestId, () => next());
   }
-}
-
-export function getCorrelationId(): string | undefined {
-  return correlationStorage.getStore();
 }
