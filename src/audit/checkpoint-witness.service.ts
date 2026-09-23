@@ -5,9 +5,18 @@
  * RFC-ACDP-0012 §13 says detection requires: it retains registry checkpoints
  * over time and demands consistency between them, so a history rewrite,
  * split view, or log reset produces persisted, non-repudiable evidence
- * instead of going unnoticed. Strictly the witness half of the reserved
- * RFC-ACDP-0009 §2.12 ecosystem: the cosigning protocol is NOT specified,
- * so no cosignatures are minted — witness + detect only.
+ * instead of going unnoticed.
+ *
+ * On top of detection, this file also implements RFC-ACDP-0015's two
+ * independent witness roles once a checkpoint passes §9.3 below:
+ *   - **Cosign** (`cosignSafe`, gated by `WITNESS_COSIGNING_ENABLED`): signs the
+ *     checkpoint with this witness's own Ed25519 key (`WitnessSigningService`)
+ *     and persists it via `LogCosignatureRepository` — served directly from
+ *     this witness at `GET /log/witness`, bypassing the registry (§6.2).
+ *   - **Quorum** (`evaluateQuorum`, gated by `WITNESS_QUORUM_ENABLED`): counts
+ *     distinct `WITNESS_QUORUM_TRUSTED` witnesses attesting a head and records
+ *     the §8.1 N-witnessed result (`QuorumResult`) alongside the witnessed head.
+ * Both are off by default and independent of each other and of detection.
  *
  * Per sweep (advisory-locked, config-gated — the receipt-audit pattern),
  * for every enrolled+enabled registry advertising

@@ -251,9 +251,11 @@ the pinned floor is now `^0.14.1`, so `sdkHasLogSurface()` feature-detects it
 and the §9.1/§9.2 folds delegate to the binding in practice, with
 `src/audit/log-verify.ts` (RFC 9162 folds transcribed from the RFC) kept as
 the fallback for an older binding and cross-checked against the SDK path by
-`log-verify.parity.spec.ts`. Registry-side cosigning
-(RFC-ACDP-0009 §2.12) is deliberately NOT implemented — the CP is an external
-witness only. Transport/DID failures are treated as environmental
+`log-verify.parity.spec.ts`. Registry-side *aggregation* of cosignatures into
+`/log/checkpoint` (RFC-ACDP-0015 §6.1) is NOT implemented here — the CP is a
+witness (and, independently, an optional quorum consumer of another
+registry's aggregated cosignatures), never a registry itself. Transport/DID
+failures are treated as environmental
 (`consecutive_failures`), never dishonesty alerts; the retained head advances
 only on full success.
 

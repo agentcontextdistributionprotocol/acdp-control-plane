@@ -2029,3 +2029,24 @@ seam (a different RFC, or a real code dependency edge).
   this session — deploy remains a deliberate separate step, not owed by this PR.
 - **PR1 shipped end-to-end.** Next: PR2 (Phases 5-9, RFC-ACDP-0015 witness/cosign correctness
   fixes B1-B9) on a fresh branch `rfc-0014/pr2-witness-fixes` cut from updated main.
+
+### /implement checkpoints — rfc-0014/pr2-witness-fixes
+
+**Phase 5 — Correct the three false claims that cosigning is unimplemented.** PASS r1
+(fresh Opus verifier, not critical — doc/comment-only, zero behavior change, no one-way
+door). Fixed: `CLAUDE.md:332-333` (false "deliberately NOT implemented" claim, replaced +
+new paragraph documenting `WitnessSigningService`/`WITNESS_COSIGNING_ENABLED`/
+`WITNESS_QUORUM_ENABLED`/`/log/witness`/`log_cosignatures`, plus the "Key env vars" table
+entry), `src/audit/checkpoint-witness.service.ts:8-10` (header now describes `cosignSafe`
++ `evaluateQuorum`), `src/db/schema.ts:405-406` (comment no longer claims cosigning
+unimplemented), `docs/ARCHITECTURE.md:255-256` (precisely distinguishes implemented
+witness-side cosign/quorum from correctly-still-unimplemented registry-side §6.1
+aggregation). Verifier confirmed: grep acceptance criterion clean (one surviving hit is an
+accurate, scoped test-fixture comment about the default-disabled test setup — exactly the
+carve-out the plan's own criterion text allows), all 5 documented capabilities verified
+true against code (not just prose), diff touches only comment/doc lines (`git diff -U0`
+checked), unit suite pass count identical to pre-phase baseline (72/895/3/898),
+`drizzle/0016_log_witness.sql` untouched. Files touched: `CLAUDE.md`,
+`src/audit/checkpoint-witness.service.ts`, `src/db/schema.ts`, `docs/ARCHITECTURE.md`,
+`plans/rfc-0014-0015-upgrade.md` (Phase 5 → DONE). No `ASSUMPTIONS.md` entries.
+Next: Phase 6 (tenant isolation on witness evidence + self-cosignature guard, B7/B8).

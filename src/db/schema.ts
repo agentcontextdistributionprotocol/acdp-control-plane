@@ -402,8 +402,10 @@ export const receiptAudits = pgTable(
 
 // Transparency-log checkpoint witness (ACDP 0.3.0 Tier 3, RFC-ACDP-0012,
 // migration 0016). Every checkpoint (signed tree head) this control plane has
-// witnessed, verbatim — the forensic anchors §13/§15 call for. Witness/monitor
-// role only: cosigning is the reserved RFC-ACDP-0009 §2.12 work.
+// witnessed, verbatim — the forensic anchors §13/§15 call for. Cosigning
+// (RFC-ACDP-0015, migration 0017) and quorum consumption (migration 0018)
+// are separate, independently-gated tables below (logCosignatures etc.) —
+// this table is detection/retention only.
 export const logWitnessCheckpoints = pgTable(
   'log_witness_checkpoints',
   {
