@@ -703,6 +703,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         quorum.meetsQuorum !== null
       ) {
         await this.witnessRepo.updateQuorum(
+          tenantId,
           checkpoint.log_id,
           checkpoint.tree_size,
           checkpoint.root_hash,

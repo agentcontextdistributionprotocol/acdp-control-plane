@@ -10,9 +10,19 @@ import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
  * `log_cosignatures` is the cosign layer sitting beside the detect-only
  * `log_witness_checkpoints`: only checkpoints that PASSED the §7 obligation
  * (signature + consistency) get a row here. Idempotent on the
- * (witness_id, log_id, tree_size, root_hash) unique key — re-observing the same
- * head keeps the first cosignature (cosignatures are ephemeral per-observation
- * evidence, §4; we retain one per tuple).
+ * (tenant_id, witness_id, log_id, tree_size, root_hash) unique key (migration
+ * 0019) — re-observing the same head for the same tenant keeps the first
+ * cosignature (cosignatures are ephemeral per-observation evidence, §4; we
+ * retain one per tuple).
+ *
+ * `list` and `coveredLogs` below deliberately take NO `tenantId` — this is
+ * not an oversight. `GET /log/witness` and `/.well-known/acdp-witness.json`
+ * (`src/witness/witness.controller.ts`) are RFC-ACDP-0015 §6.2 public feeds
+ * for a SINGLE witness identity, this control plane's own `WITNESS_ID` — not
+ * a tenant-scoped view. They are already scoped by the thing that matters
+ * (`witnessId`), same as recording a cosignature is scoped by tenant via the
+ * unique key above. Multiple tenants sharing one CP share one witness
+ * identity and its public feed by design.
  */
 @Injectable()
 export class LogCosignatureRepository {

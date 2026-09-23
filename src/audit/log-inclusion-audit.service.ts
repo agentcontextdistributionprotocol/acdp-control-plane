@@ -303,6 +303,7 @@ export class LogInclusionAuditService implements OnModuleInit, OnModuleDestroy {
     // root — otherwise the registry is showing this consumer a different
     // tree than it showed the witness (split view).
     const witnessed = await this.witnessRepo.findByLogIdAndSize(
+      ev.tenantId,
       checkpoint.log_id,
       checkpoint.tree_size,
     );

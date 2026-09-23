@@ -848,6 +848,43 @@ describe('CheckpointWitnessPollerService — witness quorum consumption (RFC-ACD
     );
   });
 
+  it('refreshes the quorum trust signal on a re-observation, scoped to the enrollment tenant', async () => {
+    const tp = thirdPartySigner();
+    const h = makeHarness({
+      config: {
+        witnessQuorumEnabled: true,
+        witnessQuorumTrusted: [THIRD_PARTY],
+        witnessQuorumMinWitnesses: 1,
+      },
+    });
+    h.didResolver.resolveKey.mockResolvedValue({
+      keyId: THIRD_PARTY_KEY,
+      algorithm: 'ed25519',
+      publicKeyB64: tp.publicKeyB64,
+    });
+    // recordCheckpoint returns null for a re-observation of an already-known
+    // head (the evidence row is append-once) — the quorum-refresh branch only
+    // fires on that null.
+    h.witnessRepo.recordCheckpoint.mockResolvedValue(null);
+    const cp = signCheckpoint(privateKey, {
+      tree_size: 4,
+      root_hash: wire(mth(makeLeafHashes(4))),
+    });
+    const cosig = cosignOver(cp, tp.signer);
+    routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: envelope(cp, [cosig]) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('witnessed');
+    expect(h.witnessRepo.updateQuorum).toHaveBeenCalledWith(
+      TENANT,
+      cp.log_id,
+      cp.tree_size,
+      cp.root_hash,
+      1,
+      true,
+    );
+  });
+
   it('records NULL quorum when consumption is disabled (default)', async () => {
     const h = makeHarness();
     const cp = signCheckpoint(privateKey, {

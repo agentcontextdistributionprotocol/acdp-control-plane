@@ -108,6 +108,46 @@ describe('AppConfigService', () => {
     });
   });
 
+  describe('witness quorum self-cosignature guard (B8)', () => {
+    beforeEach(() => {
+      process.env.NODE_ENV = 'production';
+      process.env.AUTH_API_KEYS = 'k';
+      process.env.WEBHOOK_SECRET = 'shh';
+    });
+
+    it('throws when WITNESS_ID appears in WITNESS_QUORUM_TRUSTED, naming both variables', () => {
+      process.env.LOG_WITNESS_ENABLED = 'true';
+      process.env.WITNESS_QUORUM_ENABLED = 'true';
+      process.env.WITNESS_ID = 'did:web:cp.example';
+      process.env.WITNESS_QUORUM_TRUSTED = 'did:web:cp.example';
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).toThrow(/WITNESS_QUORUM_TRUSTED/);
+      expect(() => cfg.onModuleInit()).toThrow(/WITNESS_ID/);
+    });
+
+    it('starts normally when WITNESS_ID is absent from WITNESS_QUORUM_TRUSTED', () => {
+      process.env.LOG_WITNESS_ENABLED = 'true';
+      process.env.WITNESS_QUORUM_ENABLED = 'true';
+      process.env.WITNESS_ID = 'did:web:cp.example';
+      process.env.WITNESS_QUORUM_TRUSTED = 'did:web:other-witness.example';
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).not.toThrow();
+    });
+
+    it('starts normally consume-only (quorum on, cosigning off, WITNESS_ID unset) regardless of an empty entry in WITNESS_QUORUM_TRUSTED', () => {
+      process.env.LOG_WITNESS_ENABLED = 'true';
+      process.env.WITNESS_QUORUM_ENABLED = 'true';
+      process.env.WITNESS_COSIGNING_ENABLED = 'false';
+      delete process.env.WITNESS_ID;
+      // A trailing comma (readStringList filters the resulting blank entry)
+      // must not trip the guard — WITNESS_ID is unset, so the empty-check
+      // short-circuits before the .includes() membership check ever runs.
+      process.env.WITNESS_QUORUM_TRUSTED = 'did:web:other-witness.example,,';
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).not.toThrow();
+    });
+  });
+
   describe('multi-tenant fail-fast (all environments)', () => {
     beforeEach(() => {
       // Run in development to prove the check is NOT gated behind prod.

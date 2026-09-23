@@ -454,6 +454,21 @@ export class AppConfigService implements OnModuleInit {
           'WITNESS_QUORUM_ENABLED=true but WITNESS_QUORUM_TRUSTED is empty — no witness can ever count, so every head reports witnessed_count=0.',
         );
       }
+      // B8: a self-listed witness would let this CP's own mint count toward
+      // its own quorum, defeating the entire point (RFC-ACDP-0015 §13/§15 —
+      // a witness sharing a failure domain with the registry must not count;
+      // sharing one with ONESELF is the limit case). Fail closed at boot, not
+      // silently at evaluation time. `witnessId` may legitimately be empty
+      // here — WITNESS_QUORUM_ENABLED requires only LOG_WITNESS_ENABLED, not
+      // WITNESS_COSIGNING_ENABLED, so a consume-only deployment never sets
+      // WITNESS_ID — hence the non-empty guard before the membership check.
+      if (this.witnessId.trim() && this.witnessQuorumTrusted.includes(this.witnessId.trim())) {
+        throw new Error(
+          `WITNESS_QUORUM_TRUSTED must not contain this CP's own WITNESS_ID ` +
+            `('${this.witnessId.trim()}') — counting your own cosignature toward ` +
+            `your own quorum defeats the independent-vantage point of witnessing.`,
+        );
+      }
     }
 
     if (this.logInclusionAuditEnabled) {

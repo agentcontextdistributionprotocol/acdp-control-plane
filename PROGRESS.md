@@ -2050,3 +2050,45 @@ checked), unit suite pass count identical to pre-phase baseline (72/895/3/898),
 `src/audit/checkpoint-witness.service.ts`, `src/db/schema.ts`, `docs/ARCHITECTURE.md`,
 `plans/rfc-0014-0015-upgrade.md` (Phase 5 → DONE). No `ASSUMPTIONS.md` entries.
 Next: Phase 6 (tenant isolation on witness evidence + self-cosignature guard, B7/B8).
+
+**Phase 6 — Tenant isolation on witness evidence, and the self-cosignature guard (B7, B8).**
+PASS r1 (fresh Opus verifier, routed to extra empirical rigor rather than a Fable pass —
+this phase carries an irreversible DB schema migration with no down-migration path, which
+the Autonomy ladder flags critical; the plan's own planning-time analysis already did the
+one-way-door thinking in full detail — exact old constraint names, the "wrong DROP name is
+a silent no-op and the ADD then succeeds anyway" failure mode, why a data backfill is
+unnecessary — so rather than a redundant Fable re-derivation, both the executor and the
+verifier independently reproduced the migration against the real test Postgres and queried
+`pg_constraint` directly, which is the strongest possible verification for a claim that's
+fundamentally about what a real database does).
+- B7 fix: new `drizzle/0019_witness_tenant_scope.sql` drops the old
+  `log_witness_checkpoints_log_id_tree_size_root_hash_key` /
+  `log_cosignatures_witness_id_log_id_tree_size_root_hash_key` constraints (their exact
+  Postgres-generated names, confirmed via the CREATE TABLE source) and adds
+  tenant-id-leading replacements. `LogWitnessRepository.updateQuorum` and
+  `.findByLogIdAndSize` now take `tenantId` as a required first parameter (2 call sites
+  updated: `checkpoint-witness.service.ts`, `log-inclusion-audit.service.ts`); a 3rd call
+  site in `test/integration/log-witness.integration.spec.ts` needed the same fix (caught by
+  `tsc`, not by the phase's own new tests — a useful reminder that the compiler is part of
+  the safety net here).
+- B8 fix: `AppConfigService.validate()` now throws at boot if `WITNESS_ID` appears in
+  `WITNESS_QUORUM_TRUSTED`, guarded so an empty `WITNESS_ID` (consume-only deployment)
+  never trips it.
+- Empirical DB verification (both executor and verifier, independently): applied migration
+  0019 to the real test Postgres, confirmed via direct `pg_constraint` query that exactly
+  one unique constraint remains per table with the correct new name and column list, then
+  manually re-ran the raw SQL file a second time and reconfirmed no duplicate constraint
+  was created — idempotency proven, not assumed.
+- Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 136 files · unit 72 suites/900 passed/3 skipped/903 total
+  (+5 new) · integration 30 suites/189 passed (+3 new).
+- Files touched: `drizzle/0019_witness_tenant_scope.sql` (new), `src/db/schema.ts`,
+  `src/storage/log-witness.repository.ts`, `src/storage/log-cosignature.repository.ts`,
+  `src/audit/checkpoint-witness.service.ts`, `src/audit/log-inclusion-audit.service.ts`,
+  `src/config/app-config.service.ts`, `docs/CONFIGURATION.md`, `docs/TENANCY.md`,
+  `src/config/app-config.service.spec.ts`, `src/audit/checkpoint-witness.service.spec.ts`,
+  `src/audit/log-inclusion-audit.service.spec.ts`,
+  `test/integration/tenancy-isolation.integration.spec.ts`,
+  `test/integration/log-witness.integration.spec.ts`,
+  `plans/rfc-0014-0015-upgrade.md` (Phase 6 → DONE). No `ASSUMPTIONS.md` entries.
+Next: Phase 7 (cosignature freshness — re-mint on every observation, §8.1 split; B1, B6, B11).

@@ -11,9 +11,13 @@
  * regressions would be caught by their own specs (most read paths
  * are filtered at the repository layer).
  */
+import { sql } from 'drizzle-orm';
 import { createTestApp, TestAppContext } from '../helpers/test-app';
 import { TestClient } from '../helpers/test-client';
 import { TestSSEClient } from '../helpers/sse-client';
+import { DatabaseService } from '../../src/db/database.service';
+import { LogCosignatureRepository } from '../../src/storage/log-cosignature.repository';
+import { LogWitnessRepository } from '../../src/storage/log-witness.repository';
 
 describe('Cross-tenant isolation (integration)', () => {
   let ctx: TestAppContext;
@@ -197,6 +201,114 @@ describe('Cross-tenant isolation (integration)', () => {
       /HTTP 404/,
     );
     sseB.close();
+  });
+
+  describe('transparency-log witness evidence (B7)', () => {
+    const AUTHORITY = 'witness-shared.example';
+    const LOG_ID = `did:web:${AUTHORITY}/log/1`;
+    const ROOT = 'sha256:' + 'e'.repeat(64);
+
+    function checkpointRow(tenantId: string) {
+      return {
+        tenantId,
+        registryAuthority: AUTHORITY,
+        logId: LOG_ID,
+        treeSize: 7,
+        rootHash: ROOT,
+        timestamp: '2026-07-05T00:00:00.000Z',
+        rawCheckpoint: {
+          checkpoint_version: 'acdp-log/1',
+          log_id: LOG_ID,
+          tree_size: 7,
+          root_hash: ROOT,
+          timestamp: '2026-07-05T00:00:00.000Z',
+          signature: { algorithm: 'ed25519', key_id: `did:web:${AUTHORITY}#receipt-key-1`, value: 'c2ln' },
+        },
+        signatureValid: true,
+        consistencyOk: null,
+      };
+    }
+
+    function cosignatureRow(tenantId: string) {
+      return {
+        tenantId,
+        witnessId: 'did:web:this-cp.example',
+        registryAuthority: AUTHORITY,
+        logId: LOG_ID,
+        treeSize: 7,
+        rootHash: ROOT,
+        timestamp: '2026-07-05T00:00:00.000Z',
+        witnessedAt: '2026-07-05T00:00:01.000Z',
+        keyId: 'did:web:this-cp.example#witness-key-1',
+        cosignatureHash: 'sha256:' + 'f'.repeat(64),
+        signatureValue: 'c2ln',
+        cosignature: { cosignature_version: 'acdp-log-cosignature/1' },
+      };
+    }
+
+    it('two tenants each witnessing the SAME registry head both get their own evidence row, not a silent no-op', async () => {
+      const witnessRepo = ctx.module.get(LogWitnessRepository);
+
+      const a = await witnessRepo.recordCheckpoint(checkpointRow('tenant-a'));
+      const b = await witnessRepo.recordCheckpoint(checkpointRow('tenant-b'));
+      expect(a).not.toBeNull();
+      expect(b).not.toBeNull();
+      // Re-witnessing under the SAME tenant is still an append-once no-op —
+      // the fix must not have widened the key into uselessness.
+      const aAgain = await witnessRepo.recordCheckpoint(checkpointRow('tenant-a'));
+      expect(aAgain).toBeNull();
+
+      const aHistory = await witnessRepo.latestForAuthority('tenant-a', AUTHORITY);
+      const bHistory = await witnessRepo.latestForAuthority('tenant-b', AUTHORITY);
+      expect(aHistory).toHaveLength(1);
+      expect(bHistory).toHaveLength(1);
+
+      // The same proof via the real HTTP surface, per-tenant.
+      const clientA = new TestClient(ctx.url, 'key-a');
+      const clientB = new TestClient(ctx.url, 'key-b');
+      const respA = await clientA.requestRaw('GET', `/registries/${AUTHORITY}/log-witness`);
+      const respB = await clientB.requestRaw('GET', `/registries/${AUTHORITY}/log-witness`);
+      expect(respA.status).toBe(200);
+      expect(respB.status).toBe(200);
+      // Both tenants see a non-empty witness history for the SAME authority —
+      // before the fix, tenant B's insert silently no-opped and this would
+      // 404 (no cursor written, no checkpoint row) for tenant-b.
+      const bodyA = respA.body as { total: number; checkpoints: unknown[] };
+      const bodyB = respB.body as { total: number; checkpoints: unknown[] };
+      expect(bodyA.total).toBe(1);
+      expect(bodyB.total).toBe(1);
+    });
+
+    it('two tenants each cosigning the SAME registry head both get their own cosignature row', async () => {
+      const cosignRepo = ctx.module.get(LogCosignatureRepository);
+
+      const a = await cosignRepo.record(cosignatureRow('tenant-a'));
+      const b = await cosignRepo.record(cosignatureRow('tenant-b'));
+      expect(a).not.toBeNull();
+      expect(b).not.toBeNull();
+      const aAgain = await cosignRepo.record(cosignatureRow('tenant-a'));
+      expect(aAgain).toBeNull();
+    });
+
+    it('exactly one UNIQUE constraint remains on each table after migration 0019 — the old narrow constraint is gone, not merely shadowed by a new wide one', async () => {
+      const db = ctx.module.get(DatabaseService);
+      const checkpointConstraints = await db.db.execute(sql`
+        SELECT conname FROM pg_constraint
+        WHERE conrelid = 'log_witness_checkpoints'::regclass AND contype = 'u'
+      `);
+      const cosignatureConstraints = await db.db.execute(sql`
+        SELECT conname FROM pg_constraint
+        WHERE conrelid = 'log_cosignatures'::regclass AND contype = 'u'
+      `);
+      expect(checkpointConstraints.rows).toHaveLength(1);
+      expect(checkpointConstraints.rows[0]).toMatchObject({
+        conname: 'log_witness_checkpoints_tenant_head_key',
+      });
+      expect(cosignatureConstraints.rows).toHaveLength(1);
+      expect(cosignatureConstraints.rows[0]).toMatchObject({
+        conname: 'log_cosignatures_tenant_witness_head_key',
+      });
+    });
   });
 
   describe('X-Tenant-Id spoofing defenses', () => {

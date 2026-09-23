@@ -434,9 +434,13 @@ export const logWitnessCheckpoints = pgTable(
     meetsQuorum: boolean('meets_quorum'),
   },
   (t) => ({
-    // Dedupes re-fetches of the same head; two rows sharing (log_id,
-    // tree_size) with different root_hash are split-view evidence.
-    uniqueHead: uniqueIndex('log_witness_checkpoints_log_id_tree_size_root_hash_key').on(
+    // Dedupes re-fetches of the same head, PER TENANT (migration 0019 — two
+    // tenants witnessing the same registry head must each get their own
+    // evidence row, not have the second silently no-op). Two rows sharing
+    // (tenant_id, log_id, tree_size) with different root_hash are split-view
+    // evidence.
+    uniqueHead: uniqueIndex('log_witness_checkpoints_tenant_head_key').on(
+      t.tenantId,
       t.logId,
       t.treeSize,
       t.rootHash,
@@ -553,9 +557,11 @@ export const logCosignatures = pgTable(
       .defaultNow(),
   },
   (t) => ({
-    // Idempotent per observed tuple for a given witness: re-observing the same
-    // head keeps the first cosignature (RFC-ACDP-0015 §4/§7).
-    uniqueCosig: uniqueIndex('log_cosignatures_witness_log_size_root_key').on(
+    // Idempotent per observed tuple for a given witness, PER TENANT (migration
+    // 0019 — same B7 fix as log_witness_checkpoints above): re-observing the
+    // same head keeps the first cosignature (RFC-ACDP-0015 §4/§7).
+    uniqueCosig: uniqueIndex('log_cosignatures_tenant_witness_head_key').on(
+      t.tenantId,
       t.witnessId,
       t.logId,
       t.treeSize,

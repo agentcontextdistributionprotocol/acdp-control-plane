@@ -46,9 +46,12 @@ export class LogWitnessRepository {
    * Refresh the RFC-ACDP-0015 §8 quorum trust signal on an already-recorded
    * head (called on a re-observation, where the registry may have aggregated
    * more cosignatures for the same tuple since we first saw it). A no-op when
-   * the head is not yet recorded.
+   * the head is not yet recorded. `tenantId` is REQUIRED (no silent default)
+   * — this is a background-sweep write on tenant-owned data, and every caller
+   * always has a real tenant in hand.
    */
   async updateQuorum(
+    tenantId: string,
     logId: string,
     treeSize: number,
     rootHash: string,
@@ -60,6 +63,7 @@ export class LogWitnessRepository {
       .set({ witnessedCount, meetsQuorum })
       .where(
         and(
+          eq(logWitnessCheckpoints.tenantId, tenantId),
           eq(logWitnessCheckpoints.logId, logId),
           eq(logWitnessCheckpoints.treeSize, treeSize),
           eq(logWitnessCheckpoints.rootHash, rootHash),
@@ -90,8 +94,12 @@ export class LogWitnessRepository {
    * A witnessed checkpoint at exactly (log_id, tree_size), if any — the
    * inclusion cross-check compares a proof's embedded checkpoint root
    * against what THIS witness saw at the same size (equivocation detector).
+   * `tenantId` is REQUIRED (no silent default): without it, tenant A's
+   * witnessed root could be used to adjudicate tenant B's proof, a
+   * cross-tenant read of forensic evidence.
    */
   async findByLogIdAndSize(
+    tenantId: string,
     logId: string,
     treeSize: number,
   ): Promise<LogWitnessCheckpoint | null> {
@@ -100,6 +108,7 @@ export class LogWitnessRepository {
       .from(logWitnessCheckpoints)
       .where(
         and(
+          eq(logWitnessCheckpoints.tenantId, tenantId),
           eq(logWitnessCheckpoints.logId, logId),
           eq(logWitnessCheckpoints.treeSize, treeSize),
         ),

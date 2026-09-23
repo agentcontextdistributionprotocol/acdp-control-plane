@@ -118,6 +118,21 @@ not authenticated principals:
 
 See [INGEST.md](./INGEST.md#registry-trust--enrollment).
 
+## Transparency-log witness evidence
+
+`log_witness_checkpoints` and `log_cosignatures` (RFC-ACDP-0012/0015) are
+tenant-owned like any other table — two tenants witnessing the same registry
+head each get their own evidence row and their own cosignature. Their unique
+constraints lead with `tenant_id` (migration `0019_witness_tenant_scope.sql`;
+before it, the constraints omitted `tenant_id` entirely, so a second tenant's
+insert silently no-opped and that tenant saw an empty witness history despite
+the sweep reporting success). `LogWitnessRepository.updateQuorum` and
+`.findByLogIdAndSize` take `tenantId` as a required parameter for the same
+reason. `LogCosignatureRepository.list`/`.coveredLogs` are the one deliberate
+exception — they back the `GET /log/witness` public feed for this CP's single
+witness identity (`WITNESS_ID`), not a tenant view; see the class doc comment
+in `src/storage/log-cosignature.repository.ts`.
+
 ## Testing
 
 `test/integration/tenancy-isolation.integration.spec.ts` exercises cross-tenant

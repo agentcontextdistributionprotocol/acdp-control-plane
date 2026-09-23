@@ -195,7 +195,7 @@ requires `LOG_WITNESS_ENABLED=true`.
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `WITNESS_QUORUM_ENABLED` | bool | `false` | Enable quorum consumption over aggregated cosignatures. |
-| `WITNESS_QUORUM_TRUSTED` | list | `''` | Witness DIDs whose cosignatures count; others are verified-but-ignored. |
+| `WITNESS_QUORUM_TRUSTED` | list | `''` | Witness DIDs whose cosignatures count; others are verified-but-ignored. **Must not contain this CP's own `WITNESS_ID`** — startup refuses to start if it does (a self-attestation would defeat the independent-vantage point of a quorum). |
 | `WITNESS_QUORUM_MIN_WITNESSES` | number | `1` | The N in N-witnessed. **≥1** when enabled. |
 
 **Log-inclusion audit ([RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)).**
@@ -267,6 +267,10 @@ seal once per event in `log_inclusion_audits`.
   `WITNESS_SIGNING_PRIVATE_KEY_PEM`, or without `LOG_WITNESS_ENABLED=true`.
   (`WitnessSigningService` additionally rejects a non-Ed25519 key, a malformed
   witness DID, or a `WITNESS_KEY_ID` not under `WITNESS_ID` — in every environment.)
+- `WITNESS_QUORUM_ENABLED=true` with this CP's own `WITNESS_ID` present in
+  `WITNESS_QUORUM_TRUSTED` (self-cosignature would count toward its own quorum).
+  A consume-only deployment (`WITNESS_COSIGNING_ENABLED=false`, `WITNESS_ID`
+  unset) is unaffected by this check.
 
 **Warns** (starts, but flags a risk) on, in production:
 

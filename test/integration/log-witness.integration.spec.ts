@@ -213,7 +213,7 @@ describe('transparency-log checkpoint witness (integration)', () => {
     });
     // A later sweep re-observes the SAME head after the registry aggregated a
     // trusted witness's cosignature — the quorum refreshes on the append-once row.
-    await witnessRepo.updateQuorum(LOG_ID, 3, ROOT_3, 1, true);
+    await witnessRepo.updateQuorum('default', LOG_ID, 3, ROOT_3, 1, true);
 
     const res = (await ctx.client.requestJson(
       'GET',
