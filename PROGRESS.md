@@ -1997,3 +1997,27 @@ seam (a different RFC, or a real code dependency edge).
     handing off to `/ship`. Release-notes callout still owed for two live behavior changes on
     `/contexts/*ctxId` (tightened ctx_id grammar; a mis-resolved native binding now 502s 2xx
     retrievals on this route) — fold into the PR description.
+
+### /ship — rfc-0014/pr1-sdk-bump
+
+- **Ship-gate (whole-diff Opus verifier, 4-phase diff a82c1d9..44d8584 vs main):** PASS.
+  Confirmed local gates fresh-green (conventions 6✓, lint 0, both tsconfigs 0, check:build
+  136 files both builds, unit 72/895+3skip, integration 30/186), cross-phase consistency
+  (Phase 4 reuses Phase 1's `Pick` pattern + Phase 2's `isCanonicalCtxId`; `did-authority.ts`
+  not duplicated), no blocking `ASSUMPTIONS.md`/`DECISIONS.md` entries, tracked-file
+  consistency (all 4 plan phases DONE, `PROGRESS.md` matches `git diff --stat` per commit).
+  Corrected one detail: branch has 5 commits (repo-map prep commit `8a885f0` precedes the 4
+  phase commits), otherwise as recorded above.
+  One item flagged "fix before merge": `docs/ARCHITECTURE.md:249` still carried the stale
+  "until the binding exposes the 0.3.0 log surface" claim that CLAUDE.md's twin already had
+  corrected during Phase 2's gap-closing round — no per-phase gate had checked
+  ARCHITECTURE.md, only the whole-diff view surfaced it. Fixed directly (commit `107a917`),
+  mirroring CLAUDE.md:363-371's corrected language (0.6.0 arrival, `^0.14.1` floor,
+  `sdkHasLogSurface()` delegates in practice, `log-verify.ts` kept as fallback +
+  parity-tested). Two other minor items noted by the verifier (illustrative non-canonical
+  ctx_id in the API.md lineage example; `INVALID_LOG_PROOF` absent from the API.md HTTP
+  error-code list) were reviewed and left as-is: the lineage example was always illustrative
+  placeholder data, not a regression from Phase 4's tightened grammar, and
+  `INVALID_LOG_PROOF` is a webhook/audit verdict code, never thrown as an HTTP `errorCode`,
+  so adding it to that list would misrepresent it.
+- pushed rfc-0014/pr1-sdk-bump 107a91790d19498c346801a54e32f661e48e7f80
