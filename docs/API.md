@@ -530,7 +530,11 @@ served only when cosigning is enabled (else `404`).
 The §5 mint (and the §8 verify / §8 quorum) run through the native `acdp` binding
 (`AcdpVerifier.buildWitnessCosignature` / `verifyWitnessCosignature` /
 `evaluateWitnessQuorum`, 0.7.0+); a binding that predates the cosignature surface
-(≤ 0.6.0) transparently falls back to the byte-identical host-TS construction. The
+(≤ 0.6.0) transparently falls back to the byte-identical host-TS construction.
+**The dependency's pinned floor is `^0.14.1`, which is above every floor named in
+this section**, so on a correctly installed deployment the native path is always
+the one taken — the feature detection guards a mis-resolved native
+`optionalDependency`, not a supported configuration. The
 active mode is reported in the checkpoint-witness boot log (`mint=…`), and the two
 paths are pinned byte-identical by the wit-001 golden parity test. Likewise the
 RFC-ACDP-0012 log inclusion/consistency verification uses the native binding

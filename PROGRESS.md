@@ -1865,3 +1865,43 @@ seam (a different RFC, or a real code dependency edge).
     `src/ci-conventions.spec.ts` (new), `CLAUDE.md` (untracked), `plans/rfc-0014-0015-upgrade.md`
     (Phase 1 → DONE).
   - **Next:** Phase 2 — bump `^0.8.5` → `^0.14.1`.
+
+- **2026-09-23 — Phase 2 (Bump acdp SDK `^0.8.5` → `^0.14.1`): DONE, GAPS round 1 → PASS round
+  2.** Verifier tier: Opus (not a one-way door within this phase's scope — no public API/schema
+  change, reversible; the SDK version itself is an external-dependency bump but the plan already
+  fixed the version target during drafting review, nothing left to decide here).
+  - Round 1 verdict: PASS with 3 gaps (dependabot comment still said "npm: alias" contra AC 7's
+    literal text; the `verified`→`error` flip for non-canonical stored `ctx_id` rows had zero
+    operator-visible signal — no distinguishing log, no distinguishing metric label, note text
+    never reached any API; a "63 vs 64 char DNS label" host/SDK mirror gap was accurately safe but
+    inaccurately described as "unreachable in practice") + 1 doc nit (stale "0.5.0 binding predates
+    log surface" line in CLAUDE.md). All 4 closed in one gap-closing pass; round 2 re-verify
+    confirmed each against the actual on-disk text (not the fixer's self-report) plus a clean gate
+    re-run — **PASS**.
+  - Bumped `package.json`/`package-lock.json` to `0.14.1`; confirmed via lockfile inspection (not
+    assumed) that all four platform `optionalDependencies` resolved — this exact class of failure
+    (a bot-regenerated lockfile silently dropping `acdp-linux-x64-gnu`) broke CI/Docker once
+    before (PR #125). Threaded `bodyJson` into `verifyReceipt`; added `classifyReceiptFailure`
+    (a named, individually-tested predicate distinguishing `malformed_body`/`ctx_id_rejected`/
+    `receipt_dishonest`) so the three new stricter failure modes route to `unverified:` notes
+    (not dishonesty flags) except the true `cross_check_body` mismatches, which correctly do flag.
+  - A real bug surfaced and got fixed along the way, not anticipated by the plan: napi-thrown
+    errors fail `instanceof Error` under ts-jest's VM realm (true there, false in production),
+    which silently broke prefix-based classification in tests only — fixed via a `.message`
+    duck-typed `rawMsg()` helper instead of an `instanceof` check, verified empirically in both
+    realms by both the executor and the round-1 verifier independently.
+  - Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 · `check:build`
+    both builds 135 files · unit 71/831 (828 passed + 3 skipped; baseline going in was 71/808 from
+    Phase 1) · integration 30/176 (then re-run 8/8 on the Gap 2 sanity check alone).
+  - **Operational note for deploy** (not a code change, recorded here and in
+    `docs/TROUBLESHOOTING.md`'s new Receipt audit section): any `context_events` row whose stored
+    `ctx_id` isn't canonical per `CtxId::parse` moves from `verified` to `error` once this ships.
+    Correct, but expected — the pre-deploy SQL check to find affected rows ahead of time is in
+    `docs/TROUBLESHOOTING.md` and in the plan's own Phase 2 Edge-cases section, verbatim in both.
+  - Files touched: `package.json`, `package-lock.json`, `src/audit/receipt-verify.ts`,
+    `src/audit/receipt-audit.service.ts`, `src/audit/receipt-verify.spec.ts`,
+    `src/audit/receipt-audit.service.spec.ts`, `src/audit/receipt-audit.service.crypto.spec.ts`,
+    `test/integration/trust-hardening.integration.spec.ts`, `.github/dependabot.yml`,
+    `docs/API.md`, `docs/TROUBLESHOOTING.md` (new section), `CLAUDE.md` (untracked),
+    `plans/rfc-0014-0015-upgrade.md` (Phase 2 → DONE).
+  - **Next:** Phase 3 — canonical `authority → did:web` + closed-proof re-serialization (B10, B12).

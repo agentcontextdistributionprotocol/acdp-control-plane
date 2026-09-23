@@ -6,6 +6,7 @@
  * receipt-audit.service.crypto.spec.ts.
  */
 jest.mock('./receipt-verify', () => ({
+  ...jest.requireActual<typeof import('./receipt-verify')>('./receipt-verify'),
   sdkSupportsReceipts: jest.fn().mockReturnValue(false),
   verifyContentHash: jest.fn(),
   verifyReceipt: jest.fn(),
@@ -19,7 +20,7 @@ import { ContextEvent } from '../db/schema';
 
 const FP = 'sha256:' + 'b'.repeat(64);
 const AUTHORITY = 'reg.example';
-const CTX = 'acdp://reg.example/c1';
+const CTX = 'acdp://reg.example/abcdef01-2345-4678-9abc-def012345678';
 
 function makeReceipt(overrides: Partial<Record<string, unknown>> = {}) {
   return {

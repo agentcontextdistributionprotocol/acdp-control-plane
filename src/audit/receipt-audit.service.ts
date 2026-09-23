@@ -24,9 +24,13 @@
  *      divergence diagnosis), resolve the registry's receipt key from its
  *      did:web document, resolve the producer key (did:web via the resolver;
  *      did:key bodies verify fully offline), and run the SDK's
- *      `verifyReceipt` cross-checks + Ed25519 signature check. Receipts are
- *      Ed25519-only (registry + SDK); a receipt declaring any other signature
- *      algorithm is rejected as non-conformant.
+ *      `verifyReceipt` cross-checks — including the RFC-ACDP-0010 §8 step 3
+ *      body bindings (`lineage_id` / `origin_registry` / `created_at` must
+ *      equal the SERVED body's, so a registry that serves a body
+ *      disagreeing with its own receipt is caught) — plus the Ed25519
+ *      signature check. Receipts are Ed25519-only (registry + SDK); a
+ *      receipt declaring any other signature algorithm is rejected as
+ *      non-conformant.
  *
  * Verdicts land in `receipt_audits` (PK = event id, idempotent) and surface
  * per run via GET /runs/:runId (`trust` member) and the
@@ -60,6 +64,7 @@ import { RegistryRepository } from '../storage/registry.repository';
 import {
   explainHashMismatch,
   fingerprintEd25519B64,
+  isCanonicalCtxId,
   sdkSupportsReceipts,
   verifyBodyOffline,
   verifyContentHash,
@@ -126,8 +131,9 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     if (!this.config.receiptAuditEnabled) return;
     if (!sdkSupportsReceipts()) {
       this.logger.warn(
-        'receipt audit enabled but the installed acdp SDK predates the receipt API ' +
-          '(need > 0.3.0) — running structural cross-checks only, no signature verification',
+        'receipt audit enabled but the installed acdp SDK has no receipt API ' +
+          '(pinned floor is >= 0.14.1; a mis-resolved native optionalDependency looks like ' +
+          'this) — running structural cross-checks only, no signature verification',
       );
     }
     const intervalMs = this.config.receiptAuditIntervalSeconds * 1000;
@@ -318,6 +324,24 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
       notes.push('unverified: event has no ctx_id to fetch');
       return notRun;
     }
+    // The SDK parses `expectedCtxId` with `CtxId::parse`, so a non-canonical
+    // ctx_id in OUR OWN row makes `verifyReceipt` throw. That throw is
+    // indistinguishable at the call site from registry dishonesty, so
+    // pre-check the same grammar here and report it as what it is: a defect
+    // in our stored input, which must never pollute the operator-facing
+    // "this registry misbehaved" list. Checked BEFORE the federation fetch —
+    // a context we cannot canonically name cannot yield a verdict either
+    // way, and the actionable root cause is this one, not whatever the
+    // fetch would have said.
+    if (!isCanonicalCtxId(ev.ctxId)) {
+      notes.push(
+        `unverified: stored ctx_id '${ev.ctxId}' is not canonical ` +
+          `(acdp://<lowercase DNS authority>/<lowercase v4 UUID>) — the receipt cannot be ` +
+          `verified against a ctx_id the protocol cannot parse`,
+      );
+      this.warnCtxIdUnverifiable(ev, 'stored_ctx_id_not_canonical');
+      return notRun;
+    }
 
     const registry = await this.registryRepo.findByAuthority(
       ev.registryAuthority,
@@ -420,18 +444,78 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
       return notRun;
     }
 
+    // `bodyJson` is the SAME string `verifyContentHash` was run against, so
+    // the SDK's §8 step 3 body bindings are checked against the body whose
+    // hash we independently recomputed — not a re-serialization of it.
     const result = verifyReceipt(
       JSON.stringify(receipt),
+      bodyJson,
       registryKeyB64,
       ev.ctxId,
       echoedHash,
       producerFp,
     );
     if (!result.ok) {
-      flags.push(`receipt_invalid: ${result.reason}`);
+      // Not every verifyReceipt throw is registry dishonesty. See
+      // `ReceiptFailureKind` for why the three are told apart, and why the
+      // unrecognised case falls through to the flag rather than the note.
+      switch (result.kind) {
+        case 'malformed_body':
+          notes.push(
+            `unverified: '${ev.registryAuthority}' served a body the SDK cannot parse: ` +
+              result.reason,
+          );
+          break;
+        case 'ctx_id_rejected':
+          // Rare but expected: `isCanonicalCtxId` is a deliberately bounded
+          // mirror of CtxId::parse — it does not enforce the SDK's
+          // 63-character DNS-label limit (see the note on CANONICAL_CTX_ID),
+          // so an over-long label reaches the SDK and is refused here. Either
+          // way the ctx_id is OURS, so this is a note, never a flag.
+          notes.push(
+            `unverified: the SDK's CtxId::parse rejected ctx_id '${ev.ctxId}' that the host ` +
+              `pre-check accepted — the host mirror does not enforce every CtxId::parse ` +
+              `bound (e.g. the 63-character DNS-label limit); the SDK is the authority: ` +
+              result.reason,
+          );
+          this.warnCtxIdUnverifiable(ev, 'sdk_rejected_ctx_id');
+          break;
+        default:
+          flags.push(`receipt_invalid: ${result.reason}`);
+      }
       return notRun;
     }
     return { ran: true, historical };
+  }
+
+  /**
+   * The operator-visible signal for the two ways a ctx_id WE stored turns
+   * what would have been a `verified` receipt audit into an `error`.
+   *
+   * Neither is registry dishonesty, so neither appears in
+   * `RunTrustSummary.flagged` (which carries only `discrepancy` rows' notes),
+   * and `acdp_receipt_audits_total{status="error"}` shares its label with
+   * ordinary fetch/DID-resolution failures — so without this line the only
+   * way to notice it is querying `receipt_audits` by hand. Structured fields,
+   * not a stringified payload: `auditCause` is the stable key to grep and
+   * alert on, separate from transport noise.
+   */
+  private warnCtxIdUnverifiable(
+    ev: ContextEvent,
+    auditCause: 'stored_ctx_id_not_canonical' | 'sdk_rejected_ctx_id',
+  ): void {
+    this.logger.warn({
+      msg:
+        `receipt audit cannot verify ctx_id '${ev.ctxId ?? '?'}' (${auditCause}) — ` +
+        `verdict is 'error', not 'verified'`,
+      auditCause,
+      auditStatus: 'error',
+      eventId: ev.id,
+      ctxId: ev.ctxId,
+      runId: ev.runId,
+      registryAuthority: ev.registryAuthority,
+      tenantId: ev.tenantId,
+    });
   }
 
   /**
