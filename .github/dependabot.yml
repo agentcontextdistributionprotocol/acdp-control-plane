@@ -28,14 +28,18 @@ updates:
         patterns:
           - drizzle-orm
           - drizzle-kit
-      # The acdp SDK (NAPI binding over acdp-rs) — declared once, under the
-      # `acdp` npm: alias every source import uses (see CP-1). Dependabot
-      # itself never proposes updates for this dep; the real automated bump
-      # path is bump-acdp.yml's repository_dispatch listener, this group
-      # only catches Dependabot's own monthly-safety-net scan of it.
+      # The acdp SDK (NAPI binding over acdp-rs). The pattern must be the
+      # LITERAL key package.json declares the dependency under, which since
+      # commit a5957bd is the scoped name below; this group's former short
+      # `acdp` pattern stopped matching it, and a pattern that does not match
+      # silently drops the dep into the minor-and-patch / major-updates
+      # catch-alls instead of its own group. Dependabot itself rarely proposes
+      # updates for this dep; the real automated bump path is bump-acdp.yml's
+      # repository_dispatch listener, and this group only catches Dependabot's
+      # own monthly-safety-net scan of it.
       acdp-sdk:
         patterns:
-          - acdp
+          - '@agentcontextdistributionprotocol/acdp'
       minor-and-patch:
         update-types: [minor, patch]
       major-updates:

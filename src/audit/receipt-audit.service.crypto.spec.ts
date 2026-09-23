@@ -6,6 +6,10 @@
  * receipt negative the 0.2.0 acceptance criteria call for.
  */
 jest.mock('./receipt-verify', () => ({
+  // `isCanonicalCtxId` stays REAL: the ctx_id pre-check is one of the
+  // behaviours under test, and mocking it would let a fixture with a
+  // non-canonical ctx_id pass silently.
+  ...jest.requireActual<typeof import('./receipt-verify')>('./receipt-verify'),
   sdkSupportsReceipts: jest.fn().mockReturnValue(true),
   verifyContentHash: jest.fn().mockReturnValue({ ok: true }),
   verifyReceipt: jest.fn().mockReturnValue({ ok: true }),
@@ -14,6 +18,7 @@ jest.mock('./receipt-verify', () => ({
   explainHashMismatch: jest.fn().mockReturnValue(null),
 }));
 
+import { Logger } from '@nestjs/common';
 import { ReceiptAuditService } from './receipt-audit.service';
 import {
   explainHashMismatch,
@@ -26,7 +31,10 @@ import { ContextEvent } from '../db/schema';
 
 const FP = 'sha256:' + 'b'.repeat(64);
 const AUTHORITY = 'reg.example';
-const CTX = 'acdp://reg.example/c1';
+// Canonical under the SDK's `CtxId::parse`: `acdp://` + lowercase DNS
+// authority + lowercase v4 UUID. Anything else is pre-rejected by the host
+// before `verifyReceipt` is reached — see the dedicated case below.
+const CTX = 'acdp://reg.example/abcdef01-2345-4678-9abc-def012345678';
 const BODY_HASH = 'sha256:' + 'a'.repeat(64);
 
 function makeReceipt(overrides: Partial<Record<string, unknown>> = {}) {
@@ -167,13 +175,20 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
       'ed25519',
     );
     // Receipt verified against the registry key and the recomputed inputs.
+    // `bodyJson` is argument TWO (acdp 0.14.0+) and is the very string
+    // `verifyContentHash` was run against — a reorder of these arguments
+    // must fail loudly here.
     expect(verifyReceipt).toHaveBeenCalledWith(
       JSON.stringify(makeReceipt()),
+      JSON.stringify(makeBody()),
       'cmVnaXN0cnlrZXk=',
       CTX,
       BODY_HASH,
       FP,
     );
+    const [, passedBody] = (verifyReceipt as jest.Mock).mock.calls[0]!;
+    const [hashedBody] = (verifyContentHash as jest.Mock).mock.calls[0]!;
+    expect(passedBody).toBe(hashedBody);
   });
 
   it('reports verified_historical when the receipt key is retired (§9 lifecycle)', async () => {
@@ -208,10 +223,117 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
     (verifyReceipt as jest.Mock).mockReturnValue({
       ok: false,
       reason: 'invalid_receipt: signature verification failed',
+      kind: 'receipt_dishonest',
     });
     const verdict = await svc.auditEvent(makeEvent());
     expect(verdict.status).toBe('discrepancy');
     expect(verdict.discrepancies.join('\n')).toContain('receipt_invalid');
+  });
+
+  // ── The 0.14.x tightenings: three new throw paths, three meanings ──────
+  //
+  // `verifyReceipt` now also parses `expectedCtxId` with `CtxId::parse`,
+  // strictly deserializes the served body, and cross-checks the §8 step 3
+  // body bindings. Two of those three failures are NOT registry dishonesty,
+  // and mislabelling them destroys the signal in `RunTrustSummary.flagged`.
+
+  it('never calls verifyReceipt when OUR OWN stored ctx_id is not canonical', async () => {
+    const badCtx = `acdp://${AUTHORITY}/ctx-001`; // legacy opaque id, not a v4 UUID
+    const ev = makeEvent({
+      ctxId: badCtx,
+      rawPayload: {
+        type: 'context_published',
+        registry_receipt: makeReceipt({ ctx_id: badCtx }),
+      },
+    });
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const verdict = await svc.auditEvent(ev);
+    expect(verdict.status).toBe('error');
+    expect(verdict.discrepancies).toHaveLength(1);
+    expect(verdict.discrepancies[0]!.startsWith('unverified:')).toBe(true);
+    expect(verdict.discrepancies[0]).toContain('not canonical');
+    // Not a dishonesty flag, and no wasted federation fetch.
+    expect(verdict.discrepancies.some((d) => d.startsWith('receipt_invalid:'))).toBe(false);
+    expect(verifyReceipt).not.toHaveBeenCalled();
+    expect(federationClient.get).not.toHaveBeenCalled();
+    // The operator-visible signal. `error` notes never reach an API response
+    // and `acdp_receipt_audits_total{status="error"}` shares its label with
+    // transport failures, so this flip is discoverable ONLY through a log
+    // line carrying its own cause key — structured fields, not a string.
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ auditCause: 'stored_ctx_id_not_canonical', ctxId: badCtx }),
+    );
+    warn.mockRestore();
+  });
+
+  it('rejects a port-bearing ctx_id authority the same way (no registry can mint one)', async () => {
+    const portCtx = 'acdp://localhost:8443/abcdef01-2345-4678-9abc-def012345678';
+    const ev = makeEvent({
+      ctxId: portCtx,
+      rawPayload: {
+        type: 'context_published',
+        registry_receipt: makeReceipt({ ctx_id: portCtx }),
+      },
+    });
+    const verdict = await svc.auditEvent(ev);
+    expect(verdict.status).toBe('error');
+    expect(verdict.discrepancies[0]!.startsWith('unverified:')).toBe(true);
+    expect(verifyReceipt).not.toHaveBeenCalled();
+  });
+
+  it('treats a body the SDK cannot deserialize as unverified, not as dishonesty', async () => {
+    (verifyReceipt as jest.Mock).mockReturnValue({
+      ok: false,
+      reason: 'GenericFailure: invalid body JSON: missing field `contributors`',
+      kind: 'malformed_body',
+    });
+    const verdict = await svc.auditEvent(makeEvent());
+    expect(verdict.status).toBe('error');
+    expect(verdict.discrepancies).toHaveLength(1);
+    expect(verdict.discrepancies[0]!.startsWith('unverified:')).toBe(true);
+    expect(verdict.discrepancies[0]).toContain('cannot parse');
+    expect(verdict.discrepancies.some((d) => d.startsWith('receipt_invalid:'))).toBe(false);
+  });
+
+  it('reports an SDK ctx_id rejection the host allowed as unverified, not as dishonesty', async () => {
+    // Rare but reachable: `isCanonicalCtxId` is a deliberately bounded mirror
+    // of CtxId::parse (it does not enforce the 63-character DNS-label limit),
+    // so this path exists to read as OUR data problem, never the registry's.
+    (verifyReceipt as jest.Mock).mockReturnValue({
+      ok: false,
+      reason: 'GenericFailure: invalid expectedCtxId: schema violation',
+      kind: 'ctx_id_rejected',
+    });
+    const verdict = await svc.auditEvent(makeEvent());
+    expect(verdict.status).toBe('error');
+    expect(verdict.discrepancies[0]!.startsWith('unverified:')).toBe(true);
+    expect(verdict.discrepancies[0]).toContain('CtxId::parse rejected ctx_id');
+    expect(verdict.discrepancies.some((d) => d.startsWith('receipt_invalid:'))).toBe(false);
+  });
+
+  it('flags a §8 step 3 body-binding mismatch as registry dishonesty', async () => {
+    // A registry serving a body that disagrees with the receipt it signed.
+    (verifyReceipt as jest.Mock).mockReturnValue({
+      ok: false,
+      reason: "invalid registry receipt: receipt lineage_id 'a' ≠ body lineage_id 'b'",
+      kind: 'receipt_dishonest',
+    });
+    const verdict = await svc.auditEvent(makeEvent());
+    expect(verdict.status).toBe('discrepancy');
+    expect(verdict.discrepancies[0]!.startsWith('receipt_invalid:')).toBe(true);
+    expect(verdict.discrepancies[0]).toContain('body lineage_id');
+  });
+
+  it('falls through to a FLAG for an unrecognised verifyReceipt failure', async () => {
+    // The conservative default, asserted explicitly so a later "tidy-up"
+    // cannot invert it into a quiet `unverified:` note.
+    (verifyReceipt as jest.Mock).mockReturnValue({
+      ok: false,
+      reason: 'something the SDK has never said before',
+    });
+    const verdict = await svc.auditEvent(makeEvent());
+    expect(verdict.status).toBe('discrepancy');
+    expect(verdict.discrepancies[0]!.startsWith('receipt_invalid:')).toBe(true);
   });
 
   it('flags a served body whose content_hash does not recompute', async () => {
@@ -281,6 +403,76 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
     const verdict = await svc.auditEvent(ev);
     expect(verdict.status).toBe('discrepancy');
     expect(verdict.discrepancies.join('\n')).toContain('receipt_key_foreign_did');
+    expect(verifyReceipt).not.toHaveBeenCalled();
+  });
+
+  // ── B10: the receipt-key binding uses the CANONICAL did:web encoding ───
+  it('B10: accepts a receipt key under the canonical did:web of a port-bearing authority', async () => {
+    const PORT = 'localhost:8443';
+    const PORT_KEY_ID = 'did:web:localhost%3A8443#receipt-key-1';
+    const receipt = makeReceipt({
+      registry_did: 'did:web:localhost%3A8443',
+      origin_registry: PORT,
+      signature: { algorithm: 'ed25519', key_id: PORT_KEY_ID, value: 'c2ln' },
+    });
+    registryRepo.findByAuthority.mockResolvedValue({
+      authority: PORT,
+      baseUrl: 'https://localhost:8443',
+    });
+    federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ body: makeBody(), registry_receipt: receipt }),
+    });
+    didResolver.resolveReceiptKey.mockResolvedValue({
+      keyId: PORT_KEY_ID,
+      algorithm: 'ed25519',
+      publicKeyB64: 'cmVnaXN0cnlrZXk=',
+      historical: false,
+    });
+
+    const verdict = await svc.auditEvent(
+      makeEvent({
+        registryAuthority: PORT,
+        rawPayload: { type: 'context_published', registry_receipt: receipt },
+      }),
+    );
+    expect(verdict.discrepancies.join('\n')).not.toContain('receipt_key_foreign_did');
+    expect(verdict.status).toBe('verified');
+    expect(didResolver.resolveReceiptKey).toHaveBeenCalledWith(PORT_KEY_ID, 'ed25519');
+  });
+
+  it('B10: still flags a foreign receipt key on a port-bearing authority', async () => {
+    const PORT = 'localhost:8443';
+    const receipt = makeReceipt({
+      registry_did: 'did:web:localhost%3A8443',
+      origin_registry: PORT,
+      signature: {
+        algorithm: 'ed25519',
+        key_id: 'did:web:evil.example#receipt-key-1',
+        value: 'c2ln',
+      },
+    });
+    registryRepo.findByAuthority.mockResolvedValue({
+      authority: PORT,
+      baseUrl: 'https://localhost:8443',
+    });
+    federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ body: makeBody(), registry_receipt: receipt }),
+    });
+
+    const verdict = await svc.auditEvent(
+      makeEvent({
+        registryAuthority: PORT,
+        rawPayload: { type: 'context_published', registry_receipt: receipt },
+      }),
+    );
+    expect(verdict.status).toBe('discrepancy');
+    expect(verdict.discrepancies.join('\n')).toContain(
+      "receipt_key_foreign_did: 'did:web:evil.example#receipt-key-1' is not a key of 'did:web:localhost%3A8443'",
+    );
     expect(verifyReceipt).not.toHaveBeenCalled();
   });
 

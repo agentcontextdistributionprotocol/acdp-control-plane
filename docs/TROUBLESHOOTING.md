@@ -171,6 +171,44 @@ The authority isn't enrolled **in the caller's tenant**, or its enrollment has n
 
 ---
 
+## Receipt audit
+
+### Audits that used to be `verified` are now `error` with `unverified: stored ctx_id … is not canonical`
+
+Since the `acdp` `^0.14.1` bump the SDK parses `expectedCtxId` with `CtxId::parse`
+(`acdp://` + a lowercase DNS authority + a lowercase v4 UUID — a port in the
+authority never parses). `ReceiptAuditService` pre-checks that grammar before the
+federation fetch, so an event whose **stored** `ctx_id` is non-canonical gets an
+`error` verdict with an `unverified:` note instead of a `verified` one. That is the
+correct verdict — a receipt cannot be verified against a ctx_id the protocol cannot
+name — and it is **not** registry dishonesty, so it never reaches the `flagged` list
+on `GET /runs/:runId`.
+
+Before rolling the bump out, count the affected rows per environment:
+```sql
+SELECT count(*) FROM context_events WHERE ctx_id IS NOT NULL AND ctx_id !~ '^acdp://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
+```
+A non-zero count means exactly that many events will move from `verified` to `error`.
+Expect it, don't page on it.
+
+After the fact, each occurrence logs a `warn` with `auditCause` =
+`stored_ctx_id_not_canonical` (or `sdk_rejected_ctx_id`, when the SDK refuses a
+ctx_id the host pre-check allowed — the host mirror deliberately doesn't enforce the
+63-character DNS-label limit) alongside `eventId` / `ctxId` / `runId` /
+`registryAuthority`. Alert on `auditCause`, not on
+`acdp_receipt_audits_total{status="error"}`, whose label is shared with ordinary
+fetch and DID-resolution failures. To list the stored verdicts:
+```sql
+SELECT event_id, ctx_id, registry_authority, discrepancies
+FROM receipt_audits
+WHERE status = 'error' AND discrepancies::text LIKE '%ctx_id%'
+ORDER BY checked_at DESC LIMIT 50;
+```
+Fix the producer/registry that minted the non-canonical ctx_id; re-ingested events
+with a canonical `ctx_id` audit normally.
+
+---
+
 ## Database
 
 ### `relation "..." does not exist`

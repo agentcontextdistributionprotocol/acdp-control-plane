@@ -1589,3 +1589,436 @@ fixes for:
     3 skipped** · integration **27 suites / 162 passed**, exit 0.
   - **Next:** push, PR (`Refs #137`, not `Closes` — #155 scope is deliberately undelivered),
     CI on Node 26 (first run), merge. Then #158 (SIGTERM) as its own PR.
+
+## Plan: rfc-0014-0015-upgrade
+
+Plan: `plans/rfc-0014-0015-upgrade.md` (15 phases). Cross-repo companion:
+`plans/cross-repo/acdp-rs-bump-dispatch-fix.md`. Scope: bump the `acdp` SDK `^0.8.5` →
+`^0.14.1` safely, adopt RFC-ACDP-0014 (producer key revocation) end to end, and fix the
+nine + two defects a fresh correctness audit found in the already-merged RFC-ACDP-0015
+witness/cosign code.
+
+**Repo map** (for `/implement` to reuse, not re-scan):
+
+*SDK surface & the bump*
+- `src/audit/receipt-verify.ts:19-32` — `interface ReceiptCapableVerifier` (hand-written,
+  **five**-arg `verifyReceipt`) then `AcdpVerifier as unknown as Partial<…>` at `:32`. The
+  cast that hides the one breaking change in 0.8.5→0.14.1 from `tsc`. Call site `:74-80`.
+- `src/audit/cosign.ts:165-179` (`CosignCapableVerifier`), `:256`, `:466`, `:586-595`
+  (`QuorumCapableVerifier`), `:618` — the same `as unknown as` pattern; `:156` is a *probe*
+  (`Record<string, unknown>`), not a call.
+- `src/audit/log-verify.ts:53-63` — third instance of the pattern.
+- **Verified SDK delta 0.8.5 → 0.14.1 = exactly two public changes.** (1) NEW
+  `verifyCtxIdBinding(bodyJson, expectedCtxId): boolean`. (2) BREAKING: `verifyReceipt`
+  gains `bodyJson` as positional param **#2**. Everything else — the entire witness/cosign/
+  quorum surface, the log surface, `parseKeyRevocation`, `classifyUnderRevocation` — is
+  byte-identical between the tags. Three *behavioural* tightenings inside `verify_receipt`
+  (`bindings/acdp-node/src/verifier.rs`): `CtxId::parse` replaces the unvalidated newtype;
+  strict `serde_json::from_str::<Body>`; new `receipt.cross_check_body(&body)` (§8 step 3).
+- `package.json:24` — `"@agentcontextdistributionprotocol/acdp": "^0.8.5"`. The old `npm:`
+  alias key is **gone** (removed by `a5957bd`); any reference to `package.json:37` holding it
+  is stale.
+- `.github/dependabot.yml:31-38` — group `acdp-sdk` with `patterns: [acdp]`, which no longer
+  matches the manifest key, plus a comment describing the removed alias.
+- `.github/workflows/bump-acdp.yml` (26 lines) — correct as-is; listens on
+  `repository_dispatch: types: [acdp-released]`. The break is upstream (see cross-repo plan).
+- `scripts/ci-conventions.sh` — five `check()` calls today; Phase 1 adds a sixth.
+
+*Receipt audit (RFC-ACDP-0010) — the RFC-0014 §7 integration point*
+- `src/audit/receipt-audit.service.ts` (521 lines) — `:165` advisory lock; `:253-257`
+  `key_fingerprint_mismatch`; `:263` naive `did:web:${authority}` (**B10**); `:331-351` body
+  fetch; `:356` `const bodyJson = JSON.stringify(body)` (already computed — thread it);
+  `:375` `producerFp` (the §7 `signerFingerprint`); `:401` second naive DID (**B10**);
+  `:423-429` the five-arg `verifyReceipt` call; `:484-491` non-ed25519 producers get the
+  receipt's *claimed* fingerprint passed through.
+- Statuses: `verified` | `verified_historical` | `structural` | `discrepancy` | `no_receipt`
+  | `error`.
+- `src/storage/receipt-audit.repository.ts` — `record` `:44-51` (`onConflictDoNothing` on
+  PK `event_id` ⇒ verdicts seal once); `findUnauditedPublishes` `:66-81` (`isNull` anti-join
+  + lookback window ⇒ **no retroactive re-audit**, the Phase 15 gap); `summarizeByRun`
+  `:83-114` (`RunTrustSummary`, `:14-33`); `deleteBefore` `:116-123` (present, **not** wired
+  into `DataRetentionService`).
+- `src/audit/registry-profile.service.ts:28-32` — `ProfileCacheEntry` caches only
+  `{profiles, cachedAt}`; needs widening to carry `registry_did` + `acdp_version` for the
+  RFC-0014 §6 binding check. 10-minute TTL, keyed `(tenant, authority)`.
+
+*Witness / cosigning (RFC-ACDP-0015) — the audit findings*
+- `src/audit/checkpoint-witness.service.ts` (785 lines) — `:8-10` **FALSE** header claim that
+  cosigning is not implemented; `:153-158` boot log that contradicts it; `:174` advisory
+  lock; `:182-197` per-enrollment catch; `:239-249` §6.1 aggregated `witness_signatures`
+  consumption (no §6.2 direct path — see Open Question 7); `:266` naive `did:web:${authority}`
+  (**B10**); `:384-388` the comment justifying **B1** ("we retain the first per tuple rather
+  than re-mint a liveness copy"); `:510-564` `cosignSafe`; `:520` `witnessedAt`; `:645`/`:658`
+  the MUST-NOT-cosign guards; `:666-672` `updateQuorum(...)` with **no `tenantId`** (**B7**);
+  `:687-688` the "counts EXTERNAL attestations" claim (true only by operator discipline,
+  **B8**); `:712` `resolveKey(...)` — **B2** (throws for `did:key`) and **B3** (strict
+  `assertionMethod`); `:714-718` the debug-only "unresolved" path; `:730-733` the failure log
+  that receives `"[object Object]"` (**B4**).
+- `src/audit/cosign.ts` (770 lines) — `:65` `LOG_ID_RE` allows `_` (schema does not, **B9b**);
+  `:67` `WITNESS_DID_RE` (accepts `did:key`); `:489-493` reads `parsed.error`, drops `.code`
+  (**B5**); `:508-514` the §8 step-3 witness binding; `:635` sends only `{min_witnesses}`
+  (**B6**); `:641-660` reads 4 of 6 report fields, dropping `fresh_witnessed_count` /
+  `meets_fresh_quorum` (**B6**); `:659` `.map((f) => String(f))` (**B4**); `:705`
+  `hostEvaluateQuorum` re-dispatches to `verifyCosignature` → native, so host arithmetic is
+  untested in a real install; `:754-770` duplicate base58btc **encoder**.
+- `src/witness/witness-signing.service.ts` (285 lines) — `:47` `WITNESS_DID_RE`; `:141-142`
+  `did:key` exempted from host binding; `:216-218` `ownCosignatureVerifies` — **dead code,
+  zero call sites, verifies nothing** (**B9a**); `:234-257` second duplicate base58btc
+  encoder; `:264-274` `didWebAuthority()` — the **correct** `%3A` handling precedent.
+- `src/witness/witness.controller.ts` (126 lines) — `/log/witness` `@Public()`, witness_id
+  scoped, `limit: 50`; `:34` third `LOG_ID_RE`; `:44-101` the two `/.well-known/` documents;
+  `:60-66` the existing 400-on-malformed-query precedent.
+- `src/storage/log-cosignature.repository.ts` (81 lines) — `record` `:26-33`
+  `onConflictDoNothing` (**B1**); `list` `:52-57` `ORDER BY witnessed_at DESC, tree_size DESC
+  LIMIT 50` (**B11** — re-mints would crowd out older heads); `list`/`coveredLogs` untenanted
+  and **correctly so** (single-identity public feed).
+- `src/storage/log-witness.repository.ts` (298 lines) — `:36-43` append-once insert;
+  `:51-68` `updateQuorum` **no `tenantId`** (**B7**); `:71-87` `latestForAuthority` (tenant
+  *is* filtered — hence the silent evidence loss); `:94-109` `findByLogIdAndSize` **no
+  `tenantId`** (**B7**, called from `src/audit/log-inclusion-audit.service.ts:296`);
+  `:279-297` `markFailure` read-modify-write (safe: single writer under advisory lock).
+- `src/audit/log-inclusion-audit.service.ts:231` — fourth naive `did:web:${authority}`
+  (**B10**); `:296` the untenanted cross-binding read.
+- `src/auth/did-web/did-web-resolver.service.ts` (339 lines) — `resolveKey` `:159-195`
+  (unconditional `AcdpDid.webToUrl` ⇒ throws `not_did_web` for `did:key`; strict
+  `keyForAlgorithm`); `resolveReceiptKey` `:212-245` (`receiptKeyForAlgorithm`, returns
+  `{keyId, algorithm, publicKeyB64, historical}`) — **semantically exactly what RFC-0015 §9
+  witness keys need**; `:259-326` the per-DID document cache (1h).
+- **Upstream cross-check:** the SDK's own `verify_witness_cosignature_value` uses
+  `doc.find_by_fragment(...)` — a plain `verificationMethod` lookup with **no**
+  `assertionMethod` gate. The over-strictness in B3 is purely host-side.
+- **No `did:key` decoder exists anywhere in the SDK's public surface at 0.14.1** (full export
+  list enumerated). The repo has the *encoder* twice and no decoder.
+- `bindings/acdp-node/src/v040.rs:72-78` — `failure(e)` builds
+  `{"valid":false,"code":…,"error":…}`; `:284-402` `evaluate_witness_quorum_report` returns
+  `{witnessed_count, witnesses, meets_quorum, fresh_witnessed_count, meets_fresh_quorum,
+  failures}`. Confirms **B4/B5/B6** precisely.
+- `acdp-client/src/witness.rs:185-193` — `WitnessPolicy` defaults `min_witnesses=1`,
+  `max_age_seconds=Some(300)`, `max_clock_skew_seconds=120`. With
+  `LOG_WITNESS_INTERVAL_SECONDS` also defaulting to **300**
+  (`src/config/app-config.service.ts:255`), **B1 is the default behaviour, not an edge case**.
+
+*Config*
+- `src/config/app-config.service.ts` (516 lines) — witness block `:254-297`; `validate()`
+  `:355-515`; `:433-437` the `WITNESS_COSIGNING_ENABLED requires LOG_WITNESS_ENABLED`
+  **precedent pattern** for a prerequisite throw; `:443-457` the quorum block with **no**
+  `WITNESS_ID ∉ WITNESS_QUORUM_TRUSTED` check (**B8**).
+
+*Errors*
+- `src/errors/error-codes.ts` (19 lines) — `INVALID_LOG_PROOF` at `:9-16` with a 7-line
+  RFC-citing comment block (the **style precedent**). No `INVALID_WITNESS_COSIGNATURE`
+  (RFC-0015 §10, HTTP 502, MUST NOT collapse with `invalid_log_proof`), no
+  `CONTEXT_ID_MISMATCH` (RFC-0006 §4.1 step 7).
+
+*Ingest & federation*
+- `src/ingest/ingest.service.ts:128-137` — the domain-pack gate (runs only when
+  `packs.length > 0`); `:185-190` `ACDP_BASE_TYPES` = `data_snapshot, analysis, prediction,
+  alert` — **missing `key-revocation` and `acdp:key-revocation`**. A 4xx here is a
+  **permanent** delivery failure upstream: the revocation is lost silently.
+- `src/contexts/contexts.controller.ts` (106 lines) — `:67-72` the proxy relays the upstream
+  body **verbatim and unparsed** (the `verifyCtxIdBinding` insertion point); `:76-83` the
+  `FederationFetchError → BadGatewayException` classification; `:94-105` `parseAcdpCtxId`
+  accepts `/^[a-zA-Z0-9.:-]+$/` authority (uppercase + ports) and any non-empty id — far
+  looser than `CtxId::parse`.
+- `src/contexts/safe-federation-client.ts:59` — `get()` is the **only** method. Confirms the
+  registry v0.1.4→v0.1.5 wire changes (415 gate, 422→400, publish-side revocation rejections)
+  are **all POST-only ⇒ zero risk** to this repo.
+- `CtxId::parse` (`acdp-primitives/src/primitives.rs:29-48`) — requires `acdp://` +
+  `is_valid_dns_authority` (lowercase ASCII / digits / `-` / `.`; **rejects `:`, so ports are
+  invalid**) + a lowercase v4 UUID. The registry parses path ctx_ids through it at
+  `acdp-registry-core/src/handlers/context.rs:899` and `:1484`, so tightening the CP's parser
+  converts an upstream 400 into a local 400 — no conformant caller sees a change.
+
+*RFC-ACDP-0014 upstream facts (verified, not assumed)*
+- `WebhookEvent::ContextPublished` (`acdp-registry-types/src/event.rs:11-53`, single
+  construction site `acdp-registry-core/src/handlers/context.rs:697-732`) has **no `metadata`
+  field**. Revocation discovery must be by `context_type` + a body fetch — **not** an
+  ingest-time projection of `revoked_key_fingerprint` / `compromised_since`.
+- The registry mints a receipt for **every** accepted publish with **no `context_type` gate**,
+  so revocation contexts do carry receipts.
+- The reference registry advertises `acdp_version = "0.5.0"` **unconditionally**
+  (`acdp-registry-server/src/main.rs:1198-1213`, pinned by a test at `:2523`) and therefore
+  **rejects new interim `acdp:key-revocation` publishes** with `schema_violation`
+  (`validator.rs:225-234`). Both spellings must still be accepted (§10 retrieval, third-party
+  registries, and §7's disarm clause names the interim form).
+- `capabilities.registry_did` and `acdp_version` are **non-`Option` `String`s**, always
+  present (`acdp-types/src/capabilities.rs:9-44`); `registry_did =
+  authority_to_did_web(&cfg.registry.authority)`.
+- `authority_to_did_web` (`acdp-did/src/web.rs:422-425`) = `authority.replace(':', "%3A")`.
+  **This is the proof for B10.** The reverse (`:433-440`) decodes only the first
+  colon-separated segment.
+- `acdp-client/src/revocation.rs:139-149` `verify_revocation_body` (the pipeline to mirror);
+  `:304-351` `walk_revocation_lineage` (the empty-lineage fail-closed, permanent-drop /
+  transient-abort asymmetry); `:47` `MAX_LINEAGE_WALKS = 100`.
+- `KeyRevocation::cross_check_registry_binding` (`acdp-types/src/revocation.rs:384-405`,
+  rationale `:369-383`) exists in Rust but is **not exposed to Node** — pure string
+  comparison, reimplemented host-side in Phase 11.
+- `classifyUnderRevocation` returns `{"authorization":"none"}` for BOTH "inert" and
+  "fail-closed"; the fail-closed shape adds `boundary` + `error`. **Disambiguate on
+  `boundary`/`error`, never on `authorization`** — conflating them silently disables §7.
+
+*Schema & migrations*
+- `src/db/schema.ts` (601 lines) — `:368-401` `receiptAudits`; `:403-406` **FALSE** comment
+  that cosigning is unimplemented; `:407-446` `logWitnessCheckpoints` with `uniqueHead` at
+  `:437` over `(logId, treeSize, rootHash)` — **no tenant** (**B7**); `:451-483`
+  `logWitnessCursors` (PK correctly `[tenantId, registryAuthority]` — the right precedent);
+  `:485-489` the `logInclusionAudits` "parallel table" rationale (RFC-0012 §9.3);
+  `:490-514` `logInclusionAudits`; `:516-566` `logCosignatures` with `uniqueCosig` at `:556`
+  over `(witnessId, logId, treeSize, rootHash)` — **no tenant** (**B7**); `:568-601` type
+  exports.
+- `drizzle/0014_*.sql` — added `context_events.key_fingerprint` (the Phase 15 fan-out join
+  key). `drizzle/0015:40` — `PRIMARY KEY (tenant_id, ctx_id)` composite-PK precedent.
+  `drizzle/0016_log_witness.sql:11-13` the same false claim (**historical record — do not
+  edit**), `:35` `UNIQUE (log_id, tree_size, root_hash)`, `:66`
+  `PRIMARY KEY (tenant_id, registry_authority)`, `:70-79` the parallel-table rationale.
+  `drizzle/0017_log_cosignatures.sql:45-46` the "retain the first per tuple" comment (**B1**,
+  in writing), `:47` `UNIQUE (witness_id, log_id, tree_size, root_hash)`.
+  `drizzle/0018_witness_quorum.sql` adds `witnessed_count` / `meets_quorum` /
+  `acknowledged_at` / `acknowledged_by`. **Next migration number is `0019`.**
+- Migration conventions: filename `drizzle/00NN_<slug>.sql`; header `-- <filename>` /
+  `-- ACDP <ver> — <theme> (RFC-ACDP-NNNN …)` / `--` / rationale prose. Every new table gets
+  `tenant_id varchar(255) NOT NULL DEFAULT 'default'`. `CREATE TABLE IF NOT EXISTS` /
+  `ALTER TABLE … ADD COLUMN IF NOT EXISTS` (the runner `src/db/migrate.ts` is forward-only,
+  transactional, tracked in `_migrations`, files sorted **lexically** — a partially applied
+  file must be re-runnable). Index names `<2-4 letter abbrev>_<subject>_idx`. Status columns
+  are `varchar(32) NOT NULL` preceded by a `-- a | b | c` value comment — **no PG enum, no
+  CHECK**. Composite PKs lead with `tenant_id`.
+
+*Tests*
+- `src/audit/checkpoint-witness.service.spec.ts:660` —
+  `it('re-cosigning the same head is idempotent (repo dedups; no crash)')` asserting
+  `expect(record).toHaveBeenCalledTimes(1)`. **This test asserts the B1 bug and must FLIP in
+  Phase 7.**
+- `src/audit/cosign.spec.ts:41-56` — the `ACDP_SPEC_DIR` graceful-skip pattern for
+  conformance fixtures.
+- Unit-spec convention: hand-rolled `jest.fn()` object literals built in `beforeEach`,
+  `let x: any` collaborators, `new ServiceClass(...)` constructed positionally — **never**
+  `Test.createTestingModule`. `jest.mock` hoisted above imports. Ed25519 keys via
+  `generateKeyPairSync('ed25519')` or a PKCS#8-DER-prefix seed builder.
+- Integration convention: `test/integration/<area>.integration.spec.ts` via
+  `createTestApp`/`TestClient`, Postgres on **5433**, `maxWorkers: 1`, `truncateAll()`
+  between cases.
+- `test/integration/tenancy-isolation.integration.spec.ts` — where the B7 two-tenant proof
+  goes. `test/integration/trust-hardening.integration.spec.ts` — the receipt-audit e2e.
+
+*Docs truth state (verified — corrects the research brief)*
+- **Genuinely false, fix in Phase 5:** `CLAUDE.md:305-306`;
+  `src/audit/checkpoint-witness.service.ts:8-10`; `src/db/schema.ts:403-406`.
+- **Already accurate, do NOT "fix":** `docs/ARCHITECTURE.md:242-249`; `docs/API.md:519-556`;
+  `docs/CONFIGURATION.md:156-199`.
+- **Merely confusingly worded, reword only:** `docs/ARCHITECTURE.md:250-252` — conflates
+  RFC-0009 §2.12 (witness cosigning, **implemented**) with RFC-0015 §6.1 registry-side
+  aggregation (**not** implemented, correctly).
+- `docs/API.md:532` names `0.7.0+` as the cosignature-surface floor — still true, but below
+  the new pinned floor.
+
+**PR strategy** (decided at `/implement` start, per the plan's own `Depends on` graph —
+confirmed by reading every phase's `Depends on` line: all edges point backward in numeric
+order, so implementing 1→15 in sequence satisfies every dependency with no reordering):
+
+- **PR1 — Phases 1–4** (`SDK hardening, bump to 0.14.1, ctx_id binding`). Branch
+  `rfc-0014/pr1-sdk-bump`.
+- **PR2 — Phases 5–9** (`RFC-ACDP-0015 witness/cosign correctness fixes`). Branch
+  `rfc-0014/pr2-witness-fixes`. No dependency on PR1 (confirmed: nothing in 5–9 names Phase
+  1–4 in `Depends on`) — sequenced after PR1 anyway to keep one executor thread linear rather
+  than running two branches against the same working tree concurrently.
+- **PR3 — Phases 10–15** (`RFC-ACDP-0014 producer key-revocation`). Branch
+  `rfc-0014/pr3-key-revocation`. **Genuinely depends on PR1**: Phase 11 depends on Phase 3
+  (`authorityToDidWeb`), Phase 12 and Phase 14 depend on Phase 2 (the bumped SDK surface) —
+  so this branch is cut from `main` only after PR1 merges, never from PR2's branch.
+
+Why three PRs and not one: 15 phases as a single diff is not honestly reviewable, and the
+plan's own three RFC/concern groupings (SDK currency, an audit-fix set, a new feature) are
+independently meaningful units a reviewer can reason about separately. Why not more (e.g. one
+per phase): most individual phases are small enough that a 15-PR chain would be pure process
+overhead for no independent value — the three chosen boundaries are the only ones with a real
+seam (a different RFC, or a real code dependency edge).
+
+### /implement checkpoints — `rfc-0014/pr1-sdk-bump`
+
+- **2026-09-23 — Phase 1 (SDK surface shims typecheck against the real binding): DONE, PASS
+  round 1.** Verifier tier: Opus (not a one-way door — internal type-checking pattern, fully
+  reversible). No gaps raised.
+  - Replaced the `Acdp* as unknown as <hand-written interface>` pattern with
+    `Pick<typeof AcdpVerifier, ...>`-derived types in `src/audit/{receipt-verify,cosign,
+    log-verify}.ts` — the compiler now sees the binding's real shape, so Phase 2's arity change
+    becomes a `tsc` error instead of a silent runtime failure. Verified both directions: a
+    patched `.d.ts` simulating Phase 2's arity change fails `tsc` on this branch and was
+    reproduced as silent on pre-phase `HEAD`.
+    Added CI convention check 6 (`scripts/ci-conventions.sh`) forbidding the pattern from
+    reappearing, confirmed non-vacuous against the 8 real pre-phase sites. New
+    `src/ci-conventions.spec.ts` (8 cases) exercises the script directly.
+  - `CLAUDE.md` (gitignored, on-disk only) updated to document 6 checks.
+  - Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` 0 · `check:build` both builds
+    135 files · unit 71/808 (+1 suite/+8 tests vs. 70/800 baseline, zero pre-existing tests
+    changed) · integration 30/173.
+  - **Environment note, not a code defect**: this repo's own `docker-compose.test.yml` postgres
+    fails to bind port 5433 (held by an unrelated sibling project's `aitp-control-plane-postgres-
+    test` container) — `test/setup/global-setup.ts` swallows the failure and the suite runs
+    against a same-named `acdp_control_plane_test` database created inside the foreign
+    container. Confirmed this repo's own migrations/schema (20 tables through `0018`) are what's
+    actually being exercised, no cross-project contamination — but it's a pre-existing (commit
+    `cee404d` already anticipated the name collision) local-environment hazard worth fixing
+    (stop the foreign container, or repoint `DATABASE_URL`) outside this plan's scope.
+  - Files touched: `src/audit/receipt-verify.ts`, `src/audit/cosign.ts`,
+    `src/audit/log-verify.ts`, `scripts/ci-conventions.sh`, `src/audit/receipt-verify.spec.ts`,
+    `src/ci-conventions.spec.ts` (new), `CLAUDE.md` (untracked), `plans/rfc-0014-0015-upgrade.md`
+    (Phase 1 → DONE).
+  - **Next:** Phase 2 — bump `^0.8.5` → `^0.14.1`.
+
+- **2026-09-23 — Phase 2 (Bump acdp SDK `^0.8.5` → `^0.14.1`): DONE, GAPS round 1 → PASS round
+  2.** Verifier tier: Opus (not a one-way door within this phase's scope — no public API/schema
+  change, reversible; the SDK version itself is an external-dependency bump but the plan already
+  fixed the version target during drafting review, nothing left to decide here).
+  - Round 1 verdict: PASS with 3 gaps (dependabot comment still said "npm: alias" contra AC 7's
+    literal text; the `verified`→`error` flip for non-canonical stored `ctx_id` rows had zero
+    operator-visible signal — no distinguishing log, no distinguishing metric label, note text
+    never reached any API; a "63 vs 64 char DNS label" host/SDK mirror gap was accurately safe but
+    inaccurately described as "unreachable in practice") + 1 doc nit (stale "0.5.0 binding predates
+    log surface" line in CLAUDE.md). All 4 closed in one gap-closing pass; round 2 re-verify
+    confirmed each against the actual on-disk text (not the fixer's self-report) plus a clean gate
+    re-run — **PASS**.
+  - Bumped `package.json`/`package-lock.json` to `0.14.1`; confirmed via lockfile inspection (not
+    assumed) that all four platform `optionalDependencies` resolved — this exact class of failure
+    (a bot-regenerated lockfile silently dropping `acdp-linux-x64-gnu`) broke CI/Docker once
+    before (PR #125). Threaded `bodyJson` into `verifyReceipt`; added `classifyReceiptFailure`
+    (a named, individually-tested predicate distinguishing `malformed_body`/`ctx_id_rejected`/
+    `receipt_dishonest`) so the three new stricter failure modes route to `unverified:` notes
+    (not dishonesty flags) except the true `cross_check_body` mismatches, which correctly do flag.
+  - A real bug surfaced and got fixed along the way, not anticipated by the plan: napi-thrown
+    errors fail `instanceof Error` under ts-jest's VM realm (true there, false in production),
+    which silently broke prefix-based classification in tests only — fixed via a `.message`
+    duck-typed `rawMsg()` helper instead of an `instanceof` check, verified empirically in both
+    realms by both the executor and the round-1 verifier independently.
+  - Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 · `check:build`
+    both builds 135 files · unit 71/831 (828 passed + 3 skipped; baseline going in was 71/808 from
+    Phase 1) · integration 30/176 (then re-run 8/8 on the Gap 2 sanity check alone).
+  - **Operational note for deploy** (not a code change, recorded here and in
+    `docs/TROUBLESHOOTING.md`'s new Receipt audit section): any `context_events` row whose stored
+    `ctx_id` isn't canonical per `CtxId::parse` moves from `verified` to `error` once this ships.
+    Correct, but expected — the pre-deploy SQL check to find affected rows ahead of time is in
+    `docs/TROUBLESHOOTING.md` and in the plan's own Phase 2 Edge-cases section, verbatim in both.
+  - Files touched: `package.json`, `package-lock.json`, `src/audit/receipt-verify.ts`,
+    `src/audit/receipt-audit.service.ts`, `src/audit/receipt-verify.spec.ts`,
+    `src/audit/receipt-audit.service.spec.ts`, `src/audit/receipt-audit.service.crypto.spec.ts`,
+    `test/integration/trust-hardening.integration.spec.ts`, `.github/dependabot.yml`,
+    `docs/API.md`, `docs/TROUBLESHOOTING.md` (new section), `CLAUDE.md` (untracked),
+    `plans/rfc-0014-0015-upgrade.md` (Phase 2 → DONE).
+  - **Next:** Phase 3 — canonical `authority → did:web` + closed-proof re-serialization (B10, B12).
+
+- **2026-09-23 — Phase 3 (Stop accusing conformant registries: canonical `authority → did:web`,
+  closed-proof re-serialization — B10, B12): DONE, PASS round 1.** Verifier tier: Opus, briefed
+  to scrutinize hardest and REPRODUCE (not just read) the two crux claims — no gaps raised.
+  - **B10**: new `src/common/did-authority.ts` (`authorityToDidWeb`/`didWebToAuthority`/
+    `nonCanonicalAuthorityReason`), transcribed from and verifier-confirmed against `acdp-rs`'s
+    actual `web.rs` encoding (percent-encodes a port: `localhost:8443` → `did:web:
+    localhost%3A8443`). Applied at all 4 DID-comparison sites (`receipt-audit.service.ts` ×2,
+    `checkpoint-witness.service.ts`, `log-inclusion-audit.service.ts`) — a non-canonical stored
+    authority is now an `unverified:`/`error` outcome, never a dishonesty flag. One naive-template
+    site left intentionally (`checkpoint-witness.service.ts:646`, an SSE `agentId` field) —
+    verifier traced it and confirmed it's display/telemetry-only, never a comparison input.
+  - **B12**: the reference registry attaches an RFC-ACDP-0015 §6.1 `witness_signatures` sibling
+    on `GET /log/proof` once a log has ≥1 witness cosignature (both inclusion and consistency
+    modes) — and the SDK's `LogInclusion`/`LogConsistencyProof` are `deny_unknown_fields`, so
+    *every* proof from a witnessed, fully-conformant registry was silently failing native
+    verification and reading as `consistency_failed`/`invalid_proof`. Fixed by replacing a
+    deny-list strip (`stripEmbeddedCheckpoint`, only handled `log_checkpoint`) with an allow-list
+    projection (`toClosedInclusionProof`/`toClosedConsistencyProof` in `src/audit/log-verify.ts`)
+    onto exactly the closed member set the SDK's types declare.
+  - **Verifier reproduced both crux claims directly, not on the executor's word**: (a) reverted
+    the B12 fix to the old deny-list and confirmed the target integration test flips from
+    `witnessed` to a false `alert`/`consistency_failed` — then restored the fix and reconfirmed
+    green, 3x repeated; (b) confirmed via a live probe against the installed 0.14.1 binding that
+    the `deny_unknown_fields` failure is real (`"unknown field \`witness_signatures\`"`), and
+    confirmed real tampering (a flipped inclusion-path hash; a consistency proof folding to a root
+    that isn't an extension of the retained one) still alerts correctly even with the sibling
+    attached — including a mutation test proving the allow-list can't be used to launder a
+    missing required field (dropping `consistency_path` from the closed type fails loudly).
+  - **Residual risk recorded, not fixed** (verifier-flagged, beyond this phase's acceptance
+    criteria): the closed proof shapes are hand-maintained with no compile-time coupling to the
+    SDK's Rust types (the Node binding exports no proof types to pin against) — a future SDK
+    proof-shape change could silently reintroduce this defect class. Cheap future fix identified:
+    classify a `/does not parse/` reason as an environmental error rather than a dishonesty
+    verdict in `nativeVerdict`. Not part of this phase's plan-defined scope; worth its own small
+    follow-up phase/ticket, not blocking PR1.
+  - Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 · `check:build`
+    both builds 136 files · unit 72/867 (864 passed + 3 skipped) · integration 30/178.
+  - Files touched: `src/common/did-authority.ts` (new) + spec, `src/audit/log-verify.ts` +
+    `log-verify.spec.ts`, `src/audit/receipt-audit.service.ts` + `.spec.ts` +
+    `.crypto.spec.ts`, `src/audit/checkpoint-witness.service.ts` + `.spec.ts`,
+    `src/audit/log-inclusion-audit.service.ts` + `.spec.ts`, `src/witness/witness-signing.service.ts`,
+    `test/integration/log-witness.integration.spec.ts`, `plans/rfc-0014-0015-upgrade.md`
+    (Phase 3 → DONE).
+  - **Next:** Phase 4 — `verifyCtxIdBinding` on the federation proxy.
+
+- **2026-09-23 — Phase 4 (Bind the served `ctx_id` on the federation proxy —
+  `verifyCtxIdBinding`): DONE, PASS round 1.** Verifier tier: Opus, briefed to treat this as the
+  plan's only hot-path (live request-serving, not background-sweep) change and scrutinize
+  availability risk specifically — no gaps raised.
+  - `GET /contexts/*ctxId` now refuses to relay a 2xx whose body's `ctx_id` doesn't match the one
+    requested — closes a substitution gap `content_hash` and the producer signature structurally
+    can't cover (`ctx_id` is registry-assigned, outside both). Two new error codes
+    (`CONTEXT_ID_MISMATCH` / `CONTEXT_BINDING_UNVERIFIABLE`, both 502, body withheld in both) via a
+    new `verifyCtxIdBinding` wrapper in `src/audit/receipt-verify.ts`.
+  - Also tightened `parseAcdpCtxId` to the SDK's actual `CtxId::parse` grammar (plan-authorized,
+    not a side effect) — verifier confirmed via a reconstructed old-parser diff that 6 new unit
+    cases (uppercase authority, port-bearing authority, opaque non-uuid id, non-v4/bad-variant
+    UUID nibbles) are genuine live-route behavior changes: accepted before this phase, 400 now,
+    with zero outbound request in either case.
+  - **Availability-risk scrutiny (the main verification focus)**: verified real, not theoretical —
+    empirically drove the real controller through 6 injected native-binding failure modes (method
+    absent, OOM-adjacent `RangeError`, unknown napi failure, non-`Error` throws, `null` throws) and
+    confirmed every one degrades to a clean, classified 502 `CONTEXT_BINDING_UNVERIFIABLE`, never
+    an uncaught exception or a wrong classification — and confirmed non-2xx relaying keeps working
+    even when the binding is unreachable, so an outage is scoped to 2xx retrievals on this one
+    route, not the whole proxy. Confirmed this "fail closed, don't degrade-and-relay" posture is
+    explicit plan intent (unlike the audit-sweep `sdkHasLogSurface`-style wrappers, which *do*
+    degrade — deliberately different because a sweep can re-check next cycle, a request can't).
+  - Leak check: confirmed by reading the actual exception construction (not the test titles) that
+    neither error message echoes the upstream body, the registry's raw error text, or the SDK's
+    full failure reason — both are fixed templates naming only the authority and the *requested*
+    ctx_id.
+  - Mutation checks, all reproduced by the verifier and reverted byte-identical: removing the
+    binding-check call fails 13 tests; neutering the 2xx gate fails 3; forcing the classifier to
+    always return `mismatch` fails 9.
+  - **Plan-text correction** (not a code defect): the plan's Edge-cases prose said an oversize body
+    "fails to parse and falls into the fail-closed path" — actually throws
+    `FederationFetchError('BODY_TOO_LARGE')` inside `SafeFederationClient`, caught as a
+    `BadGatewayException` before the binding check runs. Same 502 outcome, different code path;
+    corrected inline in the plan.
+  - Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 · `check:build`
+    both builds 136 files · unit 72/898 (895 passed + 3 pre-existing skipped) · integration
+    30/186.
+  - Files touched: `src/errors/error-codes.ts`, `src/audit/receipt-verify.ts` + `.spec.ts`,
+    `src/contexts/contexts.controller.ts` + `.spec.ts`,
+    `test/integration/federation-proxy.integration.spec.ts`, `docs/API.md`, `CLAUDE.md`
+    (untracked), `plans/rfc-0014-0015-upgrade.md` (Phase 4 → DONE).
+  - **PR1 (Phases 1-4) is now phase-complete.** Proceeding to the finalization pass before
+    handing off to `/ship`. Release-notes callout still owed for two live behavior changes on
+    `/contexts/*ctxId` (tightened ctx_id grammar; a mis-resolved native binding now 502s 2xx
+    retrievals on this route) — fold into the PR description.
+
+### /ship — rfc-0014/pr1-sdk-bump
+
+- **Ship-gate (whole-diff Opus verifier, 4-phase diff a82c1d9..44d8584 vs main):** PASS.
+  Confirmed local gates fresh-green (conventions 6✓, lint 0, both tsconfigs 0, check:build
+  136 files both builds, unit 72/895+3skip, integration 30/186), cross-phase consistency
+  (Phase 4 reuses Phase 1's `Pick` pattern + Phase 2's `isCanonicalCtxId`; `did-authority.ts`
+  not duplicated), no blocking `ASSUMPTIONS.md`/`DECISIONS.md` entries, tracked-file
+  consistency (all 4 plan phases DONE, `PROGRESS.md` matches `git diff --stat` per commit).
+  Corrected one detail: branch has 5 commits (repo-map prep commit `8a885f0` precedes the 4
+  phase commits), otherwise as recorded above.
+  One item flagged "fix before merge": `docs/ARCHITECTURE.md:249` still carried the stale
+  "until the binding exposes the 0.3.0 log surface" claim that CLAUDE.md's twin already had
+  corrected during Phase 2's gap-closing round — no per-phase gate had checked
+  ARCHITECTURE.md, only the whole-diff view surfaced it. Fixed directly (commit `107a917`),
+  mirroring CLAUDE.md:363-371's corrected language (0.6.0 arrival, `^0.14.1` floor,
+  `sdkHasLogSurface()` delegates in practice, `log-verify.ts` kept as fallback +
+  parity-tested). Two other minor items noted by the verifier (illustrative non-canonical
+  ctx_id in the API.md lineage example; `INVALID_LOG_PROOF` absent from the API.md HTTP
+  error-code list) were reviewed and left as-is: the lineage example was always illustrative
+  placeholder data, not a regression from Phase 4's tightened grammar, and
+  `INVALID_LOG_PROOF` is a webhook/audit verdict code, never thrown as an HTTP `errorCode`,
+  so adding it to that list would misrepresent it.
+- pushed rfc-0014/pr1-sdk-bump 107a91790d19498c346801a54e32f661e48e7f80
+- PR #165 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/165

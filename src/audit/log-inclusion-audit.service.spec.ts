@@ -331,3 +331,199 @@ describe('LogInclusionAuditService', () => {
     expect(h.auditRepo.findUnauditedReceiptPublishes).not.toHaveBeenCalled();
   });
 });
+
+// ── B10/B12: the CP must stop accusing conformant registries ─────────────
+
+describe('LogInclusionAuditService — conformant registries must not be flagged', () => {
+  // A registry addressed by host:port. Conformant ⇒ it advertises (and binds
+  // its log_id / receipt key to) `did:web:localhost%3A8443`; the naive
+  // `did:web:localhost:8443` sealed a permanent `invalid_proof` verdict.
+  const PORT_AUTHORITY = 'localhost:8443';
+  const PORT_BASE = `https://${PORT_AUTHORITY}`;
+  const PORT_DID = 'did:web:localhost%3A8443';
+  const PORT_LOG_ID = `${PORT_DID}/log/1`;
+  const PORT_KEY_ID = `${PORT_DID}#receipt-key-1`;
+  const PORT_CTX = `acdp://${PORT_AUTHORITY}/ctx-001`;
+
+  const portReceipt = {
+    registry_did: PORT_DID,
+    ctx_id: PORT_CTX,
+    lineage_id: 'lin-001',
+    origin_registry: PORT_AUTHORITY,
+    created_at: '2026-07-01T00:00:00.000Z',
+    content_hash: 'sha256:' + 'a'.repeat(64),
+    key_fingerprint: 'sha256:' + 'b'.repeat(64),
+    signature: { algorithm: 'ed25519', key_id: PORT_KEY_ID, value: 'c2ln' },
+  };
+
+  function portTree(): Buffer[] {
+    const built = buildLogLeaf(portReceipt);
+    if (!built.ok) throw new Error(built.reason);
+    const leaf0 = leafHash(built.leaf);
+    if (leaf0 === null) throw new Error('leaf hash failed');
+    const others = Array.from({ length: 4 }, (_, i) => {
+      const h = leafHash({ leaf_version: 'acdp-log-leaf/1', ctx_id: `acdp://p/other-${i}` });
+      if (h === null) throw new Error('leaf hash failed');
+      return h;
+    });
+    return [leaf0, ...others];
+  }
+
+  function signPortCheckpoint(fields: Partial<Omit<LogCheckpoint, 'signature'>>): LogCheckpoint {
+    const cp = {
+      checkpoint_version: 'acdp-log/1',
+      log_id: PORT_LOG_ID,
+      tree_size: 0,
+      root_hash: wire(mth([])),
+      timestamp: new Date(Date.now() - 1000).toISOString(),
+      ...fields,
+      signature: { algorithm: 'ed25519', key_id: PORT_KEY_ID, value: '' },
+    } as LogCheckpoint;
+    const hash = checkpointHash(cp)!;
+    cp.signature.value = edSign(null, Buffer.from(hash, 'ascii'), privateKey).toString('base64');
+    return cp;
+  }
+
+  function portInclusionResponse(
+    tamper?: (proof: Record<string, unknown>) => void,
+  ): Record<string, unknown> {
+    const leaves = portTree();
+    const cp = signPortCheckpoint({ tree_size: 5, root_hash: wire(mth(leaves)) });
+    const proof: Record<string, unknown> = {
+      log_id: PORT_LOG_ID,
+      leaf_index: 0,
+      tree_size: 5,
+      inclusion_path: auditPath(0, leaves).map(wire),
+      log_checkpoint: cp,
+    };
+    if (tamper) tamper(proof);
+    return proof;
+  }
+
+  function portHarness() {
+    const h = makeHarness();
+    h.registryRepo.findByAuthority.mockResolvedValue({
+      authority: PORT_AUTHORITY,
+      baseUrl: PORT_BASE,
+    });
+    return h;
+  }
+
+  function portEvent(overrides: Partial<ContextEvent> = {}): ContextEvent {
+    return makeEvent({
+      ctxId: PORT_CTX,
+      registryAuthority: PORT_AUTHORITY,
+      keyFingerprint: portReceipt.key_fingerprint,
+      rawPayload: { type: 'context_published', registry_receipt: portReceipt },
+      ...overrides,
+    });
+  }
+
+  it('B10: a port-bearing authority binding to its CANONICAL did:web verifies as included', async () => {
+    const h = portHarness();
+    h.federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/acdp+json',
+      body: JSON.stringify(portInclusionResponse()),
+    });
+
+    const verdict = await h.svc.auditEvent(portEvent());
+    expect(verdict.status).toBe('included');
+    expect(verdict.detail).toEqual([]);
+  });
+
+  it('B10: a GENUINELY foreign log_id on a port-bearing authority is still invalid_proof', async () => {
+    const h = portHarness();
+    h.federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/acdp+json',
+      body: JSON.stringify(
+        portInclusionResponse((proof) => {
+          proof.log_id = 'did:web:evil.example/log/1';
+          (proof.log_checkpoint as LogCheckpoint).log_id = 'did:web:evil.example/log/1';
+        }),
+      ),
+    });
+
+    const verdict = await h.svc.auditEvent(portEvent());
+    expect(verdict.status).toBe('invalid_proof');
+    expect(verdict.detail.join(' ')).toContain('is not bound to');
+  });
+
+  it('B10: an already-percent-encoded stored authority is `error`/unverified, never invalid_proof', async () => {
+    const h = makeHarness();
+    h.registryRepo.findByAuthority.mockResolvedValue({
+      authority: 'localhost%3A8443',
+      baseUrl: 'https://localhost%3A8443',
+    });
+    h.federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/acdp+json',
+      body: JSON.stringify(portInclusionResponse()),
+    });
+
+    const verdict = await h.svc.auditEvent(portEvent({ registryAuthority: 'localhost%3A8443' }));
+    expect(verdict.status).toBe('error');
+    expect(verdict.detail.join(' ')).toContain('unverified:');
+    expect(verdict.detail.join(' ')).toContain('percent-encoded already');
+  });
+
+  // ── B12: the RFC-ACDP-0015 §6.1 top-level `witness_signatures` sibling ──
+
+  /** A real RFC-ACDP-0015 §4 cosignature, as the registry serves them. */
+  function witnessSignatures(cp: LogCheckpoint) {
+    return [
+      {
+        cosignature_version: 'acdp-cosig/1',
+        witness_id: 'did:web:witness.example.org',
+        witnessed_checkpoint: {
+          log_id: cp.log_id,
+          tree_size: cp.tree_size,
+          root_hash: cp.root_hash,
+          timestamp: cp.timestamp,
+        },
+        witnessed_at: '2026-07-05T00:00:00.000Z',
+        signature: {
+          algorithm: 'ed25519',
+          key_id: 'did:web:witness.example.org#witness-key-1',
+          value: 'Y29zaWc=',
+        },
+      },
+    ];
+  }
+
+  it('B12: an inclusion proof carrying witness_signatures verifies as included', async () => {
+    const h = makeHarness();
+    h.federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/acdp+json',
+      body: JSON.stringify(
+        inclusionResponse((proof) => {
+          proof.witness_signatures = witnessSignatures(proof.log_checkpoint as LogCheckpoint);
+        }),
+      ),
+    });
+
+    const verdict = await h.svc.auditEvent(makeEvent());
+    expect(verdict.status).toBe('included');
+    expect(verdict.detail).toEqual([]);
+  });
+
+  it('B12: a TAMPERED inclusion path still fails even with witness_signatures attached', async () => {
+    const h = makeHarness();
+    h.federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/acdp+json',
+      body: JSON.stringify(
+        inclusionResponse((proof) => {
+          (proof.inclusion_path as string[])[0] = 'sha256:' + 'f'.repeat(64);
+          proof.witness_signatures = witnessSignatures(proof.log_checkpoint as LogCheckpoint);
+        }),
+      ),
+    });
+
+    const verdict = await h.svc.auditEvent(makeEvent());
+    expect(verdict.status).toBe('invalid_proof');
+    expect(verdict.detail.join(' ')).toContain('INVALID_LOG_PROOF');
+  });
+});

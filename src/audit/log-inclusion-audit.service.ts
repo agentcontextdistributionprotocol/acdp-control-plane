@@ -34,6 +34,7 @@
  */
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { AcdpDid } from '@agentcontextdistributionprotocol/acdp';
+import { authorityToDidWeb, nonCanonicalAuthorityReason } from '../common/did-authority';
 import { AppConfigService } from '../config/app-config.service';
 import { SafeFederationClient } from '../contexts/safe-federation-client';
 import { DatabaseService } from '../db/database.service';
@@ -228,7 +229,15 @@ export class LogInclusionAuditService implements OnModuleInit, OnModuleDestroy {
       );
     }
     const checkpoint = parsedCp.checkpoint;
-    const expectedDid = `did:web:${authority}`;
+    // The ONE canonical encoder: a registry addressed as `host:port` is
+    // `did:web:host%3Aport`. The naive `did:web:host:port` sealed a permanent
+    // `invalid_proof` verdict against every conformant port-addressed registry.
+    const expectedDid = authorityToDidWeb(authority);
+    if (expectedDid === null) {
+      // Cannot compute the binding from our own data — environmental, so an
+      // `error` verdict with an `unverified:` note, never `invalid_proof`.
+      return verdict('error', [`unverified: ${nonCanonicalAuthorityReason(authority)}`], proof);
+    }
     if (logIdRegistryDid(checkpoint.log_id) !== expectedDid) {
       return verdict(
         'invalid_proof',

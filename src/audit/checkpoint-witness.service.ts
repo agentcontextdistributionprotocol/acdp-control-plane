@@ -49,6 +49,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { AcdpDid } from '@agentcontextdistributionprotocol/acdp';
 import { RegistryEnrollment } from '../db/schema';
+import { authorityToDidWeb, nonCanonicalAuthorityReason } from '../common/did-authority';
 import { AppConfigService } from '../config/app-config.service';
 import { SafeFederationClient } from '../contexts/safe-federation-client';
 import { AcdpStreamEvent } from '../contracts/acdp';
@@ -263,7 +264,30 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     }
     const checkpoint = parsed.checkpoint;
 
-    const expectedDid = `did:web:${authority}`;
+    // §9.3 step 3 binds the checkpoint to the registry we fetched it from. The
+    // expected DID comes from the ONE canonical encoder — a registry enrolled
+    // as `host:port` is `did:web:host%3Aport`, which is what it actually
+    // advertises; the naive `did:web:host:port` used to raise a
+    // `checkpoint_invalid` ALERT (metric + SSE + webhook) against every
+    // conformant port-addressed registry, on every sweep.
+    //
+    // No backfill is needed for cursors already stuck in that false `alerted`
+    // state: `advanceCursor` clears `alerted` / `last_alert_reason` on the
+    // first fully successful sweep after this fix, so a stale alert an
+    // operator sees immediately after deploy disappears on the next pass.
+    const expectedDid = authorityToDidWeb(authority);
+    if (expectedDid === null) {
+      // The binding cannot be COMPUTED from our own enrollment data, so it is
+      // a check we could not run — environmental, never an alert. Accusing a
+      // registry of dishonesty over our own data-entry error is precisely the
+      // failure direction this service must not have.
+      await this.recordFailureSafe(tenantId, authority);
+      return {
+        authority,
+        status: 'error',
+        reason: `unverified: ${nonCanonicalAuthorityReason(authority)}`,
+      };
+    }
     const bindingError = this.checkRegistryBinding(checkpoint, expectedDid);
     if (bindingError) {
       return this.raiseAlert(tenantId, authority, 'checkpoint_invalid', {
@@ -613,6 +637,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       const streamEvent: AcdpStreamEvent = {
         type: LOG_WITNESS_ALERT_EVENT,
         ts,
+        // NOT a verification input: `AcdpStreamEvent.agentId` is the SSE
+        // subject label, and nothing compares it against anything. The
+        // authoritative identity on this event is `registryAuthority` below.
+        // (Deliberately left as the plain interpolation rather than routed
+        // through `authorityToDidWeb`, which can decline to encode; a label
+        // has no failure verdict to fall back to.)
         agentId: `did:web:${authority}`,
         registryAuthority: authority,
         derivedFrom: [],

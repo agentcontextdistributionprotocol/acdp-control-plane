@@ -40,6 +40,33 @@ export const CHECKPOINT_MAX_FUTURE_SKEW_MS = 120_000;
 export type VerifyOutcome = { ok: true } | { ok: false; reason: string };
 
 /**
+ * The RFC-ACDP-0012 log surface on the 0.6.0+ binding, DERIVED from the
+ * binding's own declared type. A hand-written `interface` reached through
+ * `as unknown as` erases the compiler's knowledge of the real signatures, so
+ * an SDK arity change typechecks clean and fails at runtime;
+ * `Pick<typeof AcdpVerifier, …>` keeps the §9.1/§9.2 fold calls below checked
+ * against what is actually installed.
+ */
+type LogSurface = Pick<
+  typeof AcdpVerifier,
+  'verifyLogCheckpoint' | 'verifyLogInclusion' | 'verifyLogConsistency' | 'buildLogLeaf'
+>;
+
+/**
+ * `Pick<…>` is a widening of the class type, so this is a plain annotated
+ * assignment — no cast of any kind.
+ */
+const surface: LogSurface = AcdpVerifier;
+
+/**
+ * The same object with every member optional: the RUNTIME package can be
+ * missing a method its own typings declare (an older or partially-installed
+ * native binding), which is exactly what {@link sdkHasLogSurface} defends
+ * against and what the type system cannot see.
+ */
+const surfaceProbe: Partial<LogSurface> = surface;
+
+/**
  * True when the installed `acdp` binding carries the RFC-ACDP-0012 log API
  * (0.6.0+). The probed names are the binding's public static methods — the
  * NAPI surface is camelCase (`verifyLogCheckpoint`, not `verify_log_...`), so
@@ -48,19 +75,12 @@ export type VerifyOutcome = { ok: true } | { ok: false; reason: string };
  * the binding; when false they fall back to the host TS arithmetic below.
  */
 export function sdkHasLogSurface(): boolean {
-  const v = AcdpVerifier as unknown as Record<string, unknown>;
   return (
-    typeof v.verifyLogCheckpoint === 'function' &&
-    typeof v.verifyLogInclusion === 'function' &&
-    typeof v.verifyLogConsistency === 'function' &&
-    typeof v.buildLogLeaf === 'function'
+    typeof surfaceProbe.verifyLogCheckpoint === 'function' &&
+    typeof surfaceProbe.verifyLogInclusion === 'function' &&
+    typeof surfaceProbe.verifyLogConsistency === 'function' &&
+    typeof surfaceProbe.buildLogLeaf === 'function'
   );
-}
-
-/** The RFC-ACDP-0012 §9.1/§9.2 fold surface on the 0.6.0+ binding. */
-interface LogCapableVerifier {
-  verifyLogInclusion(inclusionJson: string, checkpointJson: string, reconstructedLeafJson: string): string;
-  verifyLogConsistency(consistencyJson: string, checkpointJson: string, firstRootHash: string): string;
 }
 
 /**
@@ -96,19 +116,94 @@ function nativeErr(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// ── The closed §8.2 projection handed to the native folds ────────────────
+//
+// `parseInclusionProof` / `parseConsistencyProof` below are deliberately OPEN
+// parses (RFC-ACDP-0012 §10) — they require the named members and carry every
+// other member through, so a future consumer can still reach what the registry
+// attached. The BINDING is the opposite: `LogInclusion` and
+// `LogConsistencyProof` are `#[serde(deny_unknown_fields)]`, because
+// "arithmetic evidence has no extension surface". Two facts make the
+// projection between them load-bearing:
+//
+//  1. RFC-ACDP-0015 §6.1 lets a registry attach witness cosignatures as a
+//     TOP-LEVEL SIBLING of a response, outside every signed object. The
+//     reference registry does exactly that on `GET /log/proof` — inclusion and
+//     consistency mode alike — the moment it has aggregated its first
+//     cosignature. The member is therefore ABSENT until somebody witnesses the
+//     log, and present on a FULLY CONFORMANT response thereafter.
+//  2. An unmodelled member makes the native fold report
+//     `… does not parse: unknown field \`witness_signatures\``, which
+//     {@link nativeVerdict} flattens to `{ ok: false }` — indistinguishable,
+//     to the caller, from a proof that genuinely failed to fold. That is a
+//     `consistency_failed` ALERT (metric + SSE + webhook + a retained head
+//     that never advances again) or a sealed `invalid_proof` verdict, against
+//     a registry that did nothing wrong.
+//
+// So: build a fresh object from exactly the members §8.2 defines. ALLOW-list,
+// not deny-list — a deny-list needs editing every time the RFC adds a sibling,
+// and the next sibling would be as invisible as this one was.
+//
+// Only the PROOF responses were ever affected. `GET /log/checkpoint` is
+// already handled by `unwrapCheckpointEnvelope` in the checkpoint-witness
+// service, which accepts both the bare checkpoint (what the registry serves
+// with zero cosignatures) and the `{log_checkpoint, witness_signatures}`
+// envelope. That path is correct as it stands — do not "fix" it too.
+//
+// The §6.1 cosignatures themselves are NOT lost: `parseInclusionProof` /
+// `parseConsistencyProof` stay open and still surface them to any future
+// consumer. They are dropped at this boundary only, where the arithmetic is.
+
+/** The closed §8.2 inclusion-proof member set (minus the embedded checkpoint). */
+export interface ClosedInclusionProof {
+  log_id: string;
+  leaf_index: number;
+  tree_size: number;
+  inclusion_path: string[];
+}
+
+/** The closed §8.2 consistency-proof member set (minus the embedded checkpoint). */
+export interface ClosedConsistencyProof {
+  log_id: string;
+  first_tree_size: number;
+  second_tree_size: number;
+  consistency_path: string[];
+}
+
 /**
- * Strip an embedded `log_checkpoint` from a proof before a native fold call.
- * The binding requires any embedded checkpoint to be byte-equal to the
- * separately-supplied (signature-verified) one and rejects the proof
- * otherwise (§9.1 step 3). The host TS path only ever consumes the trusted
- * checkpoint's `root_hash`, so we drop the embedded copy and let the binding
- * insert our verified checkpoint — keeping the two paths byte-identical.
+ * Project an inclusion proof onto {@link ClosedInclusionProof} for the native
+ * fold — see the note above for why this is an allow-list.
+ *
+ * `log_checkpoint` is among the deliberately-dropped members: the binding
+ * requires any embedded checkpoint to be byte-equal to the separately-supplied
+ * (signature-verified) one and rejects the proof otherwise (§9.1 step 3), and
+ * the host TS path only ever consumes the trusted checkpoint's `root_hash` —
+ * so dropping it lets the binding insert OUR verified checkpoint and keeps the
+ * two paths byte-identical. The OPTIONAL `leaf` echo is dropped for the reason
+ * §9.1 step 1 exists: verifiers MUST NOT trust it, and the leaf actually
+ * folded is reconstructed from our own stored receipt and passed separately.
  */
-function stripEmbeddedCheckpoint<T extends { log_checkpoint?: unknown }>(
-  proof: T,
-): Omit<T, 'log_checkpoint'> {
-  const { log_checkpoint: _omit, ...rest } = proof;
-  return rest;
+export function toClosedInclusionProof(proof: InclusionProof): ClosedInclusionProof {
+  return {
+    log_id: proof.log_id,
+    leaf_index: proof.leaf_index,
+    tree_size: proof.tree_size,
+    inclusion_path: proof.inclusion_path,
+  };
+}
+
+/**
+ * Project a consistency proof onto {@link ClosedConsistencyProof} for the
+ * native fold. Same allow-list rationale and same `log_checkpoint` reasoning
+ * as {@link toClosedInclusionProof}.
+ */
+export function toClosedConsistencyProof(proof: ConsistencyProof): ClosedConsistencyProof {
+  return {
+    log_id: proof.log_id,
+    first_tree_size: proof.first_tree_size,
+    second_tree_size: proof.second_tree_size,
+    consistency_path: proof.consistency_path,
+  };
 }
 
 // ── Checkpoint (signed tree head), §6 / §9.3 ─────────────────────────────
@@ -585,10 +680,9 @@ export function nativeVerifyInclusion(
   checkpoint: LogCheckpoint,
   leaf: Record<string, unknown>,
 ): VerifyOutcome {
-  const surface = AcdpVerifier as unknown as LogCapableVerifier;
   return nativeVerdict(() =>
     surface.verifyLogInclusion(
-      JSON.stringify(stripEmbeddedCheckpoint(proof)),
+      JSON.stringify(toClosedInclusionProof(proof)),
       JSON.stringify(checkpoint),
       JSON.stringify(leaf),
     ),
@@ -637,10 +731,9 @@ export function nativeVerifyConsistency(
   checkpoint: LogCheckpoint,
   firstRootHash: string,
 ): VerifyOutcome {
-  const surface = AcdpVerifier as unknown as LogCapableVerifier;
   return nativeVerdict(() =>
     surface.verifyLogConsistency(
-      JSON.stringify(stripEmbeddedCheckpoint(proof)),
+      JSON.stringify(toClosedConsistencyProof(proof)),
       JSON.stringify(checkpoint),
       firstRootHash,
     ),

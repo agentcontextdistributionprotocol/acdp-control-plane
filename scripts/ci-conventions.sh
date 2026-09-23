@@ -22,14 +22,23 @@
 #    so an aggregator cannot index or filter on it without re-parsing each line
 #    (issue #159). It looks correct, emits a line, and passes every other check —
 #    exactly the class of regression a grep rule catches and review does not.
+# 6. No `Acdp<Something> as unknown as <local type>` — the SDK-surface shim hole;
+#    full rationale in the comment block immediately above the check itself.
+#
+# Usage: ci-conventions.sh [SOURCE_DIR]   (SOURCE_DIR defaults to ./src; the
+# argument exists so the unit spec can point the script at a scratch tree and
+# assert the checks actually fire, rather than writing a violating file into
+# src/ mid-test.)
 set -u
+
+src_dir="${1:-src}"
 
 fail=0
 
 check() {
   local name="$1" pattern="$2" exempt="$3"
   local hits
-  hits=$(grep -rn "$pattern" src --include='*.ts' | grep -vE "$exempt" || true)
+  hits=$(grep -rn "$pattern" "$src_dir" --include='*.ts' | grep -vE "$exempt" || true)
   if [ -n "$hits" ]; then
     echo "✗ $name — forbidden occurrences:"
     echo "$hits"
@@ -67,7 +76,7 @@ check "no enableShutdownHooks (see #158)" \
 # multiline mode, so this uses perl, which is present on macOS and on the CI
 # runners alike. Reports file:line like the greps above.
 stringify_hits=$(
-  find src -name '*.ts' ! -name '*.spec.ts' -print0 |
+  find "$src_dir" -name '*.ts' ! -name '*.spec.ts' -print0 |
     xargs -0 perl -0777 -ne '
       while (/logger\.(?:log|warn|error|debug|verbose)\(\s*JSON\.stringify/gs) {
         my $line = (substr($_, 0, pos($_)) =~ tr/\n//) + 1;
@@ -82,5 +91,23 @@ if [ -n "$stringify_hits" ]; then
 else
   echo "✓ no JSON.stringify into a log message (see #159)"
 fi
+
+# 6. No `Acdp<Something> as unknown as <local interface>` — the SDK-surface shim
+#    hole. `src/audit/{receipt-verify,cosign,log-verify}.ts` each used to declare
+#    a hand-written interface describing an `acdp` binding surface and then
+#    launder the real `AcdpVerifier` through `as unknown as` to satisfy it. The
+#    double cast erases the compiler's knowledge of the binding's ACTUAL
+#    signatures, so an SDK API change — `verifyReceipt` gaining a `bodyJson`
+#    parameter is the real one — typechecks perfectly and then fails every
+#    receipt audit at runtime, indistinguishably from registry misbehaviour.
+#    The fix is `Pick<typeof AcdpVerifier, …>`, a widening of the class type
+#    that needs no `unknown` and keeps every call site arity-checked against
+#    what is installed. Note the DIRECTION: in every violation the SDK type is
+#    the LEFT operand and the right-hand side names a local type, so the rule
+#    matches on the left. Specs are exempt — they legitimately fabricate
+#    binding shapes to exercise the degradation paths.
+check "no Acdp* laundered through 'as unknown as' (SDK surface shims)" \
+  'Acdp[A-Za-z]* as unknown as' \
+  '(\.spec\.ts)'
 
 exit $fail
