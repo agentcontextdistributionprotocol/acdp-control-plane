@@ -2021,3 +2021,4 @@ seam (a different RFC, or a real code dependency edge).
   `INVALID_LOG_PROOF` is a webhook/audit verdict code, never thrown as an HTTP `errorCode`,
   so adding it to that list would misrepresent it.
 - pushed rfc-0014/pr1-sdk-bump 107a91790d19498c346801a54e32f661e48e7f80
+- PR #165 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/165
