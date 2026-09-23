@@ -2022,3 +2022,10 @@ seam (a different RFC, or a real code dependency edge).
   so adding it to that list would misrepresent it.
 - pushed rfc-0014/pr1-sdk-bump 107a91790d19498c346801a54e32f661e48e7f80
 - PR #165 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/165
+- CI green (docker build, jest integration/Postgres, lint+tsc+jest unit — all pass)
+- merged #165 (squash) at e0c7e10 on main; branch rfc-0014/pr1-sdk-bump deleted (local + remote)
+- Post-merge deploy: NOT triggered by this merge. `release.yml` deploys to Railway only on a
+  pushed `v*` tag (last tag `v0.1.4`); merging to main does not auto-deploy. No tag was cut
+  this session — deploy remains a deliberate separate step, not owed by this PR.
+- **PR1 shipped end-to-end.** Next: PR2 (Phases 5-9, RFC-ACDP-0015 witness/cosign correctness
+  fixes B1-B9) on a fresh branch `rfc-0014/pr2-witness-fixes` cut from updated main.
