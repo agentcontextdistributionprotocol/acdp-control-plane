@@ -141,6 +141,36 @@ export function nodeWitnessSigner(
 }
 
 /**
+ * The RFC-ACDP-0015 §5 MINT / §8 VERIFY surface on the 0.7.0+ binding, DERIVED
+ * from the binding's own declared type. A hand-written `interface` reached
+ * through `as unknown as` erases the compiler's knowledge of the real
+ * signatures, so an SDK arity change typechecks clean and fails at runtime;
+ * `Pick<typeof AcdpVerifier, …>` keeps every call below checked against what
+ * is actually installed.
+ */
+type CosignSurface = Pick<
+  typeof AcdpVerifier,
+  'buildWitnessCosignature' | 'verifyWitnessCosignature'
+>;
+
+/** The §8 N-witnessed quorum report surface, derived the same way. */
+type QuorumSurface = Pick<typeof AcdpVerifier, 'evaluateWitnessQuorum'>;
+
+/**
+ * `Pick<…>` is a widening of the class type, so this is a plain annotated
+ * assignment — no cast of any kind.
+ */
+const surface: CosignSurface & QuorumSurface = AcdpVerifier;
+
+/**
+ * The same object with every member optional: the RUNTIME package can be
+ * missing a method its own typings declare (an older or partially-installed
+ * native binding), which is exactly what {@link sdkHasCosignatureSurface}
+ * defends against and what the type system cannot see.
+ */
+const surfaceProbe: Partial<CosignSurface & QuorumSurface> = surface;
+
+/**
  * True when the installed `acdp` binding carries the native RFC-ACDP-0015
  * cosignature surface (0.7.0+). The probed names are the binding's public
  * static `AcdpVerifier` methods — the NAPI surface is camelCase
@@ -153,29 +183,11 @@ export function nodeWitnessSigner(
  * surface, exercised in the wit-003 parity cross-check.)
  */
 export function sdkHasCosignatureSurface(): boolean {
-  const v = AcdpVerifier as unknown as Record<string, unknown>;
   return (
-    typeof v.buildWitnessCosignature === 'function' &&
-    typeof v.verifyWitnessCosignature === 'function' &&
-    typeof v.evaluateWitnessQuorum === 'function'
+    typeof surfaceProbe.buildWitnessCosignature === 'function' &&
+    typeof surfaceProbe.verifyWitnessCosignature === 'function' &&
+    typeof surfaceProbe.evaluateWitnessQuorum === 'function'
   );
-}
-
-/** The RFC-ACDP-0015 §5/§8 cosignature surface on the 0.7.0+ binding. */
-interface CosignCapableVerifier {
-  buildWitnessCosignature(
-    witnessedCheckpointJson: string,
-    witnessDid: string,
-    witnessSeedHex: string,
-    witnessedAtRfc3339: string,
-  ): string;
-  verifyWitnessCosignature(
-    cosigJson: string,
-    witnessDidDocJson: string,
-    expectedCheckpointJson: string,
-    nowRfc3339?: string | null,
-    maxClockSkewSecs?: number | null,
-  ): string;
 }
 
 /** Map a native error (which may carry a `.code`) to a reason string. */
@@ -253,7 +265,6 @@ export function nativeMintCosignature(
   if (typeof signer.seedHex !== 'string') {
     return { ok: false, reason: 'signer exposes no seed for the native mint path' };
   }
-  const surface = AcdpVerifier as unknown as CosignCapableVerifier;
   let json: string;
   try {
     json = surface.buildWitnessCosignature(
@@ -463,7 +474,6 @@ export function nativeVerifyCosignature(
   witnessPublicKeyB64: string,
   expectedCheckpoint: LogCheckpoint,
 ): CosignOutcome {
-  const surface = AcdpVerifier as unknown as CosignCapableVerifier;
   const didDoc = witnessDidDocFromPubkey(
     cosignature.witness_id,
     cosignature.signature.key_id,
@@ -582,18 +592,6 @@ export interface QuorumInputs {
   nowMs?: number;
 }
 
-/** The §8 report surface on the 0.7.0+ binding. */
-interface QuorumCapableVerifier {
-  evaluateWitnessQuorum(
-    cosignaturesJson: string,
-    expectedCheckpointJson: string,
-    trustedWitnessDidsJson: string,
-    witnessDidDocsJson: string,
-    policyJson: string,
-    nowRfc3339?: string | null,
-  ): string;
-}
-
 /**
  * Evaluate the §8 N-witnessed quorum. Native-first (`evaluateWitnessQuorum`)
  * with the host loop as the fallback — a native throw / non-JSON degrades to
@@ -615,7 +613,6 @@ export function evaluateQuorum(inp: QuorumInputs): QuorumReport {
  * (fall back to host) on a malformed-input throw or non-JSON reply.
  */
 export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
-  const surface = AcdpVerifier as unknown as QuorumCapableVerifier;
   const didDocs: Record<string, unknown> = {};
   for (const raw of inp.cosignatures) {
     const parsed = parseCosignature(raw);

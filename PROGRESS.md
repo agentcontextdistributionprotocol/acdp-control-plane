@@ -1833,3 +1833,35 @@ independently meaningful units a reviewer can reason about separately. Why not m
 per phase): most individual phases are small enough that a 15-PR chain would be pure process
 overhead for no independent value — the three chosen boundaries are the only ones with a real
 seam (a different RFC, or a real code dependency edge).
+
+### /implement checkpoints — `rfc-0014/pr1-sdk-bump`
+
+- **2026-09-23 — Phase 1 (SDK surface shims typecheck against the real binding): DONE, PASS
+  round 1.** Verifier tier: Opus (not a one-way door — internal type-checking pattern, fully
+  reversible). No gaps raised.
+  - Replaced the `Acdp* as unknown as <hand-written interface>` pattern with
+    `Pick<typeof AcdpVerifier, ...>`-derived types in `src/audit/{receipt-verify,cosign,
+    log-verify}.ts` — the compiler now sees the binding's real shape, so Phase 2's arity change
+    becomes a `tsc` error instead of a silent runtime failure. Verified both directions: a
+    patched `.d.ts` simulating Phase 2's arity change fails `tsc` on this branch and was
+    reproduced as silent on pre-phase `HEAD`.
+    Added CI convention check 6 (`scripts/ci-conventions.sh`) forbidding the pattern from
+    reappearing, confirmed non-vacuous against the 8 real pre-phase sites. New
+    `src/ci-conventions.spec.ts` (8 cases) exercises the script directly.
+  - `CLAUDE.md` (gitignored, on-disk only) updated to document 6 checks.
+  - Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` 0 · `check:build` both builds
+    135 files · unit 71/808 (+1 suite/+8 tests vs. 70/800 baseline, zero pre-existing tests
+    changed) · integration 30/173.
+  - **Environment note, not a code defect**: this repo's own `docker-compose.test.yml` postgres
+    fails to bind port 5433 (held by an unrelated sibling project's `aitp-control-plane-postgres-
+    test` container) — `test/setup/global-setup.ts` swallows the failure and the suite runs
+    against a same-named `acdp_control_plane_test` database created inside the foreign
+    container. Confirmed this repo's own migrations/schema (20 tables through `0018`) are what's
+    actually being exercised, no cross-project contamination — but it's a pre-existing (commit
+    `cee404d` already anticipated the name collision) local-environment hazard worth fixing
+    (stop the foreign container, or repoint `DATABASE_URL`) outside this plan's scope.
+  - Files touched: `src/audit/receipt-verify.ts`, `src/audit/cosign.ts`,
+    `src/audit/log-verify.ts`, `scripts/ci-conventions.sh`, `src/audit/receipt-verify.spec.ts`,
+    `src/ci-conventions.spec.ts` (new), `CLAUDE.md` (untracked), `plans/rfc-0014-0015-upgrade.md`
+    (Phase 1 → DONE).
+  - **Next:** Phase 2 — bump `^0.8.5` → `^0.14.1`.

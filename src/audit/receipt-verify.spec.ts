@@ -2,11 +2,40 @@ import { AcdpCanonicalizer, AcdpProducer, AcdpVerifier } from '@agentcontextdist
 import {
   explainHashMismatch,
   fingerprintEd25519B64,
+  ReceiptSurface,
   sdkSupportsReceipts,
   verifyBodyOffline,
   verifyContentHash,
   verifyReceipt,
 } from './receipt-verify';
+
+// ── Type-level pin: the shim is DERIVED from the binding, not hand-copied ──
+//
+// `ReceiptSurface` is `Pick<typeof AcdpVerifier, …>`, so its `verifyReceipt`
+// IS the installed binding's declaration. Two compile-time assertions hold
+// that, and both are enforced by `npm test` as well as `tsc --noEmit`, because
+// ts-jest type-checks and `tsconfig.json`'s `include` covers `src/**/*`:
+//
+//  1. an exact function-type equality against the binding's own static — a
+//     hand-written interface that drifts from the SDK (the `as unknown as`
+//     pattern this file used to carry) fails here the moment the SDK moves; and
+//  2. a `@ts-expect-error` on a deliberately wrong-arity call. If the shim ever
+//     reverts to `as unknown as` (or degrades to `any`), that call stops being
+//     an error, the directive becomes unused (TS2578), and the build fails.
+type Equal<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false;
+type Expect<T extends true> = T;
+
+type _ReceiptSurfaceIsBindingDerived = Expect<
+  Equal<ReceiptSurface['verifyReceipt'], typeof AcdpVerifier.verifyReceipt>
+>;
+
+declare const _receiptSurface: ReceiptSurface;
+// Never called — it exists only so the compiler evaluates the call below.
+function _wrongArityMustNotTypecheck(): void {
+  // @ts-expect-error — one argument short of the binding's verifyReceipt.
+  _receiptSurface.verifyReceipt('{}', 'a2V5', 'acdp://r/c', `sha256:${'a'.repeat(64)}`);
+}
 
 describe('receipt-verify (SDK feature detection)', () => {
   // acdp ≤ 0.3.0 predates the receipt API; these tests pin the degraded

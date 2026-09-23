@@ -15,21 +15,29 @@
  */
 import { AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 
-/** The post-0.3.0 receipt surface, absent from the published 0.3.0 typings. */
-interface ReceiptCapableVerifier {
-  verifyReceipt(
-    receiptJson: string,
-    registryPublicKeyB64: string,
-    expectedCtxId: string,
-    recomputedBodyHash: string,
-    producerKeyFingerprint: string,
-  ): boolean;
-  fingerprintEd25519B64(publicKeyB64: string): string;
-  verifyBodyOffline(bodyJson: string): boolean;
-  explainHashMismatch(bodyJson: string, expectedHash: string): string;
-}
+/**
+ * The post-0.3.0 receipt surface, DERIVED from the installed binding's own
+ * declared type rather than hand-copied. A hand-written `interface` reached
+ * through `as unknown as` erases the compiler's knowledge of the real
+ * signatures: an SDK whose `verifyReceipt` grows a parameter then typechecks
+ * clean here and fails every audit at runtime. `Pick<typeof AcdpVerifier, …>`
+ * keeps `tsc` looking at the binding, so that change becomes a build error at
+ * the call site. (Naming a method the installed binding does not declare is
+ * likewise a build error — this type can only describe what is really there.)
+ */
+export type ReceiptSurface = Pick<
+  typeof AcdpVerifier,
+  'verifyReceipt' | 'fingerprintEd25519B64' | 'verifyBodyOffline' | 'explainHashMismatch'
+>;
 
-const verifier = AcdpVerifier as unknown as Partial<ReceiptCapableVerifier>;
+/**
+ * `Partial<>` because the RUNTIME object can still be missing a method the
+ * typings declare — an older or partially-installed native package. That is
+ * what the `typeof … === 'function'` probes below defend against, and the
+ * type system cannot see it. `Partial<Pick<…>>` is a widening of the class
+ * type, so a plain `as` suffices — no `unknown` laundering.
+ */
+const verifier = AcdpVerifier as Partial<ReceiptSurface>;
 
 /** True when the installed `acdp` binding carries the RFC-ACDP-0010 API. */
 export function sdkSupportsReceipts(): boolean {

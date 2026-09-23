@@ -40,6 +40,33 @@ export const CHECKPOINT_MAX_FUTURE_SKEW_MS = 120_000;
 export type VerifyOutcome = { ok: true } | { ok: false; reason: string };
 
 /**
+ * The RFC-ACDP-0012 log surface on the 0.6.0+ binding, DERIVED from the
+ * binding's own declared type. A hand-written `interface` reached through
+ * `as unknown as` erases the compiler's knowledge of the real signatures, so
+ * an SDK arity change typechecks clean and fails at runtime;
+ * `Pick<typeof AcdpVerifier, …>` keeps the §9.1/§9.2 fold calls below checked
+ * against what is actually installed.
+ */
+type LogSurface = Pick<
+  typeof AcdpVerifier,
+  'verifyLogCheckpoint' | 'verifyLogInclusion' | 'verifyLogConsistency' | 'buildLogLeaf'
+>;
+
+/**
+ * `Pick<…>` is a widening of the class type, so this is a plain annotated
+ * assignment — no cast of any kind.
+ */
+const surface: LogSurface = AcdpVerifier;
+
+/**
+ * The same object with every member optional: the RUNTIME package can be
+ * missing a method its own typings declare (an older or partially-installed
+ * native binding), which is exactly what {@link sdkHasLogSurface} defends
+ * against and what the type system cannot see.
+ */
+const surfaceProbe: Partial<LogSurface> = surface;
+
+/**
  * True when the installed `acdp` binding carries the RFC-ACDP-0012 log API
  * (0.6.0+). The probed names are the binding's public static methods — the
  * NAPI surface is camelCase (`verifyLogCheckpoint`, not `verify_log_...`), so
@@ -48,19 +75,12 @@ export type VerifyOutcome = { ok: true } | { ok: false; reason: string };
  * the binding; when false they fall back to the host TS arithmetic below.
  */
 export function sdkHasLogSurface(): boolean {
-  const v = AcdpVerifier as unknown as Record<string, unknown>;
   return (
-    typeof v.verifyLogCheckpoint === 'function' &&
-    typeof v.verifyLogInclusion === 'function' &&
-    typeof v.verifyLogConsistency === 'function' &&
-    typeof v.buildLogLeaf === 'function'
+    typeof surfaceProbe.verifyLogCheckpoint === 'function' &&
+    typeof surfaceProbe.verifyLogInclusion === 'function' &&
+    typeof surfaceProbe.verifyLogConsistency === 'function' &&
+    typeof surfaceProbe.buildLogLeaf === 'function'
   );
-}
-
-/** The RFC-ACDP-0012 §9.1/§9.2 fold surface on the 0.6.0+ binding. */
-interface LogCapableVerifier {
-  verifyLogInclusion(inclusionJson: string, checkpointJson: string, reconstructedLeafJson: string): string;
-  verifyLogConsistency(consistencyJson: string, checkpointJson: string, firstRootHash: string): string;
 }
 
 /**
@@ -585,7 +605,6 @@ export function nativeVerifyInclusion(
   checkpoint: LogCheckpoint,
   leaf: Record<string, unknown>,
 ): VerifyOutcome {
-  const surface = AcdpVerifier as unknown as LogCapableVerifier;
   return nativeVerdict(() =>
     surface.verifyLogInclusion(
       JSON.stringify(stripEmbeddedCheckpoint(proof)),
@@ -637,7 +656,6 @@ export function nativeVerifyConsistency(
   checkpoint: LogCheckpoint,
   firstRootHash: string,
 ): VerifyOutcome {
-  const surface = AcdpVerifier as unknown as LogCapableVerifier;
   return nativeVerdict(() =>
     surface.verifyLogConsistency(
       JSON.stringify(stripEmbeddedCheckpoint(proof)),
