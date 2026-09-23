@@ -32,7 +32,11 @@ import { AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
  */
 export type ReceiptSurface = Pick<
   typeof AcdpVerifier,
-  'verifyReceipt' | 'fingerprintEd25519B64' | 'verifyBodyOffline' | 'explainHashMismatch'
+  | 'verifyReceipt'
+  | 'fingerprintEd25519B64'
+  | 'verifyBodyOffline'
+  | 'explainHashMismatch'
+  | 'verifyCtxIdBinding'
 >;
 
 /**
@@ -209,6 +213,94 @@ export function verifyReceipt(
     // `.code` onto the operator-facing reason, which would break the
     // prefix match.
     return { ok: false, reason: errMsg(e), kind: classifyReceiptFailure(rawMsg(e)) };
+  }
+}
+
+/**
+ * How a `verifyCtxIdBinding` throw must be classified, and why the two kinds
+ * must not collapse into one.
+ *
+ * - `mismatch` — the SDK parsed both ctx_ids and they differ: the registry
+ *   served a context other than the one requested. This is the substitution
+ *   the check exists to catch (RFC-ACDP-0006 §4.1 step 7).
+ * - `unverifiable` — every other throw: the body did not deserialize into the
+ *   SDK's strict `Body` (`"invalid body JSON: …"`), or `CtxId::parse` refused
+ *   one of the two ctx_ids (`"schema violation: …"`). No mismatch was
+ *   established, so reporting one would claim a detection that never happened.
+ *
+ * `unverifiable` is deliberately the FALLTHROUGH — the opposite polarity from
+ * {@link ReceiptFailureKind}, and for the same reason. There, an unrecognised
+ * failure must not be downgraded away from "the registry misbehaved"; here,
+ * "the registry substituted a context" is the accusatory verdict, so an
+ * unrecognised failure must not be upgraded INTO it. Both default to the
+ * claim they can actually support.
+ *
+ * Same prefix-matching caveat as `classifyReceiptFailure`: `verify_ctx_id_binding`
+ * surfaces through `Error::from_reason` (`bindings/acdp-node/src/verifier.rs:129-135`),
+ * a napi `GenericFailure` carrying no RFC-ACDP-0007 wire code, so the literal
+ * message prefix the binding writes is the only discriminator. `receipt-verify.spec.ts`
+ * drives the REAL binding into each case, so an SDK that rewords the prefix
+ * fails that test rather than silently reclassifying a substitution as noise.
+ */
+export type CtxIdBindingFailureKind = 'mismatch' | 'unverifiable';
+
+/**
+ * `AcdpError::ContextIdMismatch`'s Display
+ * (`acdp-primitives/src/error.rs:80`): `"context substitution: requested
+ * {requested}, registry served {served}"`.
+ */
+const CONTEXT_SUBSTITUTION_PREFIX = 'context substitution: ';
+
+/**
+ * Classify a `verifyCtxIdBinding` failure from the binding's OWN message —
+ * the raw `Error.message`, before `errMsg()` flattens a napi `.code` in front
+ * of it.
+ */
+export function classifyCtxIdBindingFailure(message: string): CtxIdBindingFailureKind {
+  return message.startsWith(CONTEXT_SUBSTITUTION_PREFIX) ? 'mismatch' : 'unverifiable';
+}
+
+export type CtxIdBindingOutcome =
+  | { ok: true }
+  | { ok: false; reason: string; kind: CtxIdBindingFailureKind };
+
+/**
+ * RFC-ACDP-0006 §4.1 step 7: verify that the `ctx_id` a registry SERVED is the
+ * one that was REQUESTED. `ctx_id` is registry-assigned and outside
+ * `content_hash` / producer-signature coverage (RFC-ACDP-0001 §5.7), so this
+ * comparison is the only defense against a validly-signed body served under
+ * the wrong identity.
+ *
+ * `bodyJson` is the `body` MEMBER of a `FullContext` retrieval, re-stringified
+ * — not the whole envelope. The SDK deserializes it with its strict typed
+ * `Body`, so it is also the only strict parser in the path: the host extracts
+ * `body` loosely and never gates on schema itself.
+ *
+ * The binding returns `true` on success and otherwise throws — it never
+ * returns `false` (pinned empirically in `receipt-verify.spec.ts` against the
+ * real binding), so the return value is not inspected.
+ *
+ * Unlike the audit-sweep wrappers this one is on a REQUEST-SERVING path, and a
+ * binding missing the method is reported as `unverifiable` rather than
+ * ignored: a check that silently does not run reopens exactly the gap it was
+ * added to close.
+ */
+export function verifyCtxIdBinding(bodyJson: string, expectedCtxId: string): CtxIdBindingOutcome {
+  if (typeof verifier.verifyCtxIdBinding !== 'function') {
+    return {
+      ok: false,
+      reason: 'installed acdp SDK has no verifyCtxIdBinding (need >= 0.14.1)',
+      kind: 'unverifiable',
+    };
+  }
+  try {
+    verifier.verifyCtxIdBinding(bodyJson, expectedCtxId);
+    return { ok: true };
+  } catch (e) {
+    // Classify on the binding's OWN message; `errMsg` may prefix a napi
+    // `.code` onto the operator-facing reason, which would break the
+    // prefix match.
+    return { ok: false, reason: errMsg(e), kind: classifyCtxIdBindingFailure(rawMsg(e)) };
   }
 }
 

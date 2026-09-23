@@ -1950,3 +1950,50 @@ seam (a different RFC, or a real code dependency edge).
     `test/integration/log-witness.integration.spec.ts`, `plans/rfc-0014-0015-upgrade.md`
     (Phase 3 → DONE).
   - **Next:** Phase 4 — `verifyCtxIdBinding` on the federation proxy.
+
+- **2026-09-23 — Phase 4 (Bind the served `ctx_id` on the federation proxy —
+  `verifyCtxIdBinding`): DONE, PASS round 1.** Verifier tier: Opus, briefed to treat this as the
+  plan's only hot-path (live request-serving, not background-sweep) change and scrutinize
+  availability risk specifically — no gaps raised.
+  - `GET /contexts/*ctxId` now refuses to relay a 2xx whose body's `ctx_id` doesn't match the one
+    requested — closes a substitution gap `content_hash` and the producer signature structurally
+    can't cover (`ctx_id` is registry-assigned, outside both). Two new error codes
+    (`CONTEXT_ID_MISMATCH` / `CONTEXT_BINDING_UNVERIFIABLE`, both 502, body withheld in both) via a
+    new `verifyCtxIdBinding` wrapper in `src/audit/receipt-verify.ts`.
+  - Also tightened `parseAcdpCtxId` to the SDK's actual `CtxId::parse` grammar (plan-authorized,
+    not a side effect) — verifier confirmed via a reconstructed old-parser diff that 6 new unit
+    cases (uppercase authority, port-bearing authority, opaque non-uuid id, non-v4/bad-variant
+    UUID nibbles) are genuine live-route behavior changes: accepted before this phase, 400 now,
+    with zero outbound request in either case.
+  - **Availability-risk scrutiny (the main verification focus)**: verified real, not theoretical —
+    empirically drove the real controller through 6 injected native-binding failure modes (method
+    absent, OOM-adjacent `RangeError`, unknown napi failure, non-`Error` throws, `null` throws) and
+    confirmed every one degrades to a clean, classified 502 `CONTEXT_BINDING_UNVERIFIABLE`, never
+    an uncaught exception or a wrong classification — and confirmed non-2xx relaying keeps working
+    even when the binding is unreachable, so an outage is scoped to 2xx retrievals on this one
+    route, not the whole proxy. Confirmed this "fail closed, don't degrade-and-relay" posture is
+    explicit plan intent (unlike the audit-sweep `sdkHasLogSurface`-style wrappers, which *do*
+    degrade — deliberately different because a sweep can re-check next cycle, a request can't).
+  - Leak check: confirmed by reading the actual exception construction (not the test titles) that
+    neither error message echoes the upstream body, the registry's raw error text, or the SDK's
+    full failure reason — both are fixed templates naming only the authority and the *requested*
+    ctx_id.
+  - Mutation checks, all reproduced by the verifier and reverted byte-identical: removing the
+    binding-check call fails 13 tests; neutering the 2xx gate fails 3; forcing the classifier to
+    always return `mismatch` fails 9.
+  - **Plan-text correction** (not a code defect): the plan's Edge-cases prose said an oversize body
+    "fails to parse and falls into the fail-closed path" — actually throws
+    `FederationFetchError('BODY_TOO_LARGE')` inside `SafeFederationClient`, caught as a
+    `BadGatewayException` before the binding check runs. Same 502 outcome, different code path;
+    corrected inline in the plan.
+  - Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 · `check:build`
+    both builds 136 files · unit 72/898 (895 passed + 3 pre-existing skipped) · integration
+    30/186.
+  - Files touched: `src/errors/error-codes.ts`, `src/audit/receipt-verify.ts` + `.spec.ts`,
+    `src/contexts/contexts.controller.ts` + `.spec.ts`,
+    `test/integration/federation-proxy.integration.spec.ts`, `docs/API.md`, `CLAUDE.md`
+    (untracked), `plans/rfc-0014-0015-upgrade.md` (Phase 4 → DONE).
+  - **PR1 (Phases 1-4) is now phase-complete.** Proceeding to the finalization pass before
+    handing off to `/ship`. Release-notes callout still owed for two live behavior changes on
+    `/contexts/*ctxId` (tightened ctx_id grammar; a mis-resolved native binding now 502s 2xx
+    retrievals on this route) — fold into the PR description.

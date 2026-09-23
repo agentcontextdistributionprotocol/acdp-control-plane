@@ -1,5 +1,6 @@
 import { AcdpCanonicalizer, AcdpProducer, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 import {
+  classifyCtxIdBindingFailure,
   classifyReceiptFailure,
   explainHashMismatch,
   fingerprintEd25519B64,
@@ -8,6 +9,7 @@ import {
   sdkSupportsReceipts,
   verifyBodyOffline,
   verifyContentHash,
+  verifyCtxIdBinding,
   verifyReceipt,
 } from './receipt-verify';
 
@@ -133,6 +135,49 @@ describe('receipt-verify (SDK feature detection)', () => {
     it('does not match a prefix that merely appears mid-message', () => {
       expect(classifyReceiptFailure('GenericFailure: invalid body JSON: nope')).toBe(
         'receipt_dishonest',
+      );
+    });
+  });
+
+  // The ctx_id-binding classifier has the OPPOSITE fallthrough polarity, and
+  // the same prefix-matching coupling. Pinned on the literals here; the
+  // `describeReceipts` block below drives the REAL binding into each case.
+  describe('classifyCtxIdBindingFailure', () => {
+    it('maps the "context substitution: " prefix to mismatch (error.rs:80)', () => {
+      expect(
+        classifyCtxIdBindingFailure(
+          `context substitution: requested ${CTX_ID}, registry served acdp://other.example/${CTX_UUID}`,
+        ),
+      ).toBe('mismatch');
+    });
+
+    it('maps a strict-Body parse failure to unverifiable, not to a substitution', () => {
+      expect(classifyCtxIdBindingFailure('invalid body JSON: missing field `lineage_id`')).toBe(
+        'unverifiable',
+      );
+    });
+
+    it('maps a ctx_id grammar refusal to unverifiable', () => {
+      expect(
+        classifyCtxIdBindingFailure(
+          "schema violation: ctx_id authority 'Reg.Example' is not a lowercase DNS hostname",
+        ),
+      ).toBe('unverifiable');
+    });
+
+    it('falls through to unverifiable for an UNRECOGNISED failure, never to a substitution', () => {
+      // The mirror image of `classifyReceiptFailure`'s fallthrough, for the
+      // same reason: each classifier defaults to the claim it can support.
+      // "The registry substituted a context" is the accusation here, so an
+      // unknown failure must never be upgraded into it.
+      expect(classifyCtxIdBindingFailure('something the SDK has never said before')).toBe(
+        'unverifiable',
+      );
+    });
+
+    it('does not match a prefix that merely appears mid-message', () => {
+      expect(classifyCtxIdBindingFailure('GenericFailure: context substitution: x')).toBe(
+        'unverifiable',
       );
     });
   });
@@ -482,6 +527,71 @@ describe('receipt-verify (SDK feature detection)', () => {
         // what matters is that the ctx_id PARSE never rejected them.
         if (!out.ok) expect(out.kind).not.toBe('ctx_id_rejected');
       }
+    });
+
+    // ── RFC-ACDP-0006 §4.1 step 7, driven against the REAL binding ────────
+    //
+    // These are what keep `classifyCtxIdBindingFailure`'s prefix match honest:
+    // an SDK that rewords a message fails HERE rather than silently
+    // reclassifying a substitution as environmental noise (or the reverse).
+    describe('verifyCtxIdBinding', () => {
+      it('accepts a body whose ctx_id is the requested one — and returns true, never false', () => {
+        expect(verifyCtxIdBinding(bodyJson, CTX_ID)).toEqual({ ok: true });
+        // The binding signals success by RETURNING true and failure by
+        // THROWING; it has no `false` outcome, which is why the wrapper does
+        // not inspect the return value.
+        expect(AcdpVerifier.verifyCtxIdBinding(bodyJson, CTX_ID)).toBe(true);
+      });
+
+      it('tolerates unknown top-level members — it is a binding check, not a schema gate', () => {
+        const forwardCompatible = JSON.stringify({
+          ...body,
+          a_member_from_a_future_acdp: { nested: true },
+        });
+        expect(verifyCtxIdBinding(forwardCompatible, CTX_ID)).toEqual({ ok: true });
+      });
+
+      it('classifies a served-vs-requested divergence as mismatch', () => {
+        const other = `acdp://reg.example/11111111-1111-4111-8111-111111111111`;
+        const out = verifyCtxIdBinding(bodyJson, other);
+        expect(out.ok).toBe(false);
+        if (!out.ok) {
+          expect(out.kind).toBe('mismatch');
+          expect(out.reason).toContain('context substitution: ');
+        }
+      });
+
+      it('classifies a body the strict Body parse rejects as unverifiable', () => {
+        const out = verifyCtxIdBinding(JSON.stringify({ ctx_id: CTX_ID }), CTX_ID);
+        expect(out.ok).toBe(false);
+        if (!out.ok) {
+          expect(out.kind).toBe('unverifiable');
+          expect(out.reason).toContain('invalid body JSON: ');
+        }
+      });
+
+      it('classifies a non-canonical requested ctx_id as unverifiable', () => {
+        for (const bad of [
+          `acdp://REG.example/${CTX_UUID}`,
+          `acdp://reg.example:8443/${CTX_UUID}`,
+          'acdp://reg.example/00000000-0000-0000-0000-000000000001',
+        ]) {
+          const out = verifyCtxIdBinding(bodyJson, bad);
+          expect(out.ok).toBe(false);
+          if (!out.ok) expect(out.kind).toBe('unverifiable');
+        }
+      });
+
+      it('rejects the 64-character DNS label the host mirror deliberately admits', () => {
+        // `isCanonicalCtxId` does not enforce `CtxId::parse`'s per-label
+        // length bound; the SDK does, and this is where that gap lands.
+        const label = 'a'.repeat(64);
+        const overLong = `acdp://${label}.example/${CTX_UUID}`;
+        expect(isCanonicalCtxId(overLong)).toBe(true);
+        const out = verifyCtxIdBinding(JSON.stringify(makeBody({ ctx_id: overLong })), overLong);
+        expect(out.ok).toBe(false);
+        if (!out.ok) expect(out.kind).toBe('unverifiable');
+      });
     });
 
     it('verifyBodyOffline verifies the did:key publish request body', () => {

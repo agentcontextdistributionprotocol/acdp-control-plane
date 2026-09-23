@@ -36,7 +36,8 @@ All non-`2xx` responses use a consistent shape (normalized by
 
 `errorCode` is one of (`src/errors/error-codes.ts`):
 `RUN_NOT_FOUND`, `REGISTRY_NOT_FOUND`, `AGENT_NOT_FOUND`, `CONTEXT_NOT_FOUND`,
-`FEDERATION_UPSTREAM_RATE_LIMITED`, `INVALID_PAYLOAD`, `INVALID_SIGNATURE`,
+`FEDERATION_UPSTREAM_RATE_LIMITED`, `CONTEXT_ID_MISMATCH`,
+`CONTEXT_BINDING_UNVERIFIABLE`, `INVALID_PAYLOAD`, `INVALID_SIGNATURE`,
 `VALIDATION_ERROR`, `INTERNAL_ERROR`.
 
 Policy denials return `403` with `{ message, code, reason }`; quota exceeded
@@ -59,7 +60,7 @@ returns `429` with a `Retry-After` header (see [POLICY.md](./POLICY.md)).
 | POST | `/runs/:runId/complete` | Public (HMAC) | Mark run terminal |
 | GET  | `/events` | key/JWT | Cross-run event history |
 | GET  | `/events/stream` | key/JWT | SSE — global firehose |
-| GET  | `/contexts/*ctxId` | key/JWT (policy) | Federation proxy |
+| GET  | `/contexts/*ctxId` | key/JWT (policy) | Federation proxy (SSRF-gated, served `ctx_id` bound) |
 | GET  | `/agents` | key/JWT | Known agents |
 | GET  | `/agents/*did` | key/JWT | Agent detail |
 | POST | `/capabilities` | key/JWT (policy+quota) | Declare a signed capability |
@@ -209,26 +210,49 @@ data: {"ts":"2026-05-24T12:00:00Z"}
 ### `GET /contexts/*ctxId`
 
 Gated by `@CheckPolicy('context.retrieve')`. Proxies the request to the registry
-that owns the context. `ctxId` format: `acdp://<authority>/<id>` (authority
-matches `^[a-zA-Z0-9.:-]+$` — no path, no scheme, no IP literal). The authority
-is looked up in the caller's tenant enrollments, and the request is forwarded to
-`<base_url>/contexts/<ctxId>` through the **SSRF-safe** `SafeFederationClient`
-(the same defense model as the SDK — [acdp-rs · Security](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/security.md),
+that owns the context. `ctxId` format: `acdp://<authority>/<uuid>`, parsed under
+the SDK's own `CtxId::parse` grammar — a **lowercase DNS authority** (so no
+port, no IP literal, no path, no scheme) and a **lowercase v4 UUID**. Anything
+else is a local `400`; the reference registry parses the same grammar in its own
+retrieve handler, so such a request could only ever have earned an upstream
+`400` anyway. The authority is looked up in the caller's tenant enrollments, and
+the request is forwarded to `<base_url>/contexts/<ctxId>` through the
+**SSRF-safe** `SafeFederationClient` (the same defense model as the SDK —
+[acdp-rs · Security](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/security.md),
 RFC-ACDP-0006 §7 / RFC-ACDP-0008):
 
 - HTTPS-only; DNS-resolved IPs must not be private/loopback/link-local/IMDS.
 - Redirects followed manually, max 3, same-authority only (else `502`).
 - Response body capped at 1 MiB; 10 s deadline.
 
+**`ctx_id` binding (RFC-ACDP-0006 §4.1 step 7).** On a `2xx` the proxy verifies
+that the served `body.ctx_id` is the `ctx_id` that was requested, via the SDK's
+`AcdpVerifier.verifyCtxIdBinding`, **before** relaying anything. `ctx_id` is
+registry-assigned and excluded from both `content_hash` and the producer
+signature (RFC-ACDP-0001 §5.7), so without this comparison a compromised or
+confused registry could serve a different, validly signed context under this URL
+and every other check would pass. The check reads `body.ctx_id` only — it is not
+a schema gate, and a `FullContext` carrying members the control plane does not
+know about still relays. It fails **closed**: a mismatch is never relayed, not
+even with a warning logged.
+
 Status mapping:
 
 | Condition | Response |
 |-----------|----------|
-| Upstream `2xx`/`4xx` | Relayed verbatim (status, content-type, body). |
+| Upstream `2xx`, served `ctx_id` matches | Relayed verbatim (status, content-type, body). |
+| Upstream non-`2xx` (e.g. the registry's own `401`/`403`/`404`) | Relayed verbatim, no binding check. |
+| Upstream `2xx`, served `ctx_id` **differs** | `502` `CONTEXT_ID_MISMATCH` — the upstream body is discarded. |
+| Upstream `2xx` that is not JSON, has no `body` member, or names a `ctx_id` the protocol grammar refuses | `502` `CONTEXT_BINDING_UNVERIFIABLE` — the binding could not be established, so nothing is relayed. |
 | Upstream `429` | `503` `FEDERATION_UPSTREAM_RATE_LIMITED` (upstream `Retry-After` logged). |
 | Unknown / unenrolled authority | `404` |
-| Malformed `ctxId` | `400` |
+| Malformed / non-canonical `ctxId` | `400` |
 | SSRF / transport / oversized / cross-authority redirect | `502` |
+
+`CONTEXT_ID_MISMATCH` and `CONTEXT_BINDING_UNVERIFIABLE` are deliberately
+distinct: the first means the proxy checked and the registry served the wrong
+context (it may be hostile), the second that the proxy could not check at all
+(the registry is most likely misconfigured).
 
 ---
 
