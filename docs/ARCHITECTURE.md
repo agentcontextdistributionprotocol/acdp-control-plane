@@ -246,8 +246,12 @@ served at `GET /log/witness`; the mirror side consumes registry-aggregated
 cosignatures and evaluates the **N-witnessed quorum** (`WITNESS_QUORUM_*`),
 recording `meets_quorum` per witnessed head. All the crypto is delegated — JCS,
 Ed25519, DID/key lifecycle, and the receipt/log verification come from the
-`acdp` SDK (with `src/audit/log-verify.ts` as a transcribed fallback until the
-binding exposes the 0.3.0 log surface). Registry-side cosigning
+`acdp` SDK: the log surface reached the published binding in `acdp` 0.6.0 and
+the pinned floor is now `^0.14.1`, so `sdkHasLogSurface()` feature-detects it
+and the §9.1/§9.2 folds delegate to the binding in practice, with
+`src/audit/log-verify.ts` (RFC 9162 folds transcribed from the RFC) kept as
+the fallback for an older binding and cross-checked against the SDK path by
+`log-verify.parity.spec.ts`. Registry-side cosigning
 (RFC-ACDP-0009 §2.12) is deliberately NOT implemented — the CP is an external
 witness only. Transport/DID failures are treated as environmental
 (`consecutive_failures`), never dishonesty alerts; the retained head advances
