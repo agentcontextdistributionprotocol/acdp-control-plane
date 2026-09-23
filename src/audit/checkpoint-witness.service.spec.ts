@@ -863,3 +863,186 @@ describe('CheckpointWitnessPollerService — witness quorum consumption (RFC-ACD
     expect(h.instrumentation.logWitnessQuorumTotal.inc).not.toHaveBeenCalled();
   });
 });
+
+// ── B10/B12: the CP must stop accusing conformant registries ─────────────
+
+describe('CheckpointWitnessPollerService — conformant registries must not alert', () => {
+  // A registry addressed by host:port. A conformant one advertises
+  // `did:web:localhost%3A8443` (the `:` is a structural did:web delimiter, so
+  // it is percent-encoded) — the naive `did:web:localhost:8443` this code used
+  // to build raised a `checkpoint_invalid` ALERT on every single sweep.
+  const PORT_AUTHORITY = 'localhost:8443';
+  const PORT_BASE = `https://${PORT_AUTHORITY}`;
+  const PORT_DID = 'did:web:localhost%3A8443';
+  const PORT_LOG_ID = `${PORT_DID}/log/1`;
+  const PORT_KEY_ID = `${PORT_DID}#receipt-key-1`;
+
+  function portHarness(overrides: Record<string, any> = {}) {
+    const h = makeHarness(overrides);
+    h.enrollmentRepo.listAllEnabled.mockResolvedValue([
+      { authority: PORT_AUTHORITY, tenantId: TENANT, baseUrl: PORT_BASE, enabled: true },
+    ]);
+    return h;
+  }
+
+  it('B10: a port-bearing authority serving its CANONICAL did:web is witnessed, not alerted', async () => {
+    const h = portHarness();
+    const leaves = makeLeafHashes(3);
+    const cp = signCheckpoint(privateKey, {
+      log_id: PORT_LOG_ID,
+      tree_size: 3,
+      root_hash: wire(mth(leaves)),
+      keyId: PORT_KEY_ID,
+    });
+    routeFetch(h, { [`${PORT_BASE}/log/checkpoint`]: { status: 200, body: JSON.stringify(cp) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes).toEqual([{ authority: PORT_AUTHORITY, status: 'witnessed' }]);
+    expect(h.witnessRepo.markAlert).not.toHaveBeenCalled();
+    expect(h.instrumentation.logWitnessAlertsTotal.inc).not.toHaveBeenCalled();
+    expect(h.streamHub.publishGlobal).not.toHaveBeenCalled();
+    expect(h.webhookService.fireEvent).not.toHaveBeenCalled();
+    expect(h.witnessRepo.advanceCursor).toHaveBeenCalledWith(
+      expect.objectContaining({ logId: PORT_LOG_ID, treeSize: 3 }),
+    );
+  });
+
+  it('B10: a GENUINELY foreign DID on a port-bearing authority still alerts', async () => {
+    // The fix must not disable the §9.3 step 3 binding it is correcting.
+    const h = portHarness();
+    const cp = signCheckpoint(privateKey, {
+      log_id: 'did:web:evil.example/log/1',
+      tree_size: 1,
+      root_hash: wire(mth(makeLeafHashes(1))),
+      keyId: 'did:web:evil.example#receipt-key-1',
+    });
+    routeFetch(h, { [`${PORT_BASE}/log/checkpoint`]: { status: 200, body: JSON.stringify(cp) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes).toEqual([
+      { authority: PORT_AUTHORITY, status: 'alert', reason: 'checkpoint_invalid' },
+    ]);
+  });
+
+  it('B10: an already-percent-encoded stored authority is `unverified`, never an alert', async () => {
+    const h = makeHarness();
+    const BAD = 'localhost%3A8443';
+    h.enrollmentRepo.listAllEnabled.mockResolvedValue([
+      { authority: BAD, tenantId: TENANT, baseUrl: `https://${BAD}`, enabled: true },
+    ]);
+    const cp = signCheckpoint(privateKey, {
+      log_id: `did:web:${BAD}/log/1`,
+      tree_size: 1,
+      root_hash: wire(mth(makeLeafHashes(1))),
+      keyId: `did:web:${BAD}#receipt-key-1`,
+    });
+    routeFetch(h, { [`https://${BAD}/log/checkpoint`]: { status: 200, body: JSON.stringify(cp) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('error');
+    expect((outcomes[0] as { reason: string }).reason).toContain('unverified:');
+    expect((outcomes[0] as { reason: string }).reason).toContain('percent-encoded already');
+    expect(h.witnessRepo.markAlert).not.toHaveBeenCalled();
+    expect(h.instrumentation.logWitnessAlertsTotal.inc).not.toHaveBeenCalled();
+  });
+
+  // ── B12: the RFC-ACDP-0015 §6.1 top-level `witness_signatures` sibling ──
+  //
+  // The reference registry attaches it to BOTH /log/proof modes as soon as it
+  // has aggregated one cosignature. The SDK's proof structs are
+  // `deny_unknown_fields`, so passing it through made the native fold report
+  // "unknown field", which this service read as a failed proof: a
+  // `consistency_failed` ALERT against a registry that did nothing wrong.
+
+  /** A real RFC-ACDP-0015 §4 cosignature, as the registry serves them. */
+  function witnessSignatures(cp: LogCheckpoint) {
+    return [
+      {
+        cosignature_version: 'acdp-cosig/1',
+        witness_id: 'did:web:witness.example.org',
+        witnessed_checkpoint: {
+          log_id: cp.log_id,
+          tree_size: cp.tree_size,
+          root_hash: cp.root_hash,
+          timestamp: cp.timestamp,
+        },
+        witnessed_at: '2026-07-05T00:00:00.000Z',
+        signature: {
+          algorithm: 'ed25519',
+          key_id: 'did:web:witness.example.org#witness-key-1',
+          value: 'Y29zaWc=',
+        },
+      },
+    ];
+  }
+
+  it('B12: a consistency proof carrying witness_signatures is witnessed, not alerted', async () => {
+    const h = makeHarness();
+    const leaves = makeLeafHashes(5);
+    const prevRoot = wire(mth(leaves.slice(0, 3)));
+    h.witnessRepo.getCursor.mockResolvedValue(cursorAt(LOG_ID, 3, prevRoot));
+    const cp = signCheckpoint(privateKey, { tree_size: 5, root_hash: wire(mth(leaves)) });
+    routeFetch(h, {
+      // The registry also serves the §6.1 checkpoint ENVELOPE once witnessed.
+      [`${BASE}/log/checkpoint`]: {
+        status: 200,
+        body: JSON.stringify({ log_checkpoint: cp, witness_signatures: witnessSignatures(cp) }),
+      },
+      [`${BASE}/log/proof?first=3&second=5`]: {
+        status: 200,
+        body: JSON.stringify({
+          log_id: LOG_ID,
+          first_tree_size: 3,
+          second_tree_size: 5,
+          consistency_path: consistencyProof(3, leaves).map(wire),
+          log_checkpoint: cp,
+          witness_signatures: witnessSignatures(cp),
+        }),
+      },
+    });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes).toEqual([{ authority: AUTHORITY, status: 'witnessed' }]);
+    expect(h.witnessRepo.markAlert).not.toHaveBeenCalled();
+    expect(h.instrumentation.logWitnessAlertsTotal.inc).not.toHaveBeenCalled();
+    expect(h.streamHub.publishGlobal).not.toHaveBeenCalled();
+    expect(h.webhookService.fireEvent).not.toHaveBeenCalled();
+    // The retained head advances — the whole point: a witnessed registry's
+    // cursor used to freeze forever at the pre-cosignature size.
+    expect(h.witnessRepo.advanceCursor).toHaveBeenCalledWith(
+      expect.objectContaining({ treeSize: 5, rootHash: wire(mth(leaves)) }),
+    );
+  });
+
+  it('B12: a GENUINELY inconsistent proof still alerts even with witness_signatures attached', async () => {
+    // The fix must not become a way to launder a failing fold.
+    const h = makeHarness();
+    const honestRoot = wire(mth(makeLeafHashes(3)));
+    h.witnessRepo.getCursor.mockResolvedValue(cursorAt(LOG_ID, 3, honestRoot));
+    const evil = makeLeafHashes(5, 'evil-');
+    const cp = signCheckpoint(privateKey, { tree_size: 5, root_hash: wire(mth(evil)) });
+    routeFetch(h, {
+      [`${BASE}/log/checkpoint`]: {
+        status: 200,
+        body: JSON.stringify({ log_checkpoint: cp, witness_signatures: witnessSignatures(cp) }),
+      },
+      [`${BASE}/log/proof?first=3&second=5`]: {
+        status: 200,
+        body: JSON.stringify({
+          log_id: LOG_ID,
+          first_tree_size: 3,
+          second_tree_size: 5,
+          consistency_path: consistencyProof(3, evil).map(wire),
+          log_checkpoint: cp,
+          witness_signatures: witnessSignatures(cp),
+        }),
+      },
+    });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes).toEqual([
+      { authority: AUTHORITY, status: 'alert', reason: 'consistency_failed' },
+    ]);
+    expect(h.witnessRepo.advanceCursor).not.toHaveBeenCalled();
+  });
+});

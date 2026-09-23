@@ -406,6 +406,76 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
     expect(verifyReceipt).not.toHaveBeenCalled();
   });
 
+  // ── B10: the receipt-key binding uses the CANONICAL did:web encoding ───
+  it('B10: accepts a receipt key under the canonical did:web of a port-bearing authority', async () => {
+    const PORT = 'localhost:8443';
+    const PORT_KEY_ID = 'did:web:localhost%3A8443#receipt-key-1';
+    const receipt = makeReceipt({
+      registry_did: 'did:web:localhost%3A8443',
+      origin_registry: PORT,
+      signature: { algorithm: 'ed25519', key_id: PORT_KEY_ID, value: 'c2ln' },
+    });
+    registryRepo.findByAuthority.mockResolvedValue({
+      authority: PORT,
+      baseUrl: 'https://localhost:8443',
+    });
+    federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ body: makeBody(), registry_receipt: receipt }),
+    });
+    didResolver.resolveReceiptKey.mockResolvedValue({
+      keyId: PORT_KEY_ID,
+      algorithm: 'ed25519',
+      publicKeyB64: 'cmVnaXN0cnlrZXk=',
+      historical: false,
+    });
+
+    const verdict = await svc.auditEvent(
+      makeEvent({
+        registryAuthority: PORT,
+        rawPayload: { type: 'context_published', registry_receipt: receipt },
+      }),
+    );
+    expect(verdict.discrepancies.join('\n')).not.toContain('receipt_key_foreign_did');
+    expect(verdict.status).toBe('verified');
+    expect(didResolver.resolveReceiptKey).toHaveBeenCalledWith(PORT_KEY_ID, 'ed25519');
+  });
+
+  it('B10: still flags a foreign receipt key on a port-bearing authority', async () => {
+    const PORT = 'localhost:8443';
+    const receipt = makeReceipt({
+      registry_did: 'did:web:localhost%3A8443',
+      origin_registry: PORT,
+      signature: {
+        algorithm: 'ed25519',
+        key_id: 'did:web:evil.example#receipt-key-1',
+        value: 'c2ln',
+      },
+    });
+    registryRepo.findByAuthority.mockResolvedValue({
+      authority: PORT,
+      baseUrl: 'https://localhost:8443',
+    });
+    federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ body: makeBody(), registry_receipt: receipt }),
+    });
+
+    const verdict = await svc.auditEvent(
+      makeEvent({
+        registryAuthority: PORT,
+        rawPayload: { type: 'context_published', registry_receipt: receipt },
+      }),
+    );
+    expect(verdict.status).toBe('discrepancy');
+    expect(verdict.discrepancies.join('\n')).toContain(
+      "receipt_key_foreign_did: 'did:web:evil.example#receipt-key-1' is not a key of 'did:web:localhost%3A8443'",
+    );
+    expect(verifyReceipt).not.toHaveBeenCalled();
+  });
+
   it('verifies did:key producers offline instead of resolving a DID document', async () => {
     const didKey = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
     const body = makeBody({

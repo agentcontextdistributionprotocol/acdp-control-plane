@@ -16,8 +16,13 @@
  *      registry is not a real host — real cryptographic proof verification
  *      is covered in src/audit/*.spec.ts with generated trees).
  */
+import { createHash, generateKeyPairSync, sign as edSign } from 'node:crypto';
+import { DidWebResolverService } from '../../src/auth/did-web/did-web-resolver.service';
 import { CheckpointWitnessPollerService } from '../../src/audit/checkpoint-witness.service';
 import { LogInclusionAuditService } from '../../src/audit/log-inclusion-audit.service';
+import { checkpointHash, leafHash, LogCheckpoint, nodeHash } from '../../src/audit/log-verify';
+import { RegistryProfileService } from '../../src/audit/registry-profile.service';
+import { SafeFederationClient } from '../../src/contexts/safe-federation-client';
 import { DatabaseService } from '../../src/db/database.service';
 import { logInclusionAudits } from '../../src/db/schema';
 import { LogWitnessRepository } from '../../src/storage/log-witness.repository';
@@ -310,6 +315,205 @@ describe('transparency-log checkpoint witness (integration)', () => {
       expect.objectContaining({ authority: AUTHORITY, status: 'skipped' }),
     ]);
     expect(await witnessRepo.getCursor('default', AUTHORITY)).toBeNull();
+  });
+
+  // ── RFC-ACDP-0015 §6.1: a WITNESSED registry's /log/proof responses ─────
+  //
+  // Once a registry has aggregated one witness cosignature it attaches a
+  // top-level `witness_signatures` sibling to BOTH /log/proof modes (and
+  // serves the `{log_checkpoint, witness_signatures}` envelope on
+  // /log/checkpoint). The SDK's proof structs are `deny_unknown_fields`, so a
+  // sibling reaching the native fold made it report "unknown field" — which
+  // this service read as a FAILED consistency proof: a `consistency_failed`
+  // alert, an SSE event, an outbound webhook and a retained head frozen
+  // forever, against a registry that did nothing wrong. This drives the whole
+  // sweep inside the real app graph, because the defect was in what the
+  // SERVICE passed through, not in the arithmetic.
+  describe('a registry serving RFC-ACDP-0015 §6.1 cosignatures', () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
+    const PUB_B64 = spki.subarray(spki.length - 32).toString('base64');
+
+    // RFC 6962 reference generator (independent of the production folds).
+    const sha256 = (...parts: Buffer[]) => {
+      const h = createHash('sha256');
+      for (const part of parts) h.update(part);
+      return h.digest();
+    };
+    const split = (n: number) => {
+      let k = 1;
+      while (k * 2 < n) k *= 2;
+      return k;
+    };
+    const mth = (hashes: Buffer[]): Buffer => {
+      if (hashes.length === 0) return sha256(Buffer.alloc(0));
+      if (hashes.length === 1) return hashes[0]!;
+      const k = split(hashes.length);
+      return nodeHash(mth(hashes.slice(0, k)), mth(hashes.slice(k)));
+    };
+    const consistencyProof = (m: number, hashes: Buffer[]): Buffer[] => {
+      const subproof = (m2: number, d: Buffer[], b: boolean): Buffer[] => {
+        if (m2 === d.length) return b ? [] : [mth(d)];
+        const k = split(d.length);
+        if (m2 <= k) return [...subproof(m2, d.slice(0, k), b), mth(d.slice(k))];
+        return [...subproof(m2 - k, d.slice(k), false), mth(d.slice(0, k))];
+      };
+      return subproof(m, hashes, true);
+    };
+    const wire = (b: Buffer) => `sha256:${b.toString('hex')}`;
+    const leaves = (n: number, salt = '') =>
+      Array.from({ length: n }, (_, i) => leafHash({
+        leaf_version: 'acdp-log-leaf/1',
+        ctx_id: `acdp://${AUTHORITY}/c${salt}${i}`,
+      })!);
+
+    function signCheckpoint(treeSize: number, rootHash: string): LogCheckpoint {
+      const cp = {
+        checkpoint_version: 'acdp-log/1',
+        log_id: LOG_ID,
+        tree_size: treeSize,
+        root_hash: rootHash,
+        timestamp: new Date(Date.now() - 1000).toISOString(),
+        signature: {
+          algorithm: 'ed25519',
+          key_id: `did:web:${AUTHORITY}#receipt-key-1`,
+          value: '',
+        },
+      } as LogCheckpoint;
+      cp.signature.value = edSign(
+        null,
+        Buffer.from(checkpointHash(cp)!, 'ascii'),
+        privateKey,
+      ).toString('base64');
+      return cp;
+    }
+
+    /** A real §4 cosignature object, exactly as the registry attaches them. */
+    function witnessSignatures(cp: LogCheckpoint) {
+      return [
+        {
+          cosignature_version: 'acdp-cosig/1',
+          witness_id: 'did:web:witness.example.org',
+          witnessed_checkpoint: {
+            log_id: cp.log_id,
+            tree_size: cp.tree_size,
+            root_hash: cp.root_hash,
+            timestamp: cp.timestamp,
+          },
+          witnessed_at: '2026-07-05T00:00:00.000Z',
+          signature: {
+            algorithm: 'ed25519',
+            key_id: 'did:web:witness.example.org#witness-key-1',
+            value: 'Y29zaWc=',
+          },
+        },
+      ];
+    }
+
+    /**
+     * Enroll the registry, retain a head at size 3, and replace the three
+     * network edges (capabilities probe, HTTP fetch, DID resolution) for one
+     * real sweep. `growth` supplies the size-5 tree the registry claims.
+     */
+    async function sweepWithCosignedRegistry(growth: Buffer[]) {
+      const honest = leaves(3);
+      await ctx.module.get(RegistryEnrollmentRepository).upsert({
+        authority: AUTHORITY,
+        baseUrl: `https://${AUTHORITY}`,
+        enabled: true,
+      });
+      await witnessRepo.advanceCursor({
+        tenantId: 'default',
+        authority: AUTHORITY,
+        logId: LOG_ID,
+        treeSize: 3,
+        rootHash: wire(mth(honest)),
+      });
+
+      const cp = signCheckpoint(5, wire(mth(growth)));
+      const routes: Record<string, unknown> = {
+        [`https://${AUTHORITY}/log/checkpoint`]: {
+          log_checkpoint: cp,
+          witness_signatures: witnessSignatures(cp),
+        },
+        [`https://${AUTHORITY}/log/proof?first=3&second=5`]: {
+          log_id: LOG_ID,
+          first_tree_size: 3,
+          second_tree_size: 5,
+          consistency_path: consistencyProof(3, growth).map(wire),
+          log_checkpoint: cp,
+          witness_signatures: witnessSignatures(cp),
+        },
+      };
+      const profiles = jest
+        .spyOn(ctx.module.get(RegistryProfileService), 'advertisesTransparencyLog')
+        .mockResolvedValue(true);
+      const fed = jest
+        .spyOn(ctx.module.get(SafeFederationClient), 'get')
+        .mockImplementation((url: string) =>
+          Promise.resolve({
+            status: routes[url] ? 200 : 404,
+            contentType: 'application/acdp+json',
+            body: JSON.stringify(routes[url] ?? {}),
+          }),
+        );
+      const resolver = jest
+        .spyOn(ctx.module.get(DidWebResolverService), 'resolveReceiptKey')
+        .mockResolvedValue({
+          keyId: `did:web:${AUTHORITY}#receipt-key-1`,
+          algorithm: 'ed25519',
+          publicKeyB64: PUB_B64,
+          historical: false,
+        });
+      try {
+        return await ctx.module.get(CheckpointWitnessPollerService).sweep();
+      } finally {
+        profiles.mockRestore();
+        fed.mockRestore();
+        resolver.mockRestore();
+      }
+    }
+
+    it('is WITNESSED and advances the retained head — no alert on the §6.1 sibling', async () => {
+      const honestGrowth = leaves(5);
+      const outcomes = await sweepWithCosignedRegistry(honestGrowth);
+      expect(outcomes).toEqual([{ authority: AUTHORITY, status: 'witnessed' }]);
+
+      const cursor = await witnessRepo.getCursor('default', AUTHORITY);
+      expect(cursor).toMatchObject({
+        lastWitnessedSize: 5,
+        lastRootHash: wire(mth(honestGrowth)),
+        alerted: false,
+        lastAlertReason: null,
+      });
+      const alerts = (await ctx.client.requestJson(
+        'GET',
+        '/registries/log-witness/alerts',
+      )) as { total: number };
+      expect(alerts.total).toBe(0);
+    });
+
+    it('still alerts on a GENUINE history rewrite that also carries the §6.1 sibling', async () => {
+      // Same conformant envelope + sibling, but the tree is not an extension
+      // of our retained size-3 root. The fix must not launder a failing fold.
+      const outcomes = await sweepWithCosignedRegistry(leaves(5, 'evil-'));
+      expect(outcomes).toEqual([
+        { authority: AUTHORITY, status: 'alert', reason: 'consistency_failed' },
+      ]);
+
+      const cursor = await witnessRepo.getCursor('default', AUTHORITY);
+      // The alert never clobbers the retained pre-rewrite head (§9.2 anchor).
+      expect(cursor).toMatchObject({
+        alerted: true,
+        lastAlertReason: 'consistency_failed',
+        lastWitnessedSize: 3,
+      });
+      const alerts = (await ctx.client.requestJson(
+        'GET',
+        '/registries/log-witness/alerts',
+      )) as { total: number };
+      expect(alerts.total).toBe(1);
+    });
   });
 
   it('the inclusion cross-check seals an error verdict for a receipt-bearing publish from an unreachable registry', async () => {

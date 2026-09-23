@@ -21,8 +21,13 @@ import {
   parseCheckpoint,
   parseConsistencyProof,
   parseInclusionProof,
+  sdkHasLogSurface,
+  toClosedConsistencyProof,
+  toClosedInclusionProof,
   verifyCheckpointSignature,
+  verifyConsistency,
   verifyConsistencyPath,
+  verifyInclusion,
   verifyInclusionPath,
   wireHashToBuf,
 } from './log-verify';
@@ -357,5 +362,185 @@ describe('log-verify: proof-response parsing (§8.2)', () => {
     expect(buf?.toString('hex')).toBe('c'.repeat(64));
     expect(wireHashToBuf('sha256:short')).toBeNull();
     expect(wireHashToBuf(42)).toBeNull();
+  });
+
+  // §10 openness: the parse MUST carry unmodelled members through, so a future
+  // consumer can still reach the §6.1 cosignatures. Stripping happens at the
+  // fold boundary only (see the closed-projection suite below).
+  it('carries an RFC-ACDP-0015 §6.1 witness_signatures sibling through the open parse', () => {
+    const parsed = parseInclusionProof({
+      log_id: LOG_ID,
+      leaf_index: 0,
+      tree_size: 5,
+      inclusion_path: [h],
+      log_checkpoint: cp,
+      witness_signatures: [{ witness_id: 'did:web:witness.example.org' }],
+    });
+    if (!parsed.ok) throw new Error(parsed.reason);
+    expect((parsed.proof as unknown as Record<string, unknown>).witness_signatures).toHaveLength(1);
+  });
+});
+
+// ── B12: the closed §8.2 projection at the native-fold boundary ──────────
+//
+// RFC-ACDP-0015 §6.1 lets a registry attach witness cosignatures as a
+// TOP-LEVEL SIBLING of a `GET /log/proof` response — the reference registry's
+// `attach_witness_signatures` does exactly that, in inclusion AND consistency
+// mode, as soon as it has aggregated its first cosignature. The SDK's
+// `LogInclusion` / `LogConsistencyProof` are `deny_unknown_fields`, so handing
+// the sibling to the native fold makes it report
+// `does not parse: unknown field \`witness_signatures\`` — which callers read
+// as a FAILED proof: a `consistency_failed` alert or a sealed `invalid_proof`
+// verdict against a fully conformant registry.
+//
+// Every other proof fixture in this repo predates cosignature aggregation and
+// therefore carries no sibling, which is why the defect was invisible. These
+// tests add it.
+
+/** A real RFC-ACDP-0015 §4 cosignature object, as the registry serves them. */
+function witnessSignature(cp: LogCheckpoint): Record<string, unknown> {
+  return {
+    cosignature_version: 'acdp-cosig/1',
+    witness_id: 'did:web:witness.example.org%3A8443',
+    witnessed_checkpoint: {
+      log_id: cp.log_id,
+      tree_size: cp.tree_size,
+      root_hash: cp.root_hash,
+      timestamp: cp.timestamp,
+    },
+    witnessed_at: '2026-07-05T00:00:00.000Z',
+    signature: {
+      algorithm: 'ed25519',
+      key_id: 'did:web:witness.example.org%3A8443#witness-key-1',
+      value: 'Y29zaWc=',
+    },
+  };
+}
+
+describe('log-verify: closed §8.2 projection at the fold boundary (RFC-ACDP-0015 §6.1)', () => {
+  const { privateKey } = testKeypair();
+  // Leaf 0 is a REAL §4 leaf (the native fold parses it closed-schema, unlike
+  // the host arithmetic which only hashes it); leaves 1..4 are opaque siblings.
+  const built = buildLogLeaf({
+    ctx_id: 'acdp://reg.example/ctx-0',
+    lineage_id: 'lin-001',
+    origin_registry: AUTHORITY,
+    created_at: '2026-07-01T00:00:00.000Z',
+    content_hash: 'sha256:' + 'a'.repeat(64),
+    key_fingerprint: 'sha256:' + 'b'.repeat(64),
+    signature: { algorithm: 'ed25519', key_id: `did:web:${AUTHORITY}#receipt-key-1`, value: 'c2ln' },
+  });
+  if (!built.ok) throw new Error(built.reason);
+  const foldedLeaf = built.leaf;
+  const leaves = [leafHash(foldedLeaf)!, ...makeLeafHashes(5).slice(1)];
+  const root5 = wire(mth(leaves));
+  const checkpoint = signedCheckpoint(privateKey, { tree_size: 5, root_hash: root5 });
+
+  /** The inclusion-mode response a witnessed registry actually serves. */
+  function inclusionResponse(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      log_id: LOG_ID,
+      leaf_index: 0,
+      tree_size: 5,
+      inclusion_path: auditPath(0, leaves).map(wire),
+      log_checkpoint: checkpoint,
+      // The retrieval-authorized convenience echo (§8.2) — a modelled but
+      // untrusted member the fold must not consume.
+      leaf: foldedLeaf,
+      witness_signatures: [witnessSignature(checkpoint)],
+      ...extra,
+    };
+  }
+
+  /** The consistency-mode response a witnessed registry actually serves. */
+  function consistencyResponse(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      log_id: LOG_ID,
+      first_tree_size: 3,
+      second_tree_size: 5,
+      consistency_path: consistencyProof(3, leaves).map(wire),
+      log_checkpoint: checkpoint,
+      witness_signatures: [witnessSignature(checkpoint)],
+      ...extra,
+    };
+  }
+
+  it('the environment carries the native log surface (so this exercises the affected path)', () => {
+    // The host TS fold reads only named fields and was NEVER affected — a green
+    // host-path run would prove nothing. Assert we are on the native binding.
+    expect(sdkHasLogSurface()).toBe(true);
+  });
+
+  // Acceptance criterion 9: the JSON handed to the binding carries EXACTLY the
+  // closed §8.2 member set. Asserted by key set, so a sibling of ANY name is
+  // caught — not just `witness_signatures`. The expressions below are
+  // byte-identical to the arguments `nativeVerifyInclusion` /
+  // `nativeVerifyConsistency` build.
+  it('hands the binding exactly the closed inclusion member set', () => {
+    const parsed = parseInclusionProof(
+      inclusionResponse({ some_future_sibling: { anything: true } }),
+    );
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const argJson = JSON.stringify(toClosedInclusionProof(parsed.proof));
+    expect(Object.keys(JSON.parse(argJson) as Record<string, unknown>).sort()).toEqual([
+      'inclusion_path',
+      'leaf_index',
+      'log_id',
+      'tree_size',
+    ]);
+  });
+
+  it('hands the binding exactly the closed consistency member set', () => {
+    const parsed = parseConsistencyProof(
+      consistencyResponse({ some_future_sibling: { anything: true } }),
+    );
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const argJson = JSON.stringify(toClosedConsistencyProof(parsed.proof));
+    expect(Object.keys(JSON.parse(argJson) as Record<string, unknown>).sort()).toEqual([
+      'consistency_path',
+      'first_tree_size',
+      'log_id',
+      'second_tree_size',
+    ]);
+  });
+
+  // Acceptance criterion 8.
+  it('verifies an inclusion proof carrying the §6.1 sibling', () => {
+    const parsed = parseInclusionProof(inclusionResponse());
+    if (!parsed.ok) throw new Error(parsed.reason);
+    expect(verifyInclusion(parsed.proof, checkpoint, foldedLeaf)).toEqual({ ok: true });
+  });
+
+  // Acceptance criterion 7.
+  it('verifies a consistency proof carrying the §6.1 sibling', () => {
+    const parsed = parseConsistencyProof(consistencyResponse());
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const retainedRoot = wire(mth(leaves.slice(0, 3)));
+    expect(verifyConsistency(parsed.proof, checkpoint, retainedRoot)).toEqual({ ok: true });
+  });
+
+  // Acceptance criterion 10 — the fix must not become a way to launder a
+  // failing fold. Both negative controls carry the sibling too.
+  it('still rejects a TAMPERED inclusion path even with the §6.1 sibling attached', () => {
+    const bad = inclusionResponse();
+    const path = [...(bad.inclusion_path as string[])];
+    path[0] = 'sha256:' + 'f'.repeat(64);
+    bad.inclusion_path = path;
+    const parsed = parseInclusionProof(bad);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    expect(verifyInclusion(parsed.proof, checkpoint, foldedLeaf).ok).toBe(false);
+  });
+
+  it('still rejects an INCONSISTENT consistency proof even with the §6.1 sibling attached', () => {
+    // A registry that rewrote history: the served proof folds to a tree that
+    // is NOT an extension of our retained size-3 root.
+    const rewritten = makeLeafHashes(5).map((h2, i) => (i < 3 ? leafHash({ evil: i })! : h2));
+    const bad = consistencyResponse({
+      consistency_path: consistencyProof(3, rewritten).map(wire),
+    });
+    const parsed = parseConsistencyProof(bad);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const retainedRoot = wire(mth(leaves.slice(0, 3)));
+    expect(verifyConsistency(parsed.proof, checkpoint, retainedRoot).ok).toBe(false);
   });
 });

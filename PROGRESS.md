@@ -1905,3 +1905,48 @@ seam (a different RFC, or a real code dependency edge).
     `docs/API.md`, `docs/TROUBLESHOOTING.md` (new section), `CLAUDE.md` (untracked),
     `plans/rfc-0014-0015-upgrade.md` (Phase 2 → DONE).
   - **Next:** Phase 3 — canonical `authority → did:web` + closed-proof re-serialization (B10, B12).
+
+- **2026-09-23 — Phase 3 (Stop accusing conformant registries: canonical `authority → did:web`,
+  closed-proof re-serialization — B10, B12): DONE, PASS round 1.** Verifier tier: Opus, briefed
+  to scrutinize hardest and REPRODUCE (not just read) the two crux claims — no gaps raised.
+  - **B10**: new `src/common/did-authority.ts` (`authorityToDidWeb`/`didWebToAuthority`/
+    `nonCanonicalAuthorityReason`), transcribed from and verifier-confirmed against `acdp-rs`'s
+    actual `web.rs` encoding (percent-encodes a port: `localhost:8443` → `did:web:
+    localhost%3A8443`). Applied at all 4 DID-comparison sites (`receipt-audit.service.ts` ×2,
+    `checkpoint-witness.service.ts`, `log-inclusion-audit.service.ts`) — a non-canonical stored
+    authority is now an `unverified:`/`error` outcome, never a dishonesty flag. One naive-template
+    site left intentionally (`checkpoint-witness.service.ts:646`, an SSE `agentId` field) —
+    verifier traced it and confirmed it's display/telemetry-only, never a comparison input.
+  - **B12**: the reference registry attaches an RFC-ACDP-0015 §6.1 `witness_signatures` sibling
+    on `GET /log/proof` once a log has ≥1 witness cosignature (both inclusion and consistency
+    modes) — and the SDK's `LogInclusion`/`LogConsistencyProof` are `deny_unknown_fields`, so
+    *every* proof from a witnessed, fully-conformant registry was silently failing native
+    verification and reading as `consistency_failed`/`invalid_proof`. Fixed by replacing a
+    deny-list strip (`stripEmbeddedCheckpoint`, only handled `log_checkpoint`) with an allow-list
+    projection (`toClosedInclusionProof`/`toClosedConsistencyProof` in `src/audit/log-verify.ts`)
+    onto exactly the closed member set the SDK's types declare.
+  - **Verifier reproduced both crux claims directly, not on the executor's word**: (a) reverted
+    the B12 fix to the old deny-list and confirmed the target integration test flips from
+    `witnessed` to a false `alert`/`consistency_failed` — then restored the fix and reconfirmed
+    green, 3x repeated; (b) confirmed via a live probe against the installed 0.14.1 binding that
+    the `deny_unknown_fields` failure is real (`"unknown field \`witness_signatures\`"`), and
+    confirmed real tampering (a flipped inclusion-path hash; a consistency proof folding to a root
+    that isn't an extension of the retained one) still alerts correctly even with the sibling
+    attached — including a mutation test proving the allow-list can't be used to launder a
+    missing required field (dropping `consistency_path` from the closed type fails loudly).
+  - **Residual risk recorded, not fixed** (verifier-flagged, beyond this phase's acceptance
+    criteria): the closed proof shapes are hand-maintained with no compile-time coupling to the
+    SDK's Rust types (the Node binding exports no proof types to pin against) — a future SDK
+    proof-shape change could silently reintroduce this defect class. Cheap future fix identified:
+    classify a `/does not parse/` reason as an environmental error rather than a dishonesty
+    verdict in `nativeVerdict`. Not part of this phase's plan-defined scope; worth its own small
+    follow-up phase/ticket, not blocking PR1.
+  - Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 · `check:build`
+    both builds 136 files · unit 72/867 (864 passed + 3 skipped) · integration 30/178.
+  - Files touched: `src/common/did-authority.ts` (new) + spec, `src/audit/log-verify.ts` +
+    `log-verify.spec.ts`, `src/audit/receipt-audit.service.ts` + `.spec.ts` +
+    `.crypto.spec.ts`, `src/audit/checkpoint-witness.service.ts` + `.spec.ts`,
+    `src/audit/log-inclusion-audit.service.ts` + `.spec.ts`, `src/witness/witness-signing.service.ts`,
+    `test/integration/log-witness.integration.spec.ts`, `plans/rfc-0014-0015-upgrade.md`
+    (Phase 3 → DONE).
+  - **Next:** Phase 4 — `verifyCtxIdBinding` on the federation proxy.

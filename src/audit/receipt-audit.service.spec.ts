@@ -171,6 +171,74 @@ describe('ReceiptAuditService (structural checks, pre-receipt SDK)', () => {
     expect(verdict.discrepancies.join('\n')).toContain('registry_did_mismatch');
   });
 
+  // ── B10: the canonical `authority → did:web` encoding ──────────────────
+  //
+  // `:` is a structural delimiter in did:web, so a `host:port` authority is
+  // `did:web:host%3Aport`. A conformant registry reachable at localhost:8443
+  // mints `registry_did: "did:web:localhost%3A8443"`; the naive
+  // `did:web:localhost:8443` this service used to build flagged it as
+  // dishonest on every sweep.
+  it('B10: accepts the CANONICAL did:web of a port-bearing authority (no mismatch flag)', async () => {
+    const ev = makeEvent({
+      registryAuthority: 'localhost:8443',
+      rawPayload: {
+        type: 'context_published',
+        registry_receipt: makeReceipt({
+          registry_did: 'did:web:localhost%3A8443',
+          origin_registry: 'localhost:8443',
+          signature: {
+            algorithm: 'ed25519',
+            key_id: 'did:web:localhost%3A8443#receipt-key-1',
+            value: 'c2ln',
+          },
+        }),
+      },
+    });
+    const verdict = await svc.auditEvent(ev);
+    expect(verdict.discrepancies.join('\n')).not.toContain('registry_did_mismatch');
+    expect(verdict.status).toBe('structural');
+  });
+
+  it('B10: still flags a GENUINELY foreign DID on a port-bearing authority', async () => {
+    // The fix must not disable the source-authority binding it corrects.
+    const ev = makeEvent({
+      registryAuthority: 'localhost:8443',
+      rawPayload: {
+        type: 'context_published',
+        registry_receipt: makeReceipt({
+          registry_did: 'did:web:evil.example',
+          origin_registry: 'localhost:8443',
+        }),
+      },
+    });
+    const verdict = await svc.auditEvent(ev);
+    expect(verdict.status).toBe('discrepancy');
+    expect(verdict.discrepancies.join('\n')).toContain(
+      "registry_did_mismatch: receipt 'did:web:evil.example' != 'did:web:localhost%3A8443'",
+    );
+  });
+
+  it('B10: an already-percent-encoded stored authority is an `unverified` note, never a flag', async () => {
+    const ev = makeEvent({
+      registryAuthority: 'localhost%3A8443',
+      rawPayload: {
+        type: 'context_published',
+        registry_receipt: makeReceipt({
+          registry_did: 'did:web:localhost%3A8443',
+          origin_registry: 'localhost%3A8443',
+        }),
+      },
+    });
+    const verdict = await svc.auditEvent(ev);
+    // `error`, not `discrepancy`: a data-entry error in OUR row is not
+    // evidence against the registry.
+    expect(verdict.status).toBe('error');
+    const joined = verdict.discrepancies.join('\n');
+    expect(joined).not.toContain('registry_did_mismatch');
+    expect(joined).toContain('unverified:');
+    expect(joined).toContain('percent-encoded already');
+  });
+
   it('flags a receipt minted AFTER the control plane observed the event', async () => {
     const ev = makeEvent({
       rawPayload: {

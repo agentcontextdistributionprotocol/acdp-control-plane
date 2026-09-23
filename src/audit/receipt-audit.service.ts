@@ -53,6 +53,7 @@
  */
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { AcdpDid } from '@agentcontextdistributionprotocol/acdp';
+import { authorityToDidWeb, nonCanonicalAuthorityReason } from '../common/did-authority';
 import { AppConfigService } from '../config/app-config.service';
 import { SafeFederationClient } from '../contexts/safe-federation-client';
 import { DatabaseService } from '../db/database.service';
@@ -266,9 +267,19 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     }
     // Source-authority binding (RFC-ACDP-0010 host obligation): the receipt
     // must claim the did:web identity of the registry it actually came from.
-    if (rRegistryDid !== `did:web:${authority}`) {
+    // The expected DID comes from the ONE canonical encoder, so a registry
+    // addressed as `host:port` compares against `did:web:host%3Aport` — what a
+    // conformant registry actually advertises — and not the naive, wrong
+    // `did:web:host:port` that used to flag it as dishonest on every sweep.
+    const expectedRegistryDid = authorityToDidWeb(authority);
+    if (expectedRegistryDid === null) {
+      // We cannot derive the DID to compare against from our OWN enrollment
+      // data, so this is a check we could not complete — a note, never a
+      // dishonesty flag against the registry.
+      notes.push(`unverified: ${nonCanonicalAuthorityReason(authority)}`);
+    } else if (rRegistryDid !== expectedRegistryDid) {
       flags.push(
-        `registry_did_mismatch: receipt '${rRegistryDid ?? ''}' != 'did:web:${authority}'`,
+        `registry_did_mismatch: receipt '${rRegistryDid ?? ''}' != '${expectedRegistryDid}'`,
       );
     }
 
@@ -422,9 +433,19 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
       );
       return notRun;
     }
-    if (AcdpDid.stripFragment(receiptKeyId) !== `did:web:${ev.registryAuthority}`) {
+    // Same canonical encoder as the source-authority binding above: the DID a
+    // `host:port` registry signs its receipts under is `did:web:host%3Aport`.
+    const expectedRegistryDid = authorityToDidWeb(ev.registryAuthority);
+    if (expectedRegistryDid === null) {
+      notes.push(
+        `unverified: cannot derive the registry's did:web identity to bind the receipt key to — ` +
+          nonCanonicalAuthorityReason(ev.registryAuthority),
+      );
+      return notRun;
+    }
+    if (AcdpDid.stripFragment(receiptKeyId) !== expectedRegistryDid) {
       flags.push(
-        `receipt_key_foreign_did: '${receiptKeyId}' is not a key of 'did:web:${ev.registryAuthority}'`,
+        `receipt_key_foreign_did: '${receiptKeyId}' is not a key of '${expectedRegistryDid}'`,
       );
       return notRun;
     }

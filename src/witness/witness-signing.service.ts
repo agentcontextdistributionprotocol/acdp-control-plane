@@ -35,6 +35,7 @@ import {
   createPublicKey,
   type KeyObject,
 } from 'node:crypto';
+import { didWebToAuthority } from '../common/did-authority';
 import { AppConfigService } from '../config/app-config.service';
 import {
   nodeWitnessSigner,
@@ -262,15 +263,17 @@ function stripFragment(didUrl: string): string {
 }
 
 /**
- * Extract the host authority (`host` or `host:port`) from a `did:web` DID. Per
- * the did:web method, the authority is the first colon-separated segment after
- * `did:web:` (later segments are the path), and a `:port` is percent-encoded as
- * `%3A`. Returns a lowercase, normalized host[:port].
+ * The host authority (`host` or `host:port`) of a `did:web` DID, lowercased and
+ * normalized for a HOST-BINDING comparison against `PUBLIC_HOST`.
+ *
+ * The did:web decoding itself is the shared canonical
+ * {@link didWebToAuthority} (first colon-separated segment, `%3A` → `:`); only
+ * the case/scheme/path normalization is local, because lowercasing is correct
+ * for comparing two spellings of one host and WRONG for minting a DID (`did:web`
+ * DIDs are case-sensitive on the wire). Keeping them separate is deliberate.
  */
 function didWebAuthority(witnessId: string): string {
-  const body = witnessId.slice('did:web:'.length);
-  const authority = body.split(':', 1)[0] ?? body;
-  return normalizeHost(decodeURIComponent(authority));
+  return normalizeHost(didWebToAuthority(witnessId) ?? '');
 }
 
 /** Normalize a host string: drop any scheme/path, lowercase, trim a trailing slash. */
