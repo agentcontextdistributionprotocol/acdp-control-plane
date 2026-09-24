@@ -62,7 +62,7 @@ describe('multibase (Ed25519 did:key encode/decode)', () => {
     const decoded = decodeEd25519Multibase(multibase);
     expect(decoded.ok).toBe(false);
     if (!decoded.ok) {
-      expect(decoded.reason).toMatch(/unsupported witness key algorithm/);
+      expect(decoded.reason).toMatch(/unsupported key algorithm/);
     }
   });
 

@@ -10,6 +10,7 @@ import { CheckpointWitnessPollerService } from './audit/checkpoint-witness.servi
 import { LogInclusionAuditService } from './audit/log-inclusion-audit.service';
 import { ReceiptAuditService } from './audit/receipt-audit.service';
 import { RegistryProfileService } from './audit/registry-profile.service';
+import { RevocationAuditService } from './audit/revocation-audit.service';
 import { AuthGuard } from './auth/auth.guard';
 import { AuthModule } from './auth/auth.module';
 import { DidWebResolverService } from './auth/did-web/did-web-resolver.service';
@@ -53,6 +54,7 @@ import { RoutingController } from './routing/routing.controller';
 import { LogCosignatureRepository } from './storage/log-cosignature.repository';
 import { LogInclusionAuditRepository } from './storage/log-inclusion-audit.repository';
 import { LogWitnessRepository } from './storage/log-witness.repository';
+import { KeyRevocationRepository } from './storage/key-revocation.repository';
 import { ReceiptAuditRepository } from './storage/receipt-audit.repository';
 import { RegistryEnrollmentRepository } from './storage/registry-enrollment.repository';
 import { RegistryRepository } from './storage/registry.repository';
@@ -148,6 +150,7 @@ import { WitnessSigningService } from './witness/witness-signing.service';
     RegistryRepository,
     RegistryEnrollmentRepository,
     ReceiptAuditRepository,
+    KeyRevocationRepository,
     LogWitnessRepository,
     LogCosignatureRepository,
     LogInclusionAuditRepository,
@@ -180,6 +183,10 @@ import { WitnessSigningService } from './witness/witness-signing.service';
     WitnessSigningService,
     CheckpointWitnessPollerService,
     LogInclusionAuditService,
+    // ACDP 0.3.0 producer key-revocation (RFC-ACDP-0014): config-gated sweep
+    // verifying `key-revocation` context bodies, reusing the same shared
+    // SSRF-gated federation client / DID resolver / profile probe.
+    RevocationAuditService,
     {
       provide: BanditRouter,
       inject: [AppConfigService],

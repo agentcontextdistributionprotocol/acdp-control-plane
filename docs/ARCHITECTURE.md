@@ -15,8 +15,9 @@ registries (which authoritatively store contexts and emit lifecycle webhooks) an
    isolates them by **tenant**, and gates actions with **policy** and **quota**.
 7. **Audits & witnesses** registry honesty: cross-checks embedded registry
    receipts (RFC-ACDP-0010), witnesses transparency-log checkpoints and audits
-   inclusion proofs (RFC-ACDP-0012), and mints/consumes witness cosignatures
-   with N-witnessed quorum (RFC-ACDP-0015).
+   inclusion proofs (RFC-ACDP-0012), verifies producer key-revocation contexts
+   (RFC-ACDP-0014), and mints/consumes witness cosignatures with N-witnessed
+   quorum (RFC-ACDP-0015).
 
 > Where this service mirrors protocol or registry behavior (crypto, SSRF, did:web,
 > auth challenge-response, tenancy, webhook event shapes), it relies on the
@@ -86,10 +87,11 @@ src/
 │
 ├── storage/                   # Repositories: context-event, run, lineage, agent, registry,
 │                              #   context-lifecycle, registry-enrollment, receipt-audit,
-│                              #   log-witness, log-cosignature, log-inclusion-audit
+│                              #   log-witness, log-cosignature, log-inclusion-audit, key-revocation
 ├── audit/                     # Receipt audit (RFC-ACDP-0010), checkpoint witness +
 │                              #   log-inclusion audit (RFC-ACDP-0012), Merkle log-verify,
-│                              #   cosignature helpers, registry-profile probe
+│                              #   cosignature helpers, registry-profile probe,
+│                              #   key-revocation audit (RFC-ACDP-0014)
 ├── witness/                   # Witness cosigning (RFC-ACDP-0015): signing service +
 │                              #   /log/witness, /.well-known/acdp-witness.json, did.json
 ├── webhooks/                  # Outbound webhook subs + outbox-tracked delivery + retry sweep
@@ -214,14 +216,17 @@ Full detail in [AUTH.md](./AUTH.md).
   the base RFC-ACDP-0001 types (`data_snapshot`, `analysis`, `prediction`,
   `alert`) are never gated. See [INGEST.md](./INGEST.md#domain-pack-context_type-gate).
 
-## Transparency, audit & witness (RFC-ACDP-0010 / 0012 / 0015)
+## Transparency, audit & witness (RFC-ACDP-0010 / 0012 / 0014 / 0015)
 
-> **Sources of truth.** The receipt, checkpoint, Merkle-proof, and cosignature
-> wire formats and verification procedures are normative in the spec —
+> **Sources of truth.** The receipt, checkpoint, Merkle-proof, revocation, and
+> cosignature wire formats and verification procedures are normative in the
+> spec —
 > [RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0010-registry-receipts.md)
 > (receipts),
 > [RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)
 > (transparency log),
+> [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md)
+> (producer key-revocation),
 > [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md)
 > (cosigning) — and the registry side is documented in
 > [acdp-registry-rs/docs/RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md).
@@ -229,7 +234,7 @@ Full detail in [AUTH.md](./AUTH.md).
 > service* does as an observer: which sweeps run, what each records, and where
 > the verdicts surface.
 
-Three independent, advisory-locked sweeps make the control plane a second
+Four independent, advisory-locked sweeps make the control plane a second
 observer of registry honesty — each gated by its own env flag and each
 recording verdicts in its own table so the signals stay independent:
 
@@ -238,6 +243,7 @@ recording verdicts in its own table so the signals stay independent:
 | `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; dashboard `receiptCoverage` |
 | `CheckpointWitnessPollerService` | Fetches each log-advertising registry's `GET /log/checkpoint` and runs the RFC-ACDP-0012 checkpoint + consistency checks against the head it retains | `log_witness_checkpoints` + `log_witness_cursors` | `GET /registries/:authority/log-witness`; `log_witness_alert` SSE/webhook on state transition; `acdp_log_witness_alerts_total{reason}` |
 | `LogInclusionAuditService` | Rebuilds the leaf from OUR stored receipt, fetches `/log/proof?ctx_id=`, runs the RFC-ACDP-0012 inclusion check, and cross-binds against witnessed heads | `log_inclusion_audits` | verdicts `included` \| `invalid_proof` \| `not_logged` \| `no_log` \| `error` |
+| `RevocationAuditService` | Discovers `key-revocation` contexts by `context_type`, recomputes `content_hash`, verifies the body signature, then `AcdpVerifier.parseKeyRevocation` for the RFC-ACDP-0014 §4/§5 shape + not-self-signed checks; a `registry_attested` result additionally requires the §6 registry-binding cross-check | `key_revocations` (permanent, retention-exempt) | `acdp_key_revocation_checks_total{status, trust_class}` |
 
 On top of witnessing, the CP can **cosign**: a checkpoint that passes the
 RFC-ACDP-0015 witness obligation is signed with a dedicated Ed25519 witness key
@@ -283,10 +289,11 @@ only on full success.
 - **Background services**: `WebhookService` retry sweep, `AuthSweeperService` (GCs
   expired challenges / revocations / ledger), `RevocationPollerService` (consumes
   peer feeds), `DataRetentionService` (off unless `DATA_RETENTION_ENABLED`),
-  plus the three advisory-locked audit sweeps — `ReceiptAuditService`
+  plus the four advisory-locked audit sweeps — `ReceiptAuditService`
   (`RECEIPT_AUDIT_ENABLED`), `CheckpointWitnessPollerService`
-  (`LOG_WITNESS_ENABLED`), and `LogInclusionAuditService`
-  (`LOG_INCLUSION_AUDIT_ENABLED`).
+  (`LOG_WITNESS_ENABLED`), `LogInclusionAuditService`
+  (`LOG_INCLUSION_AUDIT_ENABLED`), and `RevocationAuditService`
+  (`KEY_REVOCATION_CHECK_ENABLED`, requires `RECEIPT_AUDIT_ENABLED=true`).
 - **Boot assertions (witness)**: with `WITNESS_COSIGNING_ENABLED=true`, a
   `did:web` `WITNESS_ID` whose host disagrees with `PUBLIC_HOST` is fatal at
   boot (RFC-ACDP-0015 §9), and cosigning without `LOG_WITNESS_ENABLED=true`

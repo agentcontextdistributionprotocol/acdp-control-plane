@@ -91,6 +91,14 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['meets'] as const,
   });
 
+  // ── ACDP 0.3.0 producer key-revocation (RFC-ACDP-0014) ────────────────
+
+  readonly keyRevocationChecksTotal = new client.Counter({
+    name: 'acdp_key_revocation_checks_total',
+    help: 'Producer key-revocation verification sweep outcomes by status and trust class',
+    labelNames: ['status', 'trust_class'] as const,
+  });
+
   onModuleInit(): void {
     client.collectDefaultMetrics();
   }

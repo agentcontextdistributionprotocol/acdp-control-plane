@@ -2418,5 +2418,101 @@ check — no behaviour change yet, config surface only).
   `src/audit/revocation-binding.ts` (new), `src/audit/revocation-binding.spec.ts` (new),
   `docs/CONFIGURATION.md`, `.env.example`, `plans/rfc-0014-0015-upgrade.md` (Phase 11 →
   DONE, no divergence). No `ASSUMPTIONS.md` entries.
-Next: Phase 12 (verified revocation facts — schema, repositories, and the verification
-sweep; depends on Phase 2, Phase 10, Phase 11).
+
+## Phase 12 — Verified revocation facts: schema, repositories, and the verification sweep
+
+- 2026-09-23. Verdict: **PASS after 2 verify rounds**, both fresh Opus (not Fable — a
+  background sweep + two-table schema on a private surface, no public contract, no
+  auth model, no irreversible migration).
+- Delivers: `RevocationAuditService` (config-gated on `KEY_REVOCATION_CHECK_ENABLED`,
+  which itself requires `RECEIPT_AUDIT_ENABLED=true`) — discovers `key-revocation` /
+  `acdp:key-revocation` context events by `context_type` alone, fetches the body
+  through the SSRF-gated federation client, and runs the full RFC-ACDP-0014 §4/§5/§6
+  pipeline: ctx_id binding → content-hash recomputation → signature verification
+  (did:key offline; did:web via `DidWebResolverService.resolveKey`'s strict
+  `assertionMethod` gate, plus a manual signer-vs-`agent_id` DID check) →
+  `parseKeyRevocation` (§4 shape + §5 step-2 not-self-signed) → `crossCheckRegistryBinding`
+  (§6, `registry_attested` only) → persist to `key_revocations` (retention-exempt,
+  `onConflictDoNothing` on `(tenant_id, ctx_id)`). New migration `0022` (both
+  `key_revocations` and `key_revocation_lineage_cursors`, the latter for Phase 13).
+  New `src/audit/revocation-verify.ts` wrapping `AcdpVerifier.parseKeyRevocation` with
+  a non-optional `signerFingerprint` (closes the SDK's optional-argument trap for
+  did:web signers). Metric `acdp_key_revocation_checks_total{status, trust_class}`.
+- Round 1 verdict: **GAPS** (1 blocking, 8 non-blocking). Blocking: the file header and
+  `CLAUDE.md` claimed permanent failures "age out of the ordinary [24h] lookback" while
+  transient failures get the wider 720h `KEY_REVOCATION_LOOKBACK_HOURS` — a genuine
+  two-window split the code never actually implements (there is exactly one shared
+  720h window, since nothing about a failed verification is persisted anywhere and a
+  narrower window for "known-bad" candidates would require the very processed-marker
+  mechanism the plan's own revision moved away from). Non-blocking: an `unverifiable`
+  ctx_id-binding outcome was silently let through instead of failing closed (diverging
+  from `contexts.controller.ts`'s established polarity); `trust_class` was mapped with
+  a fail-open ternary that would silently skip the §6 binding check on SDK drift;
+  ecdsa-p256 signers handled inconsistently between did:web (`unavailable` forever) and
+  did:key (wrongly `invalid`) with a code comment falsely claiming an `ASSUMPTIONS.md`
+  entry that didn't exist; Phase 11's carried-forward `registryCapabilities` ambiguity
+  note was dropped silently instead of carried forward again; a wrong function-name
+  header comment; an imprecise `ASSUMPTIONS.md` line; a witness-specific error message
+  reused on a non-witness path; plus two purely-informational scale/observability notes
+  (head-of-line starvation risk, no signal when an `unavailable` fact ages out).
+- Gaps closed: reworded `CLAUDE.md` and the header doc-comment to accurately describe
+  the single shared window; corrected divergence note #5 (was wrongly "not a
+  divergence") and added notes #7 (the single-window reality + bounded cost) and #8
+  (carrying Phase 11's `registryCapabilities` note forward); fixed the ctx_id-binding
+  fail-open bug (`!binding.ok` now blocks on either kind, never claiming "substitution"
+  for an unproven `unverifiable`) with its test rewritten to assert the new behaviour;
+  fixed the `trust_class` fail-open ternary to return a parse failure on anything but
+  the two real values (defensive against SDK drift — the branch has no dedicated
+  runtime test since the native `AcdpVerifier.parseKeyRevocation` static is
+  non-configurable/non-writable/non-enumerable, confirmed empirically, making a
+  monkey-patch test infeasible without a heavier `jest.mock` restructuring judged not
+  worth it for this file's "real SDK" testing style); added two new `ASSUMPTIONS.md`
+  entries ("A single shared lookback window for both permanent and transient
+  revocation-verification failures", "ecdsa-p256 revocation signers are inconsistently,
+  and only partially, handled" — this one also makes the code comment's claim true);
+  fixed the header's wrong function names; fixed the imprecise `ASSUMPTIONS.md` line;
+  genericized `multibase.ts`'s error message + its spec; added an `originAuthority`
+  clarifying comment for Phase 14. Left undone by design (non-blocking, no code
+  change): head-of-line starvation at scale and the no-signal-on-aging-out
+  observation, both folded into the single-shared-window `ASSUMPTIONS.md` entry's text
+  rather than given their own entries.
+- Round 2 verdict: **GAPS** (0 blocking, 2 non-blocking, both trivial one-line doc
+  edits): a residual stale "transient-failure retry window" phrase in `CLAUDE.md`'s
+  env-var list that could be misread as implying the two-window split the authoritative
+  bullet 45 lines above had already corrected; and the plan's divergence notes never
+  recorded that the ctx_id-binding check itself (pipeline step "1.5") is an addition
+  beyond the Approach's six listed steps, unlike the analogous signer-binding addition
+  which note #3 does record. The ctx_id-binding omission is the same underlying gap
+  flagged (less specifically) in round 1's item 3 — by the /implement round-cap rule
+  this counts as surviving 2 consecutive rounds. Per that rule ("stop and report
+  instead of continuing to loop"), no round 3 was spawned; both items were unambiguous,
+  zero-risk, one-line documentation fixes, so they were closed directly (CLAUDE.md
+  reworded; a new divergence note #3b added, explicitly distinguishing itself from
+  note #3 — this check was never optional, so omitting it would have been the actual
+  divergence) rather than re-verified by a third agent. No code changed in this step.
+- Gates (mine, then independently re-run by both verifier rounds — identical counts
+  each time): `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 142 files · unit 77 suites/1025 passed/4 skipped/1029 total
+  (+47 new, 978→1025 — the 4 skips are pre-existing and unrelated) · integration 31
+  suites/202 passed (+6 new, 196→202) — re-run on a genuinely fresh standalone
+  Postgres container (port 5435; 5433/5434 stay untouched, both occupied by unrelated
+  foreign containers) after every round to rule out container-reuse artifacts, per the
+  flake this phase investigated and ruled out mid-implementation. Conformance
+  cross-check (`rev-001-revocation-context-golden.json`) run with `ACDP_SPEC_DIR`
+  pointed at the sibling spec checkout — 15 passed/1 correctly-skipped (the
+  pre-revocation-SDK guard block).
+- Files touched: `drizzle/0022_key_revocations.sql` (new), `src/db/schema.ts`,
+  `src/storage/key-revocation.repository.ts` (new), `src/audit/revocation-verify.ts`
+  (new), `src/audit/revocation-verify.spec.ts` (new), `src/audit/revocation-audit.service.ts`
+  (new), `src/audit/revocation-audit.service.spec.ts` (new),
+  `test/integration/revocation.integration.spec.ts` (new), `src/app.module.ts`,
+  `src/telemetry/instrumentation.service.ts`, `src/common/multibase.ts`,
+  `src/common/multibase.spec.ts`, `CLAUDE.md` (local, gitignored — Producer
+  key-revocation verification bullet + env-var entries), `docs/ARCHITECTURE.md`
+  (audit-services table row + background-services bullet + RFC-ACDP-0014 references),
+  `plans/rfc-0014-0015-upgrade.md` (local, gitignored — Phase 12 → DONE, 9 divergence
+  notes), `ASSUMPTIONS.md` (4 new entries, all `UNCONFIRMED`).
+Next: Phase 13 (RFC-ACDP-0014 §7 lineage-fold consumption logic — the shared
+`classifyLineageFailure` this phase's local classifiers are temporary stand-ins for,
+and the `key_revocation_lineage_cursors` table this phase's migration already added;
+depends on Phase 12).
