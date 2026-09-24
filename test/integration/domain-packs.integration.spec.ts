@@ -72,6 +72,26 @@ describe('Domain packs (integration, DOMAIN_PACKS=finance)', () => {
     const res = await ctx.client.ingest(event, { secret: SECRET });
     expect(res.status).toBe(204);
   });
+
+  it('RFC-ACDP-0014: accepts key-revocation even though the active pack does not declare it (Phase 10)', async () => {
+    const before = (await ctx.client.listEvents()) as { data: unknown[] };
+    const res = await ctx.client.ingest(financeEvent('key-revocation', 'rev-1'), {
+      secret: SECRET,
+    });
+    expect(res.status).toBe(204);
+    const after = (await ctx.client.listEvents()) as { data: unknown[] };
+    expect(after.data.length).toBe(before.data.length + 1);
+  });
+
+  it('RFC-ACDP-0014: accepts the interim spelling acdp:key-revocation (Phase 10)', async () => {
+    const before = (await ctx.client.listEvents()) as { data: unknown[] };
+    const res = await ctx.client.ingest(financeEvent('acdp:key-revocation', 'rev-2'), {
+      secret: SECRET,
+    });
+    expect(res.status).toBe(204);
+    const after = (await ctx.client.listEvents()) as { data: unknown[] };
+    expect(after.data.length).toBe(before.data.length + 1);
+  });
 });
 
 describe('Domain packs (integration, DOMAIN_PACKS unset)', () => {

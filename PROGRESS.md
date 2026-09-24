@@ -2332,3 +2332,33 @@ PR2, then start PR3 (Phases 10-15, RFC-ACDP-0014 producer key-revocation, branch
 - Next: Phase 10 (RFC-ACDP-0014 producer key-revocation, PR3, branch
   `rfc-0014/pr3-key-revocation`, cut fresh from updated `main`; depends on PR1 only,
   already merged — does not depend on PR2).
+
+## Phase 10 — Accept `key-revocation` on ingest (RFC-ACDP-0014 prerequisite)
+
+- 2026-09-23. Verdict: **PASS**, round 1. Verifier tier: fresh Opus (not Fable) — a
+  Set-union addition and an early-accept check on an already-gated allowlist, no
+  schema/migration, no public-contract ambiguity left open at implementation time.
+- Fix: `src/ingest/ingest.service.ts`'s `ACDP_BASE_TYPES` (the domain-pack gate's
+  always-accepted allowlist) now spreads in the two RFC-ACDP-0014 key-revocation
+  spellings (`key-revocation`, `acdp:key-revocation`) from a new shared module
+  `src/contracts/revocation.ts` (`REVOCATION_CONTEXT_TYPES`, `isRevocationContextType`)
+  rather than duplicating them inline — later revocation phases (12-15) will import the
+  same predicate for their discovery query, lineage fold, and §7 disarm check, so a
+  second drifting copy would be a correctness bug waiting to happen. Without this fix,
+  any deployment with `DOMAIN_PACKS` configured silently and PERMANENTLY dropped every
+  revocation webhook (the registry's webhook worker never retries a 4xx delivery) — a
+  severe, invisible bug that predates this plan.
+- Verified both directions matter: `isRevocationContextType` is exact-match only (no
+  case-folding) — `Key-Revocation`, `KEY-REVOCATION`, and the near-miss
+  `acdp:key_revocation` all correctly stay rejected.
+- Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 138 files (+1 new file) · unit 74 suites/957 passed/3
+  skipped/960 total (+10 new) · integration 30 suites/196 passed (+2 new).
+  Both me and the verifier independently ran the full suite and got identical counts.
+- Files touched: `src/contracts/revocation.ts` (new), `src/contracts/revocation.spec.ts`
+  (new), `src/ingest/ingest.service.ts`, `src/ingest/ingest.service.spec.ts`,
+  `test/integration/domain-packs.integration.spec.ts`, `docs/INGEST.md`, `CLAUDE.md`,
+  `plans/rfc-0014-0015-upgrade.md` (Phase 10 → DONE, no divergence). No `ASSUMPTIONS.md`
+  entries.
+Next: Phase 11 (revocation configuration, registry-profile widening, the §6 binding
+check — no behaviour change yet, config surface only).

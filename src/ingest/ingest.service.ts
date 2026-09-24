@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { AcdpWebhookEvent } from '../contracts/acdp';
+import { REVOCATION_CONTEXT_TYPES } from '../contracts/revocation';
 import { DomainPackRegistry } from '../domain-packs/domain-pack';
 import { EventProcessorService } from '../processor/event-processor.service';
 import { RegistryEnrollmentRepository } from '../storage/registry-enrollment.repository';
@@ -178,15 +179,21 @@ export class IngestService {
 }
 
 /**
- * Base ACDP context types (RFC-ACDP-0001). These are always accepted and
- * never subject to the domain-pack gate, which only governs the additional
- * vertical-specific types a pack introduces.
+ * Base ACDP context types (RFC-ACDP-0001), plus the RFC-ACDP-0014
+ * key-revocation types (both spellings — see `src/contracts/revocation.ts`).
+ * These are always accepted and never subject to the domain-pack gate, which
+ * only governs the additional vertical-specific types a pack introduces.
+ * `key-revocation` is a standard protocol context type, not a pack vertical —
+ * gating it behind a domain pack would silently and permanently drop
+ * revocation webhooks on any deployment with `DOMAIN_PACKS` configured (the
+ * registry's webhook worker never retries a 4xx delivery).
  */
 const ACDP_BASE_TYPES = new Set<string>([
   'data_snapshot',
   'analysis',
   'prediction',
   'alert',
+  ...REVOCATION_CONTEXT_TYPES,
 ]);
 
 /**
