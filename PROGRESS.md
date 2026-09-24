@@ -2309,3 +2309,18 @@ Object]"` strings, the `invalid_witness_cosignature` error code, cleanup; B4, B5
 This closes out PR2's scope (Phases 5-9, `rfc-0014/pr2-witness-fixes`). Next: `/ship`
 PR2, then start PR3 (Phases 10-15, RFC-ACDP-0014 producer key-revocation, branch
 `rfc-0014/pr3-key-revocation`, depends on PR1 only — already merged).
+
+## PR2 shipped
+
+- 2026-09-23. PR-level verification gate (fresh Opus, full diff `main...HEAD`, 5 commits /
+  35 files / +2536/-163): **PASS**, no gaps. Independently re-ran the full local gate
+  suite (matched exactly: unit 73/947/3-skipped/950, `check:conventions` 6✓, `lint` 0,
+  `tsc` x2 clean, `check:build` 137 files), traced the `QuorumReport`/`QuorumInputs`/
+  `CosignOutcome` seams across Phases 6-9 for silent drops/overwrites (none), sanity-
+  checked migrations 0019-0021 are all additive (guarded `DROP CONSTRAINT IF EXISTS` by
+  exact Postgres-generated name + re-`ADD CONSTRAINT`, `ADD COLUMN IF NOT EXISTS`; no
+  `NOT NULL` added without a default on a populated table), confirmed `plans/
+  rfc-0014-0015-upgrade.md` shows Phases 5-9 all `Status: DONE` with `PROGRESS.md`'s
+  trail matching the actual diff, and confirmed `ASSUMPTIONS.md` has zero entries tagged
+  to this plan (nothing to `/reconcile` before merge).
+- `pushed rfc-0014/pr2-witness-fixes 3b04ed1`.
