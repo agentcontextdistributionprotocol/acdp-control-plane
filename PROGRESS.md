@@ -2516,3 +2516,69 @@ Next: Phase 13 (RFC-ACDP-0014 §7 lineage-fold consumption logic — the shared
 `classifyLineageFailure` this phase's local classifiers are temporary stand-ins for,
 and the `key_revocation_lineage_cursors` table this phase's migration already added;
 depends on Phase 12).
+
+## Phase 13 — 2026-09-23 — PASS (round 1, fresh Opus verifier)
+
+- **Delivers:** the §7 lineage fold. New `src/audit/revocation-lineage.ts` exports
+  `classifyLineageFailure` (a named, exported, exhaustively-tested transient/
+  permanent/hard classifier over `FederationFetchError`, `DidResolutionError`, and
+  raw HTTP status, replacing three now-deleted local classifiers in
+  `revocation-audit.service.ts`) and `walkRevocationLineage` (fetches
+  `GET /lineages/{lineage_id}` — never `/current` — and folds it per RFC-ACDP-0014 §7:
+  empty response fails closed, a non-empty response missing the naming `ctx_id` fails
+  closed pre-verification, a permanently-failing member is dropped with a warning
+  while the rest still fold, a transiently-failing member aborts the whole walk).
+  `revocation-audit.service.ts`'s `sweep()` now queues distinct lineages needing a
+  walk (zero known facts, OR a missing/stale cursor — checked via the new
+  `KeyRevocationRepository.countByLineage`/`findFreshLineageCursor`), enforces
+  `MAX_LINEAGE_WALKS = 100` as a hard all-or-nothing cap per pass, and persists each
+  fully-successful walk's members plus a cursor row via the new
+  `recordLineageWalk`/`deleteLineageCursor` repository methods — a cursor is written
+  ONLY on full success, every failure kind leaves it unset.
+- Verdict: **PASS**, round 1. Verifier: fresh Opus general-purpose subagent (not
+  Fable — this phase is consequential but not a one-way-door/trust-boundary change
+  per the Autonomy ladder). It independently re-ran `tsc` (both configs), lint,
+  `check:conventions`, the full unit suite, both new/touched spec files, the
+  conformance-gated tests (`ACDP_SPEC_DIR` set, 4/4 not skipped), and the integration
+  suite against its own disposable Postgres (port 5436) — all green, matching my own
+  run. It also independently verified the single most safety-critical claim of this
+  phase — that `priorFactCount` (the "zero facts forces a walk" check) is computed
+  BEFORE `record()` persists the current event's own fact, not after — by reading the
+  exact line order in `sweep()` itself, not trusting the surrounding comment. And it
+  cross-checked the AC10 reinterpretation (lineage-fetch status, not a nonexistent
+  per-member fetch) directly against the sibling `acdp-rs`
+  (`acdp-client/src/{revocation.rs,registry.rs}`) and `acdp-registry-rs`
+  (`acdp-registry-core/src/handlers/context.rs`) checkouts — confirmed there is
+  genuinely no per-member fetch anywhere in the reference architecture, not merely
+  internally consistent with this repo's own code.
+- Gap summary (round 1, all non-blocking — verdict was PASS with nits, not GAPS):
+  (a) the AC4 transient-abort test asserted the walk's outcome but not that the
+  second member's `verify` callback was never reached — **closed** by adding
+  `expect(verify).toHaveBeenCalledTimes(1)` plus asserting the one call was for
+  `ctx-1`; (b) `KeyRevocationRepository.countByLineage` fetched all matching rows
+  into memory to return `.length` rather than a SQL `count(*)` — **closed**, now a
+  single aggregate query (`sql<number>\`count(*)::int\``); (c) `findFreshLineageCursor`'s
+  doc comment claimed it returns `null` when it actually returns `boolean` — **closed**,
+  comment corrected; (d) no new Prometheus metric for `MAX_LINEAGE_WALKS`
+  exceedance — left as-is, already named and justified in this phase's own plan
+  divergence notes (scope: `instrumentation.service.ts` not in Phase 13's `Files`).
+  All three closed nits were re-verified locally (full unit suite, the two
+  touched/new spec files individually, and a full integration re-run against a fresh
+  disposable Postgres) — all still green after the fixes; no second verifier round
+  was needed since the original verdict was already PASS.
+- Gates (final, post-nit-fix state): `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit`
+  (both tsconfigs) 0 · `check:build` both builds 143 files, agree · unit 78 suites/1071
+  passed/4 skipped (pre-existing, unrelated)/1075 total · integration 31 suites/204
+  passed, run twice against fresh disposable Postgres containers (port 5435, torn down
+  after each run; 5433/5434 untouched, occupied by unrelated foreign containers) — once
+  before the nit fixes, once after, identical counts both times. Conformance
+  cross-check (`rev-002-before-after-boundary.json` scenarios E–H) run with
+  `ACDP_SPEC_DIR` pointed at the sibling spec checkout, all 4 passed (not skipped).
+- Files touched: `src/audit/revocation-lineage.ts` (new), `src/audit/revocation-lineage.spec.ts`
+  (new), `src/audit/revocation-audit.service.ts`, `src/audit/revocation-audit.service.spec.ts`,
+  `src/storage/key-revocation.repository.ts`, `test/integration/revocation.integration.spec.ts`,
+  `docs/ARCHITECTURE.md` (new "The §7 lineage walk" paragraph + sweeps-table row),
+  `plans/rfc-0014-0015-upgrade.md` (local, gitignored — Phase 13 → DONE, 5 divergence
+  notes), `ASSUMPTIONS.md` (1 new entry, `LINEAGE_CURSOR_TTL_MS`, `UNCONFIRMED`).
+Next: Phase 14 (§7 consumer semantics in the receipt-audit pipeline — depends on
+Phase 2, Phase 12, Phase 13, all now complete).

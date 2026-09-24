@@ -84,16 +84,65 @@
  * revocation for up to 30 days instead of 24h) and why a real fix needs a
  * persisted per-candidate verdict, which this phase does not add.
  *
- * The transient/permanent classification used here for `FederationFetchError`
- * / `DidResolutionError` / HTTP-status bands (the three private functions at
- * the bottom of this file — `classifyFederationFetchError`,
- * `classifyDidResolutionError`, `classifyHttpStatus`) is LOCAL and TEMPORARY:
- * the same table (by the plan's own account) is Phase 13's
- * `classifyLineageFailure` (`src/audit/revocation-lineage.ts`), built for the
- * §7 lineage walk. Once that lands, these three functions must be deleted
- * and this sweep must import the shared function instead — "reuse it, do not
- * write a second one" — rather than building it early against a
- * Phase-13-owned API shape this phase cannot yet know.
+ * The transient/permanent classification for `FederationFetchError` /
+ * `DidResolutionError` / HTTP-status bands is `classifyLineageFailure`
+ * (`src/audit/revocation-lineage.ts`) — one shared table for both this
+ * per-event fetch and the §7 lineage walk below, not two drifting copies.
+ * Its three-way result (`'transient' | 'permanent' | 'hard'`) collapses to
+ * this file's two-way `Outcome.status` via `toStatus` at the bottom: `'hard'`
+ * (a response too large to trust) gets the same `'invalid'` treatment as
+ * `'permanent'` here, because a single oversized context body is simply
+ * unusable evidence, not a lineage that must never be silently truncated —
+ * that distinction only matters for the lineage walk itself.
+ *
+ * ## The §7 lineage walk (RFC-ACDP-0014 §7, Phase 13)
+ *
+ * Discovering one revocation via a webhook only proves that ONE context
+ * exists — §4's earliest-`compromised_since` rule is defined over the whole
+ * lineage, including members the control plane was never webhooked about
+ * (published before enrollment, or belonging to a producer's earlier key).
+ * After persisting a freshly-verified event's own fact, `sweep()` walks that
+ * revocation's lineage (`walkRevocationLineage`, `revocation-lineage.ts`) via
+ * `GET /lineages/{lineage_id}` and persists every OTHER verified revocation
+ * member it finds, reusing the exact same `verifyRevocationBody` pipeline
+ * (steps 2-5 below) so a lineage-discovered member gets identical scrutiny
+ * to a webhook-discovered one.
+ *
+ * **When a lineage gets walked.** Gated by `KeyRevocationLineageCursor`, a
+ * TTL-bounded freshness marker (`LINEAGE_CURSOR_TTL_MS`, chosen to match the
+ * DID resolver's own default cache duration — see ASSUMPTIONS.md) — but a
+ * cursor ALONE is never sufficient to skip a walk: if `key_revocations`
+ * currently holds zero facts for that lineage, the walk runs regardless of
+ * cursor freshness, every pass, forever. A cached "walked, found nothing"
+ * marker suppressing a walk is precisely how a revocation gets missed
+ * (migration 0022's header) — this only costs anything for the rare lineage
+ * whose only known member keeps failing verification, and revocations are
+ * rare by construction.
+ *
+ * **`MAX_LINEAGE_WALKS`** bounds the number of DISTINCT lineages queued in
+ * one sweep pass, checked BEFORE any of them are walked: exceeding it skips
+ * the whole lineage-walk phase of this pass (never a silently partial set —
+ * `revocation-lineage.ts`'s own doc comment), logging at error level. No new
+ * Prometheus counter for this — genuinely exceeding 100 distinct lineages
+ * needing a walk in one pass is an extreme, defensive-only condition; a
+ * later phase can add one if it ever fires in practice.
+ *
+ * **The cursor is written ONLY on a fully successful walk** (`{ok: true}`).
+ * Every failure kind — empty response, missing the naming ctx_id, a
+ * transient/permanent/hard fetch failure — leaves the cursor untouched, so
+ * the next sweep retries. Retrying a failed lineage walk is cheap and safe;
+ * writing a cursor for an incomplete walk is not.
+ *
+ * **Continuing past one bad lineage.** Unlike the reference client's
+ * `discover_revocations` (which aborts its whole multi-lineage call via `?`
+ * on any single lineage's failure — correct for an on-demand query that
+ * needs one definitive answer NOW), this sweep's lineage-walk phase logs and
+ * moves on to the next distinct lineage in its queue when one fails: a
+ * background pass has no single caller waiting on a combined verdict, and
+ * one troubled registry must not block verifying revocations for every
+ * OTHER registry's lineages in the same pass. Fail-closed is preserved
+ * PER-LINEAGE (no partial fold is ever recorded for a failed one); it is
+ * only not escalated to aborting unrelated work.
  */
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { AcdpDid } from '@agentcontextdistributionprotocol/acdp';
@@ -114,10 +163,31 @@ import {
   verifyContentHash,
   verifyCtxIdBinding,
 } from './receipt-verify';
+import {
+  classifyLineageFailure,
+  LineageFailureClass,
+  MAX_LINEAGE_WALKS,
+  walkRevocationLineage,
+} from './revocation-lineage';
 import { ParsedRevocation, parseKeyRevocation, sdkSupportsRevocations } from './revocation-verify';
 import { RegistryProfileService } from './registry-profile.service';
 
 const ADVISORY_LOCK_KEY = 'acdp-cp-key-revocation-audit';
+
+/**
+ * Freshness window for a lineage's "fully walked" marker — see the file
+ * header. Chosen to match the DID resolver's own default cache duration
+ * (`did-web-resolver.service.ts`'s 1h cache — Phase 13's plan text notes it
+ * "absorbs most of the resolution cost"), so a repeat walk within the window
+ * would mostly be re-verifying against a DID document already cached
+ * locally anyway. Not `AppConfigService`-exposed: Phase 13's own `Files`
+ * list does not touch `app-config.service.ts`, and this table's own
+ * freshness-vs-zero-facts rule above already bounds the real risk (a wide
+ * window cannot suppress discovery of a lineage's first fact, only how
+ * often an already-confirmed-nonempty lineage gets re-checked) — logged to
+ * ASSUMPTIONS.md as a judgment call, not a plan requirement.
+ */
+const LINEAGE_CURSOR_TTL_MS = 60 * 60 * 1000;
 
 type Status = 'verified' | 'invalid' | 'unavailable';
 
@@ -207,6 +277,10 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
         since,
         this.config.receiptAuditBatchSize,
       );
+      const lineageQueue = new Map<
+        string,
+        { lineageId: string; registryAuthority: string; baseUrl: string; tenantId: string; expectCtxId: string }
+      >();
       for (const ev of candidates) {
         const outcome = await this.verifyEvent(ev);
         this.instrumentation.keyRevocationChecksTotal.inc({
@@ -228,6 +302,14 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
         // status === 'verified'
         const revocation = outcome.revocation!;
         const body = outcome.body!;
+        const lineageId = strOf(body['lineage_id']) ?? ev.lineageId ?? '';
+        // Counted BEFORE this event's own fact is recorded below — the
+        // "zero facts, walk regardless of cursor" rule (file header) means
+        // exactly "zero facts known BEFORE this candidate", not "zero minus
+        // the one we are about to add"; recording first would make this
+        // count >= 1 for every single verified candidate, silently
+        // defeating the rule it exists to implement.
+        const priorFactCount = lineageId ? await this.revocationRepo.countByLineage(ev.tenantId, lineageId) : 0;
         await this.revocationRepo.record({
           tenantId: ev.tenantId,
           ctxId: ev.ctxId!,
@@ -238,7 +320,7 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
           trustClass: revocation.trustClass,
           revokedKeyId: revocation.revokedKeyId,
           reason: revocation.reason,
-          lineageId: strOf(body['lineage_id']) ?? ev.lineageId ?? '',
+          lineageId,
           // The body's OWN origin_registry claim — outside content_hash/
           // signature coverage, so unauthenticated (proven by the
           // integration fixtures, which merge it in post-signing). This is
@@ -249,11 +331,102 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
           originAuthority: strOf(body['origin_registry']) ?? ev.registryAuthority,
           contextType: ev.contextType ?? '',
         } satisfies NewKeyRevocation);
+
+        // ── §7 lineage walk (Phase 13) — see the file header ──────────────
+        if (!lineageId) continue;
+        const queueKey = `${ev.tenantId}::${lineageId}::${ev.registryAuthority}`;
+        if (priorFactCount > 0) {
+          const fresh = await this.revocationRepo.findFreshLineageCursor(
+            ev.tenantId,
+            lineageId,
+            ev.registryAuthority,
+            LINEAGE_CURSOR_TTL_MS,
+          );
+          if (fresh) continue;
+        }
+        if (!lineageQueue.has(queueKey)) {
+          const registry = await this.registryRepo.findByAuthority(ev.registryAuthority, ev.tenantId);
+          if (!registry?.baseUrl) continue;
+          lineageQueue.set(queueKey, {
+            lineageId,
+            registryAuthority: ev.registryAuthority,
+            baseUrl: registry.baseUrl,
+            tenantId: ev.tenantId,
+            expectCtxId: ev.ctxId!,
+          });
+        }
       }
+
+      if (lineageQueue.size > MAX_LINEAGE_WALKS) {
+        this.logger.error(
+          `key-revocation lineage walk: ${lineageQueue.size} distinct lineages exceed ` +
+            `MAX_LINEAGE_WALKS=${MAX_LINEAGE_WALKS} this pass — refusing a partial walk, ` +
+            `skipping all lineage walks this pass (they retry next sweep)`,
+        );
+      } else {
+        for (const item of lineageQueue.values()) {
+          await this.walkAndPersistLineage(item);
+        }
+      }
+
       return candidates.length;
     } finally {
       await this.database.advisoryUnlock(ADVISORY_LOCK_KEY);
     }
+  }
+
+  /**
+   * Walk one lineage and persist every verified member it contains. Never
+   * throws — a failed walk is logged and the cursor is left unset so the
+   * next sweep retries (see the file header's "cursor written only on
+   * success" rule).
+   */
+  private async walkAndPersistLineage(item: {
+    lineageId: string;
+    registryAuthority: string;
+    baseUrl: string;
+    tenantId: string;
+    expectCtxId: string;
+  }): Promise<void> {
+    const result = await walkRevocationLineage(
+      {
+        federationClient: this.federationClient,
+        verifyMemberBody: (registryAuthority, tenantId, bodyJson, body) =>
+          this.verifyRevocationBody(registryAuthority, tenantId, bodyJson, body),
+        logger: this.logger,
+      },
+      {
+        lineageId: item.lineageId,
+        registryAuthority: item.registryAuthority,
+        baseUrl: item.baseUrl,
+        tenantId: item.tenantId,
+        expectCtxId: item.expectCtxId,
+      },
+    );
+    if (!result.ok) {
+      this.logger.warn(
+        `key-revocation lineage walk failed lineage=${item.lineageId} registry=${item.registryAuthority} ` +
+          `kind=${result.kind}: ${result.reason}`,
+      );
+      return;
+    }
+    for (const member of result.members) {
+      await this.revocationRepo.record({
+        tenantId: item.tenantId,
+        ctxId: member.ctxId,
+        revokedKeyFingerprint: member.revocation.revokedKeyFingerprint,
+        compromisedSince: member.revocation.compromisedSince,
+        revokedKeyController: member.revocation.revokedKeyController,
+        publisher: member.revocation.publisher,
+        trustClass: member.revocation.trustClass,
+        revokedKeyId: member.revocation.revokedKeyId,
+        reason: member.revocation.reason,
+        lineageId: item.lineageId,
+        originAuthority: member.originAuthority ?? item.registryAuthority,
+        contextType: member.contextType,
+      } satisfies NewKeyRevocation);
+    }
+    await this.revocationRepo.recordLineageWalk(item.tenantId, item.lineageId, item.registryAuthority);
   }
 
   /**
@@ -299,7 +472,7 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
     } catch (err) {
       if (err instanceof FederationFetchError) {
         return {
-          status: classifyFederationFetchError(err.code) === 'transient' ? 'unavailable' : 'invalid',
+          status: toStatus(classifyLineageFailure(err)),
           trustClass: 'unknown',
           reason: `context fetch failed (${err.code}): ${err.message}`,
         };
@@ -312,7 +485,7 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
     }
     if (resp.status < 200 || resp.status >= 300) {
       return {
-        status: classifyHttpStatus(resp.status) === 'transient' ? 'unavailable' : 'invalid',
+        status: toStatus(classifyLineageFailure(resp.status)),
         trustClass: 'unknown',
         reason: `context fetch returned HTTP ${resp.status}`,
       };
@@ -356,6 +529,24 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
+    return this.verifyRevocationBody(ev.registryAuthority, ev.tenantId, bodyJson, body);
+  }
+
+  /**
+   * Steps 2-5 of the file header's pipeline — content-hash, signature, §4/§5
+   * shape, §6 registry-binding policy — over an ALREADY-FETCHED body. Shared
+   * between `verifyEventInner` (a webhook-discovered candidate, fetched and
+   * ctx_id-bound above) and the §7 lineage walk (`walkAndPersistLineage`,
+   * whose members arrive pre-fetched, embedded in the `GET /lineages/{id}`
+   * response — no ctx_id-binding check applies there: there was no per-member
+   * REQUEST for the registry to have substituted a response against).
+   */
+  private async verifyRevocationBody(
+    registryAuthority: string,
+    tenantId: string,
+    bodyJson: string,
+    body: Record<string, unknown>,
+  ): Promise<Outcome> {
     // ── 2. Content hash ──────────────────────────────────────────────────
     const echoedHash = strOf(body['content_hash']);
     if (!echoedHash) {
@@ -428,7 +619,7 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
       } catch (err) {
         if (err instanceof DidResolutionError) {
           return {
-            status: classifyDidResolutionError(err.code) === 'transient' ? 'unavailable' : 'invalid',
+            status: toStatus(classifyLineageFailure(err)),
             trustClass: 'unknown',
             reason: `signer key resolution failed (${err.code}): ${err.message}`,
           };
@@ -460,15 +651,15 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
 
     // ── 5. §6 registry-binding policy (registry_attested only) ─────────
     if (revocation.trustClass === 'registry_attested') {
-      const caps = await this.profiles.registryCapabilities(ev.registryAuthority, ev.tenantId);
+      const caps = await this.profiles.registryCapabilities(registryAuthority, tenantId);
       if (caps.registryDid === null) {
         return {
           status: 'unavailable',
           trustClass: 'registry_attested',
-          reason: `capabilities for '${ev.registryAuthority}' are unreadable — cannot run the §6 binding check`,
+          reason: `capabilities for '${registryAuthority}' are unreadable — cannot run the §6 binding check`,
         };
       }
-      const check = crossCheckRegistryBinding(revocation.publisher, ev.registryAuthority, caps.registryDid);
+      const check = crossCheckRegistryBinding(revocation.publisher, registryAuthority, caps.registryDid);
       if (!check.ok) {
         return { status: 'invalid', trustClass: 'registry_attested', reason: check.reason };
       }
@@ -478,19 +669,14 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
   }
 }
 
-/** See the file header — TEMPORARY, must be replaced by Phase 13's `classifyLineageFailure`. */
-function classifyFederationFetchError(code: FederationFetchError['code']): 'transient' | 'permanent' {
-  return code === 'FETCH' ? 'transient' : 'permanent';
-}
-
-/** See the file header — TEMPORARY, must be replaced by Phase 13's `classifyLineageFailure`. */
-function classifyDidResolutionError(code: DidResolutionError['code']): 'transient' | 'permanent' {
-  return code === 'FETCH' || code === 'STATUS' ? 'transient' : 'permanent';
-}
-
-/** See the file header — TEMPORARY, must be replaced by Phase 13's `classifyLineageFailure`. */
-function classifyHttpStatus(status: number): 'transient' | 'permanent' {
-  return status === 429 || status === 408 || (status >= 500 && status <= 599) ? 'transient' : 'permanent';
+/**
+ * Collapse `classifyLineageFailure`'s three-way result to this file's
+ * two-way `Outcome.status` — see the file header for why `'hard'` folds
+ * into `'invalid'` here (unlike the lineage walk, which treats it as its
+ * own abort-and-record-nothing case).
+ */
+function toStatus(cls: LineageFailureClass): 'unavailable' | 'invalid' {
+  return cls === 'transient' ? 'unavailable' : 'invalid';
 }
 
 function strOf(v: unknown): string | undefined {

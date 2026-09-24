@@ -86,10 +86,30 @@ describe('producer key-revocation sweep (RFC-ACDP-0014, integration)', () => {
     await ctx.app.close();
   });
 
+  /**
+   * The `/lineages/{lineage_id}` response for a fixture whose lineage
+   * contains only the one context under test — a single-member `FullContext`
+   * array (RFC-ACDP-0014 §7's lineage walk fetches this after every
+   * newly-verified fact; see revocation-lineage.spec.ts for the walk's own
+   * dedicated coverage). Kept separate from `stubRetrieval` so a test can
+   * override just this response when it wants to exercise a multi-member
+   * lineage instead.
+   */
+  function lineageOf(fixture: { ctxId: string }, body: Record<string, unknown>): FederationResponse {
+    return {
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{ body, registry_state: { status: 'active' } }]),
+    };
+  }
+
   function stubRetrieval(fixture: { baseUrl: string; ctxId: string }, body: Record<string, unknown>) {
     federationGetSpy.mockImplementation(async (url: string): Promise<FederationResponse> => {
       if (url === `${fixture.baseUrl}/contexts/${encodeURIComponent(fixture.ctxId)}`) {
         return { status: 200, contentType: 'application/json', body: JSON.stringify({ body }) };
+      }
+      if (url.startsWith(`${fixture.baseUrl}/lineages/`)) {
+        return lineageOf(fixture, body);
       }
       throw new Error(`unexpected federation fetch in test: ${url}`);
     });
@@ -103,6 +123,9 @@ describe('producer key-revocation sweep (RFC-ACDP-0014, integration)', () => {
     federationGetSpy.mockImplementation(async (url: string): Promise<FederationResponse> => {
       if (url === `${fixture.baseUrl}/contexts/${encodeURIComponent(fixture.ctxId)}`) {
         return { status: 200, contentType: 'application/json', body: JSON.stringify({ body }) };
+      }
+      if (url.startsWith(`${fixture.baseUrl}/lineages/`)) {
+        return lineageOf(fixture, body);
       }
       if (url === `${fixture.baseUrl}/.well-known/acdp.json`) {
         return {
@@ -324,5 +347,102 @@ describe('producer key-revocation sweep (RFC-ACDP-0014, integration)', () => {
     const n = await revocationSvc.sweep();
     expect(n).toBe(1);
     expect(await revocationRepo.findByFingerprint(revokedFp, 'default')).toHaveLength(0);
+  });
+
+  // ── §7 lineage walk (Phase 13) ──────────────────────────────────────────
+  describe('lineage walk', () => {
+    it('discovers an EARLIER revocation in the same lineage that was never itself delivered via webhook', async () => {
+      const fixture = fixtureFor('reg-lineage-walk.example');
+      const producer = AcdpProducer.fromSeedDidKey(Buffer.alloc(32, 13));
+      const revokedKey = AcdpProducer.fromSeedDidKey(Buffer.alloc(32, 14));
+      const revokedFp = fingerprintEd25519B64(revokedKey.publicKeyB64);
+
+      // R1: the EARLIEST revocation in the lineage — exists only inside the
+      // lineage array below, never webhooked on its own (the realistic case:
+      // a registry's webhook fires for the lineage HEAD, R2, and only a
+      // lineage walk recovers an earlier member a webhook never announced).
+      const r1CtxId = `acdp://${fixture.authority}/00000000-0000-4000-8000-000000000001`;
+      const r1 = {
+        ...(JSON.parse(
+          producer.buildPublishRequest({
+            title: 'Key revocation — earliest boundary',
+            contextType: 'key-revocation',
+            metadata: JSON.stringify({
+              revoked_key_fingerprint: revokedFp,
+              compromised_since: '2026-03-01T00:00:00.000Z',
+              reason: 'earliest known compromise boundary',
+            }),
+          }),
+        ) as Record<string, unknown>),
+        ctx_id: r1CtxId,
+        lineage_id: LINEAGE_ID,
+        origin_registry: fixture.authority,
+        created_at: '2026-03-01T00:05:00.000Z',
+      };
+      // R2: the lineage HEAD — this is the one the webhook actually announces.
+      const r2 = producerSignedBody(fixture, producer, revokedFp);
+
+      await ctx.client.ingest(
+        webhookPayload(fixture, { agent_id: producer.agentDid }),
+        { runId: 'run-rev-lineage-1', secret: SECRET },
+      );
+      federationGetSpy.mockImplementation(async (url: string): Promise<FederationResponse> => {
+        if (url === `${fixture.baseUrl}/contexts/${encodeURIComponent(fixture.ctxId)}`) {
+          return { status: 200, contentType: 'application/json', body: JSON.stringify({ body: r2 }) };
+        }
+        if (url === `${fixture.baseUrl}/lineages/${encodeURIComponent(LINEAGE_ID)}`) {
+          return {
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify([
+              { body: r1, registry_state: { status: 'superseded' } },
+              { body: r2, registry_state: { status: 'active' } },
+            ]),
+          };
+        }
+        throw new Error(`unexpected federation fetch in test: ${url}`);
+      });
+
+      const n = await revocationSvc.sweep();
+      expect(n).toBe(1);
+
+      const facts = await revocationRepo.findByFingerprint(revokedFp, 'default');
+      expect(facts.map((f) => f.ctxId).sort()).toEqual([r1CtxId, fixture.ctxId].sort());
+      const r1Fact = facts.find((f) => f.ctxId === r1CtxId);
+      expect(r1Fact).toMatchObject({ compromisedSince: expect.stringContaining('2026-03-01'), lineageId: LINEAGE_ID });
+
+      // A cursor marks this lineage as freshly walked — a later sweep within
+      // the TTL must not re-walk it (the same idempotency guarantee the
+      // per-event path already has, extended to the lineage walk).
+      federationGetSpy.mockClear();
+      expect(await revocationSvc.sweep()).toBe(0);
+      expect(federationGetSpy).not.toHaveBeenCalled();
+    });
+
+    it('cursor semantics against the real database: zero facts for a lineage forces a walk even once a cursor already exists', async () => {
+      const fixture = fixtureFor('reg-lineage-cursor.example');
+      const producer = AcdpProducer.fromSeedDidKey(Buffer.alloc(32, 15));
+      // A cursor claiming this lineage was "already walked" — but with NO
+      // matching key_revocations rows, which must never be enough to skip a
+      // walk (migration 0022's header; see revocation-audit.service.ts's
+      // file-level doc comment on this exact rule).
+      await revocationRepo.recordLineageWalk('default', LINEAGE_ID, fixture.authority);
+      expect(await revocationRepo.countByLineage('default', LINEAGE_ID)).toBe(0);
+      expect(await revocationRepo.findFreshLineageCursor('default', LINEAGE_ID, fixture.authority, 60 * 60 * 1000)).toBe(true);
+
+      const revokedKey = AcdpProducer.fromSeedDidKey(Buffer.alloc(32, 16));
+      const revokedFp = fingerprintEd25519B64(revokedKey.publicKeyB64);
+      await ctx.client.ingest(
+        webhookPayload(fixture, { agent_id: producer.agentDid }),
+        { runId: 'run-rev-lineage-2', secret: SECRET },
+      );
+      stubRetrieval(fixture, producerSignedBody(fixture, producer, revokedFp));
+
+      const n = await revocationSvc.sweep();
+      expect(n).toBe(1);
+      // The lineage endpoint WAS hit despite the pre-existing fresh cursor.
+      expect(federationGetSpy).toHaveBeenCalledWith(`${fixture.baseUrl}/lineages/${encodeURIComponent(LINEAGE_ID)}`);
+      expect(await revocationRepo.findByFingerprint(revokedFp, 'default')).toHaveLength(1);
+    });
   });
 });

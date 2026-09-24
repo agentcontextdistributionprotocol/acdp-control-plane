@@ -511,3 +511,30 @@
   did:key/did:web Ed25519 producer. Reversible/fixable by either alternative above,
   neither of which touches `key_revocations`' schema.
 - **Status:** UNCONFIRMED
+
+## Lineage cursor TTL hardcoded rather than config-exposed (Phase 13)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the lineage-walk cursor freshness window is a re-walk-cadence tuning
+  knob, not a correctness-affecting value — the "zero facts forces a walk" rule
+  (Phase 12's migration 0022 comment, transcribed into Phase 13) already guarantees
+  a stale-or-absent cursor is never trusted when it matters, so the TTL only governs
+  how often an already-fully-walked, already-fact-bearing lineage gets re-walked for
+  no new information.
+- **Chose:** a hardcoded `LINEAGE_CURSOR_TTL_MS = 60 * 60 * 1000` (1 hour) constant
+  in `src/audit/revocation-audit.service.ts`, matching `DidWebResolverService`'s own
+  default DID-document cache duration (re-walking more often than the DID resolver's
+  own cache refreshes buys nothing — the resolution cost dominates). Phase 13's
+  `Files` list does not include `app-config.service.ts`, so adding a new env var was
+  out of scope for this phase specifically.
+- **Alternatives:** Expose it as `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS` via
+  `AppConfigService`, mirroring `KEY_REVOCATION_LOOKBACK_HOURS` — rejected only for
+  scope reasons (not in this phase's `Files`), not because it's the wrong shape long
+  term; a future phase or a follow-up can promote it without changing any behavior.
+- **Blast radius if wrong:** Low. Too long a TTL delays re-discovery of a lineage
+  member that appeared *after* a prior full walk (e.g., a newly published superseding
+  revocation) until the next sweep past the TTL boundary — a availability/latency
+  concern, not a correctness one, since the per-event verification path (this
+  revocation's own fact) is unaffected and still records immediately. Too short a TTL
+  just re-walks more often, costing extra federation/DID calls. Trivially adjustable
+  by editing the one constant; no schema or data migration involved either way.
+- **Status:** UNCONFIRMED

@@ -1,8 +1,15 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { REVOCATION_CONTEXT_TYPES } from '../contracts/revocation';
 import { DatabaseService } from '../db/database.service';
-import { ContextEvent, contextEvents, KeyRevocation, keyRevocations, NewKeyRevocation } from '../db/schema';
+import {
+  ContextEvent,
+  contextEvents,
+  KeyRevocation,
+  keyRevocationLineageCursors,
+  keyRevocations,
+  NewKeyRevocation,
+} from '../db/schema';
 
 const REVOCATION_TYPES = [...REVOCATION_CONTEXT_TYPES];
 
@@ -70,5 +77,82 @@ export class KeyRevocationRepository {
       .select()
       .from(keyRevocations)
       .where(and(eq(keyRevocations.tenantId, tenantId), eq(keyRevocations.revokedKeyFingerprint, fingerprint)));
+  }
+
+  /**
+   * How many verified facts we already hold for `lineageId` — used to decide
+   * whether a lineage walk is REQUIRED regardless of cursor freshness (a
+   * cached "walked" marker backed by zero facts is exactly the state that
+   * must never suppress a walk — migration 0022's header, and the Phase 13
+   * plan's "cursor semantics" test).
+   */
+  async countByLineage(tenantId: string, lineageId: string): Promise<number> {
+    const [row] = await this.database.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(keyRevocations)
+      .where(and(eq(keyRevocations.tenantId, tenantId), eq(keyRevocations.lineageId, lineageId)));
+    return row?.count ?? 0;
+  }
+
+  /**
+   * Whether a fresh (within `ttlMs`) "lineage L fully walked from registry
+   * R" marker exists — `false` if missing or stale. A freshness marker
+   * only — see `countByLineage` above for why its presence alone is never
+   * sufficient to skip a walk.
+   */
+  async findFreshLineageCursor(
+    tenantId: string,
+    lineageId: string,
+    registryAuthority: string,
+    ttlMs: number,
+  ): Promise<boolean> {
+    const rows = await this.database.db
+      .select({ walkedAt: keyRevocationLineageCursors.walkedAt })
+      .from(keyRevocationLineageCursors)
+      .where(
+        and(
+          eq(keyRevocationLineageCursors.tenantId, tenantId),
+          eq(keyRevocationLineageCursors.lineageId, lineageId),
+          eq(keyRevocationLineageCursors.registryAuthority, registryAuthority),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
+    if (!row) return false;
+    return Date.now() - new Date(row.walkedAt).getTime() < ttlMs;
+  }
+
+  /** Record "lineage L fully walked from registry R at now" — only ever called after a COMPLETE, successful walk. */
+  async recordLineageWalk(tenantId: string, lineageId: string, registryAuthority: string): Promise<void> {
+    await this.database.db
+      .insert(keyRevocationLineageCursors)
+      .values({ tenantId, lineageId, registryAuthority })
+      .onConflictDoUpdate({
+        target: [
+          keyRevocationLineageCursors.tenantId,
+          keyRevocationLineageCursors.lineageId,
+          keyRevocationLineageCursors.registryAuthority,
+        ],
+        set: { walkedAt: new Date().toISOString() },
+      });
+  }
+
+  /**
+   * Delete a lineage's freshness marker. Not called anywhere yet — this
+   * phase never deletes a fact row — but migration 0022's header makes the
+   * invariant explicit ("must be independently deletable... whenever fact
+   * rows for that lineage are"), so the method exists alongside the facts
+   * table it mirrors rather than being bolted on under time pressure later.
+   */
+  async deleteLineageCursor(tenantId: string, lineageId: string, registryAuthority: string): Promise<void> {
+    await this.database.db
+      .delete(keyRevocationLineageCursors)
+      .where(
+        and(
+          eq(keyRevocationLineageCursors.tenantId, tenantId),
+          eq(keyRevocationLineageCursors.lineageId, lineageId),
+          eq(keyRevocationLineageCursors.registryAuthority, registryAuthority),
+        ),
+      );
   }
 }

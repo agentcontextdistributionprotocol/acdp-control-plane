@@ -243,7 +243,40 @@ recording verdicts in its own table so the signals stay independent:
 | `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; dashboard `receiptCoverage` |
 | `CheckpointWitnessPollerService` | Fetches each log-advertising registry's `GET /log/checkpoint` and runs the RFC-ACDP-0012 checkpoint + consistency checks against the head it retains | `log_witness_checkpoints` + `log_witness_cursors` | `GET /registries/:authority/log-witness`; `log_witness_alert` SSE/webhook on state transition; `acdp_log_witness_alerts_total{reason}` |
 | `LogInclusionAuditService` | Rebuilds the leaf from OUR stored receipt, fetches `/log/proof?ctx_id=`, runs the RFC-ACDP-0012 inclusion check, and cross-binds against witnessed heads | `log_inclusion_audits` | verdicts `included` \| `invalid_proof` \| `not_logged` \| `no_log` \| `error` |
-| `RevocationAuditService` | Discovers `key-revocation` contexts by `context_type`, recomputes `content_hash`, verifies the body signature, then `AcdpVerifier.parseKeyRevocation` for the RFC-ACDP-0014 §4/§5 shape + not-self-signed checks; a `registry_attested` result additionally requires the §6 registry-binding cross-check | `key_revocations` (permanent, retention-exempt) | `acdp_key_revocation_checks_total{status, trust_class}` |
+| `RevocationAuditService` | Discovers `key-revocation` contexts by `context_type`, recomputes `content_hash`, verifies the body signature, then `AcdpVerifier.parseKeyRevocation` for the RFC-ACDP-0014 §4/§5 shape + not-self-signed checks; a `registry_attested` result additionally requires the §6 registry-binding cross-check; then walks the revocation's full lineage (RFC-ACDP-0014 §7, below) | `key_revocations` (permanent, retention-exempt) + `key_revocation_lineage_cursors` (TTL freshness markers) | `acdp_key_revocation_checks_total{status, trust_class}` |
+
+**The §7 lineage walk.** A single webhook-delivered revocation only proves
+one context exists; RFC-ACDP-0014 §4's earliest-`compromised_since` rule is
+defined over the *whole lineage*, including members this control plane was
+never webhooked about (published before enrollment, or naming an earlier
+key). After persisting a freshly-verified event's own fact,
+`RevocationAuditService` walks that lineage via `GET /lineages/{lineage_id}`
+— **never** `GET /lineages/{lineage_id}/current`, because a lineage whose
+members are all superseded or retracted 404s there (RFC-ACDP-0013 §8.3),
+which is exactly the case the fold most needs. Two rules are easy to get
+backwards and are worth stating plainly: **supersession does not disarm** a
+revocation unless the superseding context is itself a revocation of the same
+signer class (RFC-ACDP-0003 §3.1 constrains supersession by `agent_id`/
+version/lineage, but not by `type`), and **retraction does not un-revoke** —
+a retracted revocation still counts in the fold. The walk's failure
+discipline (`src/audit/revocation-lineage.ts`) is deliberately asymmetric: a
+member that fails verification *permanently* is dropped with a warning and
+the rest still fold (otherwise one injected garbage member suppresses every
+genuine revocation in the lineage — a denial of service the walk exists to
+avoid), while a member that fails *transiently* (DID host unreachable,
+registry erroring) aborts the **whole** walk with no partial fold recorded —
+a dropped-but-would-have-been-earlier member would silently move the fold
+later, a genuine false authorization rather than a mere omission.
+`classifyLineageFailure` is the one place this transient/permanent (plus a
+third, "hard" — a lineage too large to fetch safely, aborted the same as
+exceeding `MAX_LINEAGE_WALKS`) classification lives, shared by this walk and
+the per-event fetch above. A `key_revocation_lineage_cursors` row is a
+TTL-bounded freshness marker only, written *exclusively* on a fully
+successful walk — every failure kind leaves it unset so the next sweep
+retries — and its presence alone is never sufficient to skip a walk: if
+`key_revocations` currently holds zero facts for a lineage, the walk runs
+regardless of cursor freshness, because a cached "walked, found nothing"
+marker suppressing a walk is precisely how a revocation gets missed.
 
 On top of witnessing, the CP can **cosign**: a checkpoint that passes the
 RFC-ACDP-0015 witness obligation is signed with a dedicated Ed25519 witness key

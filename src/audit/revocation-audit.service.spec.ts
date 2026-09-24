@@ -137,6 +137,9 @@ describe('RevocationAuditService', () => {
     revocationRepo = {
       findCandidates: jest.fn().mockResolvedValue([]),
       record: jest.fn().mockResolvedValue({}),
+      countByLineage: jest.fn().mockResolvedValue(0),
+      findFreshLineageCursor: jest.fn().mockResolvedValue(false),
+      recordLineageWalk: jest.fn().mockResolvedValue(undefined),
     };
     registryRepo = {
       findByAuthority: jest.fn().mockResolvedValue({ baseUrl: 'https://reg.example' }),
@@ -467,6 +470,119 @@ describe('RevocationAuditService', () => {
       const sinceMs = Date.parse(sinceIso);
       expect(before - sinceMs).toBeGreaterThanOrEqual(60 * 60 * 1000 - 1000);
       expect(before - sinceMs).toBeLessThan(60 * 60 * 1000 + 5000);
+    });
+
+    // ── §7 lineage walk wiring (Phase 13) ─────────────────────────────────
+    describe('lineage walk', () => {
+      const LINEAGE = 'lin:sha256:' + 'c'.repeat(64);
+      const OTHER_CTX = 'acdp://reg.example/00000000-0000-4000-8000-000000000000';
+
+      function mockFetch(contextBody: Record<string, unknown>, lineageMembers: Record<string, unknown>[] | null) {
+        federationClient.get.mockImplementation(async (url: string) => {
+          if (url.includes('/lineages/')) {
+            if (lineageMembers === null) {
+              return { status: 503, contentType: 'application/json', body: '' };
+            }
+            return {
+              status: 200,
+              contentType: 'application/json',
+              body: JSON.stringify(lineageMembers.map((body) => ({ body, registry_state: { status: 'active' } }))),
+            };
+          }
+          return { status: 200, contentType: 'application/json', body: JSON.stringify({ body: contextBody }) };
+        });
+      }
+
+      it('walks a newly-verified event\'s lineage and persists every OTHER member it finds', async () => {
+        revocationRepo.findCandidates.mockResolvedValue([makeEvent()]);
+        const otherMember = makeBody({ ctx_id: OTHER_CTX, lineage_id: LINEAGE });
+        mockFetch(makeBody({ lineage_id: LINEAGE }), [makeBody({ lineage_id: LINEAGE }), otherMember]);
+
+        await svc.sweep();
+
+        expect(federationClient.get).toHaveBeenCalledWith(expect.stringContaining(`/lineages/${encodeURIComponent(LINEAGE)}`));
+        // Once via the per-event path, plus once per lineage member the walk
+        // re-verifies (including the triggering ctx_id itself — the walk has
+        // no reason to skip it; the real repository's onConflictDoNothing is
+        // what makes the re-observation idempotent, not this call count).
+        expect(revocationRepo.record).toHaveBeenCalledTimes(3);
+        expect(revocationRepo.record).toHaveBeenCalledWith(expect.objectContaining({ ctxId: OTHER_CTX, lineageId: LINEAGE }));
+        expect(revocationRepo.recordLineageWalk).toHaveBeenCalledWith('default', LINEAGE, AUTHORITY);
+      });
+
+      it('does not walk when the lineage already has facts and a fresh cursor', async () => {
+        revocationRepo.findCandidates.mockResolvedValue([makeEvent()]);
+        revocationRepo.countByLineage.mockResolvedValue(1);
+        revocationRepo.findFreshLineageCursor.mockResolvedValue(true);
+        mockFetch(makeBody({ lineage_id: LINEAGE }), [makeBody({ lineage_id: LINEAGE })]);
+
+        await svc.sweep();
+
+        expect(federationClient.get).not.toHaveBeenCalledWith(expect.stringContaining('/lineages/'));
+        expect(revocationRepo.recordLineageWalk).not.toHaveBeenCalled();
+      });
+
+      it('walks anyway when facts exist but the cursor is stale — cursor freshness alone never suffices', async () => {
+        revocationRepo.findCandidates.mockResolvedValue([makeEvent()]);
+        revocationRepo.countByLineage.mockResolvedValue(1);
+        revocationRepo.findFreshLineageCursor.mockResolvedValue(false);
+        mockFetch(makeBody({ lineage_id: LINEAGE }), [makeBody({ lineage_id: LINEAGE })]);
+
+        await svc.sweep();
+
+        expect(revocationRepo.recordLineageWalk).toHaveBeenCalledWith('default', LINEAGE, AUTHORITY);
+      });
+
+      it('walks anyway when the cursor is fresh but zero facts are known for the lineage (the security control)', async () => {
+        revocationRepo.findCandidates.mockResolvedValue([makeEvent()]);
+        revocationRepo.countByLineage.mockResolvedValue(0);
+        revocationRepo.findFreshLineageCursor.mockResolvedValue(true);
+        mockFetch(makeBody({ lineage_id: LINEAGE }), [makeBody({ lineage_id: LINEAGE })]);
+
+        await svc.sweep();
+
+        // countByLineage is checked BEFORE cursor freshness is even consulted.
+        expect(revocationRepo.findFreshLineageCursor).not.toHaveBeenCalled();
+        expect(revocationRepo.recordLineageWalk).toHaveBeenCalledWith('default', LINEAGE, AUTHORITY);
+      });
+
+      it('does not record a cursor when the walk fails (leaves it unset so the next sweep retries)', async () => {
+        revocationRepo.findCandidates.mockResolvedValue([makeEvent()]);
+        mockFetch(makeBody({ lineage_id: LINEAGE }), null); // 503 on the lineage endpoint
+        await svc.sweep();
+        expect(revocationRepo.recordLineageWalk).not.toHaveBeenCalled();
+        // The triggering event's own fact is still recorded — only the walk failed.
+        expect(revocationRepo.record).toHaveBeenCalledTimes(1);
+      });
+
+      it('skips ALL lineage walks this pass when distinct lineages exceed MAX_LINEAGE_WALKS', async () => {
+        const events = Array.from({ length: 101 }, (_, i) =>
+          makeEvent({
+            id: `11111111-1111-4111-8111-1111111111${String(i).padStart(2, '0')}`,
+            ctxId: `acdp://reg.example/${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`,
+            lineageId: `lin:sha256:${String(i).padStart(64, '0')}`,
+          }),
+        );
+        revocationRepo.findCandidates.mockResolvedValue(events);
+        federationClient.get.mockImplementation(async (url: string) => {
+          if (url.includes('/lineages/')) throw new Error('lineage walk must not run this pass');
+          const ctxId = decodeURIComponent(url.split('/contexts/')[1]);
+          const idx8 = ctxId.split('/').pop()!.split('-')[0];
+          const lineageId = `lin:sha256:${idx8.padStart(64, '0')}`;
+          return {
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ body: makeBody({ ctx_id: ctxId, lineage_id: lineageId }) }),
+          };
+        });
+
+        const n = await svc.sweep();
+
+        expect(n).toBe(101);
+        expect(revocationRepo.recordLineageWalk).not.toHaveBeenCalled();
+        // The 101 triggering events' own facts are still recorded independently.
+        expect(revocationRepo.record).toHaveBeenCalledTimes(101);
+      });
     });
   });
 
