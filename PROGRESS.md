@@ -2983,3 +2983,76 @@ implemented and verified, all 3 PRs merged (#165, #167, #168), and every
 assumption logged along the way reconciled to CONFIRMED/RESOLVED except
 one deliberately-deferred follow-up task (ecdsa-p256 lineage-walk status,
 above). Nothing further pending on this plan.
+
+### Post-plan review (whole-session bug sweep)
+Prompted by an explicit ask to look for bugs/issues across everything
+shipped this session, not just re-derive it. Five independent fresh-Opus
+review passes ran in parallel, each scoped to a different area of the
+cumulative diff (`git diff` from before PR1 to the end of the reconcile
+pass, 80 files / ~14.5k insertions): revocation verification core (Phases
+10-13), §7 classification + Phase 15 retroactive re-audit, witness
+cosigning + quorum (Phases 5-9), the acdp SDK bump + did:web + federation
+proxy (Phases 1-4), and a cross-cutting config/migrations/scale pass. Each
+was told what's already known-and-accepted (issue #170, the
+already-fixed `findCandidates` ordering, the documented retention/
+batch-size tradeoffs) so it wouldn't waste effort re-flagging settled
+ground.
+
+Four of five came back clean — no findings beyond what was already known.
+The fifth found a real one:
+
+- **HIGH — `ReceiptAuditRepository.findRevocationAmendmentCandidates`
+  (Phase 15's fan-out) had no `ORDER BY`.** Its caller
+  (`reauditForFingerprint`) applies `KEY_REVOCATION_ATTESTED_SCOPE`
+  per-row and skips (without amending) any row that filters to `'none'`
+  under that scope — correctly, since that row must stay re-eligible for
+  a later scope-config change. But with no ordering, an unordered
+  `LIMIT`-bounded scan returns the identical subset every sweep against
+  unchanged data, so a fingerprint with enough permanently
+  scope-excluded rows could starve a genuinely-amendable row (a
+  `producer_signed` revocation, or a same-registry one) out of every
+  sweep forever — fail-open for a security-relevant classification. Same
+  bug class as the `KeyRevocationRepository.findCandidates` ordering fix
+  from the reconcile pass above, missed here because the two
+  repositories were built and reviewed separately.
+
+  Verified directly (read `reauditForFingerprint` and
+  `filterApplicableRevocations` myself, confirmed the starvation
+  scenario is real) before touching anything. Fixed with `ORDER BY
+  random()` — each sweep draws a fresh sample instead of the same fixed
+  subset, so genuinely-amendable rows converge across repeated sweeps
+  instead of being blocked forever; a true keyset-pagination cursor
+  would be more precise but adds persisted per-fingerprint state and
+  complicates re-surfacing on a scope-config change, disproportionate
+  for a background reconciliation sweep whose design already accepts
+  multi-sweep convergence delay. Also corrected
+  `drizzle/0024_revocation_reaudit.sql`'s comment, which described the
+  query's steady-state predicate as the bare `eq(status,'none')` branch
+  alone — the only production caller guards on an empty fact set before
+  calling, so the runtime predicate is always the `OR` form
+  (comment-only, no SQL statement changed). Added a regression test
+  (`trust-hardening.integration.spec.ts`) proving repeated calls sample
+  across the eligible set rather than returning the same subset every
+  time.
+
+  One MEDIUM doc-accuracy finding from the same review pass (the
+  migration's benchmark justification implicitly assumed the dead
+  null-predicate branch) was folded into the same comment fix rather
+  than filed separately.
+
+  Gate: tsc/lint/conventions clean; unit 78 suites/1115 passed/4
+  pre-existing skips; integration 31 suites/211 passed (disposable
+  Postgres port 5435, torn down after). Independently re-verified by a
+  fresh Opus subagent, skeptical of the finding itself, not just the
+  fix: confirmed the bug is real, confirmed `ORDER BY random()` is
+  proportionate rather than under-engineered, confirmed no regression
+  risk (no caller depends on result order, no FK constraints affected),
+  confirmed the new test is statistically sound. Verdict: PASS.
+
+  Shipped as PR #171 (`fix/revocation-reaudit-candidate-starvation`), CI
+  green on all 3 required checks, squash-merged `fa4fedf`, branch
+  deleted.
+
+No other findings across the other four review areas. The whole-plan
+implementation holds up under an independent adversarial re-read, with
+this one exception now closed.
