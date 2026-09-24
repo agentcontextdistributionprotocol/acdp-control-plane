@@ -2324,3 +2324,4 @@ PR2, then start PR3 (Phases 10-15, RFC-ACDP-0014 producer key-revocation, branch
   trail matching the actual diff, and confirmed `ASSUMPTIONS.md` has zero entries tagged
   to this plan (nothing to `/reconcile` before merge).
 - `pushed rfc-0014/pr2-witness-fixes 3b04ed1`.
+- `PR #167 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/167`
