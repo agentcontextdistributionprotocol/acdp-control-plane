@@ -591,9 +591,10 @@
   did:web walk-abort bug as one piece of work — deliberately not attempted in this
   reconcile pass, since it changes fail-open/fail-closed semantics of an
   already-shipped, tested code path and deserves its own phase with its own
-  verification gate, not a same-day patch.
+  verification gate, not a same-day patch. Tracked as
+  [issue #170](https://github.com/agentcontextdistributionprotocol/acdp-control-plane/issues/170).
 - **Status:** UNCONFIRMED — facts corrected, resolution DEFERRED to a follow-up
-  phase (see `DECISIONS.md`). Blast radius unchanged at Medium for a P-256-only
+  phase (see `DECISIONS.md` and issue #170). Blast radius unchanged at Medium for a P-256-only
   deployment; the corrected picture is not more dangerous in practice than
   originally assessed (mixed Ed25519+P-256 lineages remain a narrow trigger), but
   the wrong-fix risk this correction heads off is real.
