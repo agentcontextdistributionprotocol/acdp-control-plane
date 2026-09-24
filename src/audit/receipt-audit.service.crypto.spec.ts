@@ -651,25 +651,53 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
       expect(verdict.keyRevocationStatus).toBe('none');
     });
 
-    it('KEY_REVOCATION_ATTESTED_SCOPE=same_registry (default) excludes a registry-attested revocation from a different registry', async () => {
-      keyRevocationRepo.findByFingerprint.mockResolvedValue([
-        makeRevocationRow({
-          trustClass: 'registry_attested',
-          publisher: `did:web:${AUTHORITY}`,
-          originAuthority: 'other-registry.example',
-        }),
-      ]);
-      const verdict = await svc.auditEvent(makeEvent());
-      expect(verdict.keyRevocationStatus).toBe('none');
-    });
+    it(
+      'KEY_REVOCATION_ATTESTED_SCOPE=same_registry (default) applies a registry-attested ' +
+        'revocation from the SAME serving registry, regardless of its unauthenticated ' +
+        "origin_registry claim (publisher, not originAuthority, is what's authenticated)",
+      async () => {
+        keyRevocationRepo.findByFingerprint.mockResolvedValue([
+          makeRevocationRow({
+            trustClass: 'registry_attested',
+            publisher: `did:web:${AUTHORITY}`,
+            // Deliberately a DIFFERENT claimed origin than AUTHORITY — proves
+            // originAuthority plays no role in the scope decision.
+            originAuthority: 'other-registry.example',
+          }),
+        ]);
+        const verdict = await svc.auditEvent(makeEvent());
+        expect(verdict.keyRevocationStatus).not.toBe('none');
+        expect(verdict.keyRevocationStatus).toBe('pre_compromise');
+        expect(verdict.keyRevocationTrustClass).toBe('registry_attested');
+      },
+    );
+
+    it(
+      'KEY_REVOCATION_ATTESTED_SCOPE=same_registry (default) excludes a registry-attested ' +
+        'revocation attested by a DIFFERENT registry, even when its unauthenticated ' +
+        'origin_registry claim names OUR registry',
+      async () => {
+        keyRevocationRepo.findByFingerprint.mockResolvedValue([
+          makeRevocationRow({
+            trustClass: 'registry_attested',
+            publisher: 'did:web:other-registry.example',
+            // Deliberately claims OUR authority as the origin — proves this
+            // claim cannot forge same-registry scope for a revocation a
+            // DIFFERENT registry actually attested.
+            originAuthority: AUTHORITY,
+          }),
+        ]);
+        const verdict = await svc.auditEvent(makeEvent());
+        expect(verdict.keyRevocationStatus).toBe('none');
+      },
+    );
 
     it('KEY_REVOCATION_ATTESTED_SCOPE=global applies a registry-attested revocation from a different registry', async () => {
       config.keyRevocationAttestedScope = 'global';
       keyRevocationRepo.findByFingerprint.mockResolvedValue([
         makeRevocationRow({
           trustClass: 'registry_attested',
-          publisher: `did:web:${AUTHORITY}`,
-          originAuthority: 'other-registry.example',
+          publisher: 'did:web:other-registry.example',
         }),
       ]);
       const verdict = await svc.auditEvent(makeEvent());

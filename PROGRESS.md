@@ -2792,3 +2792,91 @@ the CUMULATIVE Phases 10-15 diff) before handing PR3 (Phases 10-15,
 branch `rfc-0014/pr3-key-revocation`) to `/ship`. At the very end of the whole
 plan (after PR3 merges), run `/reconcile` to close out every `ASSUMPTIONS.md`
 entry logged across all 15 phases, not just this one.
+
+### Finalization — whole-feature pass over PR3 (Phases 10-15)
+- Ran the `/implement` §4 finalization procedure: full test re-run from a
+  clean state, seam-coverage review across all 6 phases, doc staleness
+  sweep, tracked-file consistency check, then one Opus verification pass
+  over the CUMULATIVE diff (`git diff origin/main...HEAD`, all 6 commits)
+  against the plan as a whole — not per-phase.
+- Verdict: **GAPS → (closing now)**, round 1. Verifier: fresh Opus
+  general-purpose subagent (not Fable — consequential, not itself a one-way
+  door). Round 1 independently re-ran the full local gate (all green,
+  matching the executor's own numbers exactly), confirmed the `/implement`
+  finalization checklist item by item (config fail-fast, graceful SDK-
+  version degradation, `filterApplicableRevocations` wiring shared by both
+  the live and Phase 15 fan-out paths, Phase 12↔15 `key_revocations`
+  consistency, tracked-file/plan/ASSUMPTIONS.md self-consistency), and found
+  **1 real, previously-undetected cross-phase bug** that no single phase's
+  own review could have caught (each phase reviewer only saw its own diff).
+- **GAP 1 (Medium) — `KEY_REVOCATION_ATTESTED_SCOPE=same_registry` (the
+  default) keyed its match on an UNAUTHENTICATED field, directly against
+  Phase 12's own written instruction to Phase 14.**
+  `filterApplicableRevocations` (`src/audit/receipt-audit.service.ts`)
+  compared `r.originAuthority === registryAuthority` — but
+  `key_revocations.origin_authority` is written from the revocation body's
+  OWN `origin_registry` claim, which sits outside `content_hash`/signature
+  coverage (proven by the integration fixtures merging it in post-signing)
+  — an attacker-steerable value, not the registry actually reached.
+  `revocation-audit.service.ts` already carried an explicit comment at the
+  write site warning "a Phase 14+ same_registry scope decision must key off
+  `ev.registryAuthority` … never this column" — Phase 14 read a column
+  instead of reading that comment. Two failure directions in the default
+  config: (a) false negative — a revocation genuinely attested by the very
+  registry serving an event was excluded whenever the body claimed a
+  different `origin_registry`; (b) false positive — an enrolled registry
+  could set `origin_registry` to a victim registry's authority on its OWN
+  attested revocation (its `publisher` still passes the §6 binding check)
+  and falsely disarm trust for every event that victim registry serves for
+  the named fingerprint — exactly the asymmetric hazard (a false positive
+  actively destroys trust) the plan's Enterprise-concerns section is shaped
+  around. **Closed** — matched on `r.publisher === authorityToDidWeb(registryAuthority)`
+  instead: `publisher` IS authenticated for a `registry_attested` row
+  (`crossCheckRegistryBinding` pins it to `authorityToDidWeb(servingAuthority)`
+  at persistence time, Phase 11's §6 check), so this is exactly "the
+  registry we actually verified attested this revocation." Both call sites
+  (the live path and the Phase 15 fan-out) share one `filterApplicableRevocations`
+  helper, so the fix applies uniformly with no risk of the two paths
+  drifting. The one guarding unit test had locked in the WRONG semantic
+  (verifier mutation-proved this: reverting to the correct `publisher`
+  comparison failed exactly that test) — rewritten into two tests proving
+  BOTH directions (`same_registry` applies a same-attester revocation
+  regardless of its `origin_registry` claim; excludes a different-attester
+  revocation even when its claim names OUR registry), plus the analogous
+  `reauditForFingerprint` per-row test and the `global`-scope test's fixture
+  corrected to a genuinely cross-registry `publisher`.
+- **GAP 2 (Low) — `docs/CONFIGURATION.md`'s Phase 15 paragraph was written
+  during Phase 15's own gap-closure but never committed**, and `PROGRESS.md`'s
+  Phase 15 "Files touched" list omitted it. **Closed** — included in this
+  finalization commit; `PROGRESS.md`'s Phase 15 entry above should be read
+  as if `docs/CONFIGURATION.md` were listed there too.
+- **Housekeeping (3, all closed):** a stale comment in
+  `revocation-audit.service.ts` still described Phase 15's ORIGINAL
+  amend-once predicate, superseded during Phase 15's own gap-closure —
+  corrected to describe the final (sealed-rows-only) behavior without
+  restating the exact SQL, so it can't go stale again the same way.
+  `CLAUDE.md`'s Phase 15 paragraph never named
+  `acdp_receipt_audit_revocation_reaudits_total` even though `docs/ARCHITECTURE.md`
+  did — added, with the same "deliberately separate from Phase 14's metric"
+  rationale already given elsewhere. `docs/API.md`'s dashboard `keyRevocation`
+  tile description didn't mention that it's window-scoped on `checked_at`,
+  which Phase 15's amendment deliberately never touches — a retroactively
+  amended row that has already scrolled out of the window stays invisible
+  on that tile forever, even though `trust.revoked` on the event's own
+  `GET /runs/:runId` is unaffected — added one clarifying sentence.
+- Gates (post-fix, run by the executor): `tsc --noEmit` (both tsconfigs) 0 ·
+  `lint` 0 · `check:conventions` 6✓ · `check:build` both builds 143 files,
+  agree · unit 78 suites/1111 passed/4 skipped (pre-existing, unrelated)/1115
+  total (net +1 over Phase 15's own commit: one scope test split into two,
+  one rewritten in place) · integration 31 suites/210 passed, disposable
+  Postgres port 5435, torn down after.
+- Files touched (this finalization pass, beyond Phase 15's own commit):
+  `src/audit/receipt-audit.service.ts` (the `filterApplicableRevocations`
+  fix), `src/audit/receipt-audit.service.crypto.spec.ts`,
+  `src/audit/receipt-audit.service.spec.ts`, `src/audit/revocation-audit.service.ts`
+  (stale-comment fix), `docs/CONFIGURATION.md`, `CLAUDE.md` (local,
+  gitignored), `docs/API.md`.
+Next: re-verify this finalization round (give the fresh verifier the gap
+list above rather than reviewing cold, per the skill's convention) — on
+PASS, hand PR3 (Phases 10-15, branch `rfc-0014/pr3-key-revocation`) to
+`/ship`.

@@ -504,7 +504,11 @@ KPIs over the window (default `24h`), tenant-scoped:
 RFC-ACDP-0014 §7 tile (Phase 14) — window-scoped on `receipt_audits.checked_at`
 like `receiptCoverage`/`didMethods` above, not a current-posture tile like
 `logWitness`; see `GET /runs/:runId`'s `trust.revoked` above for the per-event
-detail these counts summarize.
+detail these counts summarize. A retroactive amendment (Phase 15) deliberately
+never touches `checked_at` (see `docs/ARCHITECTURE.md`'s "Retroactive
+re-audit" section), so a row this tile's window has already scrolled past
+stays invisible here even after being amended — `trust.revoked` on the
+row's own `GET /runs/:runId` is unaffected by the window and always current.
 
 ---
 

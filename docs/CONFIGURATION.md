@@ -255,6 +255,12 @@ revocation's `publisher` must pass the §6 registry-binding check against the se
 registry's own DID and its advertised `capabilities.registry_did`, both via the
 canonical `authorityToDidWeb` encoder — see `src/audit/revocation-binding.ts`).
 
+Classification also runs **retroactively**: a revocation recorded after an event was
+already audited amends that event's stored verdict in place on a later sweep, rather
+than leaving it permanently reporting the pre-revocation result — no separate env var,
+it rides the same `KEY_REVOCATION_CHECK_ENABLED` and reuses `RECEIPT_AUDIT_BATCH_SIZE`
+as its fan-out cap. See `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section.
+
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `KEY_REVOCATION_CHECK_ENABLED` | bool | `false` | Enable §7 revocation classification. Requires `RECEIPT_AUDIT_ENABLED=true`. |

@@ -556,18 +556,29 @@ describe('ReceiptAuditService (structural checks, pre-receipt SDK)', () => {
       config.keyRevocationCheckEnabled = true;
       config.keyRevocationAttestedScope = 'same_registry';
       auditRepo.findRevocationAmendmentCandidates.mockResolvedValue([
+        { eventId: 'evt-same', status: 'verified', receiptCreatedAt: RECEIPT_AT, registryAuthority: AUTHORITY },
         { eventId: 'evt-foreign', status: 'verified', receiptCreatedAt: RECEIPT_AT, registryAuthority: 'other.example' },
       ]);
-      // registry_attested, originAuthority = AUTHORITY — does not cover a row
-      // whose OWN event came from 'other.example' under same_registry scope.
+      // registry_attested, publisher = did:web:AUTHORITY — the AUTHENTICATED
+      // attesting registry (crossCheckRegistryBinding pins it at persistence
+      // time), never the unauthenticated originAuthority claim. Covers the
+      // row served by AUTHORITY but not the row served by 'other.example',
+      // proving the scope check runs against each row's OWN
+      // registryAuthority, not a single fingerprint-wide value.
       keyRevocationRepo.findByFingerprint.mockResolvedValue([
-        revocation({ trustClass: 'registry_attested', originAuthority: AUTHORITY }),
+        revocation({ trustClass: 'registry_attested', publisher: `did:web:${AUTHORITY}` }),
       ]);
+      auditRepo.amendKeyRevocation.mockResolvedValue(true);
 
       const n = await svc.reauditForFingerprint('default', FP);
 
-      expect(n).toBe(0);
-      expect(auditRepo.amendKeyRevocation).not.toHaveBeenCalled();
+      expect(n).toBe(1);
+      expect(auditRepo.amendKeyRevocation).toHaveBeenCalledTimes(1);
+      expect(auditRepo.amendKeyRevocation).toHaveBeenCalledWith(
+        'default',
+        'evt-same',
+        expect.objectContaining({ trustClass: 'registry_attested' }),
+      );
     });
 
     it('never derives receiptCreatedAt from a row whose original status was not verified/verified_historical', async () => {

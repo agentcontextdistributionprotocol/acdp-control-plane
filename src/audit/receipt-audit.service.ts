@@ -550,6 +550,23 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
    * live per-event classification above and the retroactive re-audit fan-out
    * below, so the two paths can never drift on which revocations a given
    * registry authority's events are allowed to be classified against.
+   *
+   * `same_registry` compares against `r.publisher`, never `r.originAuthority`.
+   * `publisher` is AUTHENTICATED for a `registry_attested` row —
+   * `crossCheckRegistryBinding` (`revocation-binding.ts`) pins it to
+   * `authorityToDidWeb(servingAuthority)` at persistence time (§6), so it is
+   * exactly "the registry we actually verified attested this revocation."
+   * `originAuthority`, by contrast, is the revocation BODY's own
+   * `origin_registry` claim — outside `content_hash`/signature coverage (see
+   * the doc comment where it's written, `revocation-audit.service.ts`), so an
+   * unauthenticated, attacker-steerable value. Keying scope off it would let
+   * an enrolled registry falsely scope its OWN attested revocation onto
+   * events served by a DIFFERENT registry entirely (by claiming that
+   * registry as the body's `origin_registry`) — and would equally miss a
+   * revocation genuinely attested by the very registry serving THIS event,
+   * whenever its body happens to claim a different lineage origin. Neither
+   * failure mode is acceptable for a scope gate whose whole point is "which
+   * registry actually vouches for this."
    */
   private filterApplicableRevocations(
     all: KeyRevocation[],
@@ -563,8 +580,10 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
         case 'global':
           return true;
         case 'same_registry':
-        default:
-          return r.originAuthority === registryAuthority;
+        default: {
+          const expectedPublisher = authorityToDidWeb(registryAuthority);
+          return expectedPublisher !== null && r.publisher === expectedPublisher;
+        }
       }
     });
   }

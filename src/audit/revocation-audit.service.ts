@@ -159,9 +159,10 @@
  * — `receipt_audits` amendments and `ReceiptAuditService.sweep()`'s own
  * inserts race under two DIFFERENT locks by design (see the plan's Phase 15
  * edge cases): they touch disjoint rows in practice (one sweep inserts
- * brand-new verdicts, the other amends only rows already at
- * `key_revocation_status = 'none'`), so no additional coordination is
- * needed. A failure re-auditing one fingerprint is logged and never aborts
+ * brand-new verdicts, the other only ever amends already-sealed rows —
+ * never `status`, so an unaudited row is never a re-audit target), so no
+ * additional coordination is needed. A failure re-auditing one fingerprint
+ * is logged and never aborts
  * the rest — same "continue past one bad item" discipline as the lineage
  * walk above.
  */
