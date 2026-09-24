@@ -2924,3 +2924,62 @@ PR3 was the last PR of the whole 15-phase `plans/rfc-0014-0015-upgrade.md`
 plan (PR1 #165, PR2 #167, PR3 #168, all merged). Next: run `/reconcile`
 across the full plan to close out every `ASSUMPTIONS.md` entry logged
 across all three PRs, not just PR3's.
+
+### Reconcile (whole plan)
+Ran at the end of the plan (ticked in as an autonomous-loop check with no
+open PR/conversation work pending). All 9 remaining `UNCONFIRMED` entries
+were from Phases 12-15 (PR3) — PR1/PR2's own entries were already
+CONFIRMED/RESOLVED/WITHDRAWN during earlier phases, so nothing predated
+this pass. Each entry got an independent fresh-Opus analysis (given the
+entry plus the current code, not the original reasoning) per the skill's
+low-blast-radius lane — none of the 9 were genuine one-way doors (schema/
+API/auth/migration/external-dependency), so all settled without a stop.
+Full record: `DECISIONS.md` (9 new entries, 2026-09-23).
+
+- 7 CONFIRMED as designed (2 with corrected framing: "candidate selection
+  on key_fingerprint" — status was simply never flipped during Phase 15's
+  own gap-closure, corrected two overstated claims in its blast-radius text,
+  and added a missing sibling ASSUMPTIONS.md entry for the retention-orphan
+  limitation both docs already pointed at; "reusing RECEIPT_AUDIT_BATCH_SIZE"
+  — the Alternatives clause had the divergence direction backwards, the
+  fan-out is actually the CHEAPER of the two workloads).
+- 1 CHANGED and applied: lineage-walk cursor TTL promoted from a hardcoded
+  constant to `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS` (default 1,
+  byte-identical out of the box) — last phase of the plan, no later phase
+  left to promote it in.
+- 1 found and fixed a genuine correctness gap beyond its own scope:
+  `KeyRevocationRepository.findCandidates` was ordering oldest-first: since
+  this sweep (unlike receipt-audit's) writes nothing on `invalid`/
+  `unavailable`, a one-time backlog of >`limit` permanently-invalid old
+  candidates could form a non-draining head-of-line block, starving a
+  genuinely new revocation for its whole 30-day window and then losing the
+  fact permanently once it aged out — fail-open for §7 classification. Fixed
+  to newest-first (`desc(contextEvents.createdAt)`), one line, no schema.
+- 1 left UNCONFIRMED, deliberately: the ecdsa-p256 entry's own proposed
+  "cheap fix" (flip did:key P-256 to the same `unavailable` status as
+  did:web) turned out to be fail-open for Ed25519 — `unavailable` aborts an
+  entire §7 lineage walk while `invalid` only drops the bad member, so one
+  P-256 member in a mixed-signer lineage would permanently block every
+  Ed25519 fact in that lineage. Also found the entry's own facts wrong (the
+  P-256 did:key body genuinely verifies before being rejected for an
+  unrelated reason). Corrected the facts, specified the real fix (a third
+  lineage-walk status value) as a follow-up task, did NOT implement it here
+  — changes fail-open/fail-closed semantics of already-shipped, tested code
+  and deserves its own phase + verification gate.
+
+Gate: full unit suite (`ACDP_REQUIRE_CONFORMANCE=1`) 78 suites/1115
+passed/4 skipped (pre-existing); integration 31 suites/210 passed
+(disposable Postgres port 5435, torn down after); tsc/lint/conventions all
+clean.
+
+Shipped as PR #169 (`chore/reconcile-rfc-0014-0015`), same CI-gated
+push→PR→watch→merge flow as PR1-3 (no separate verification-gate agent
+spawned — each of the 9 entries already got its own independent analysis,
+which was the actual review). CI green on all 3 jobs, squash-merged
+77c562961a98da6eca44bf90bda32d2f82acfbd3, local branch deleted.
+
+This closes out `plans/rfc-0014-0015-upgrade.md` end to end: all 15 phases
+implemented and verified, all 3 PRs merged (#165, #167, #168), and every
+assumption logged along the way reconciled to CONFIRMED/RESOLVED except
+one deliberately-deferred follow-up task (ecdsa-p256 lineage-walk status,
+above). Nothing further pending on this plan.
