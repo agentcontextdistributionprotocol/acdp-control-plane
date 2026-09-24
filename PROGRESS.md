@@ -2156,4 +2156,78 @@ it did, twice, confirming a clean no-op on retry).
   `test/integration/tenancy-isolation.integration.spec.ts`,
   `test/integration/log-witness.integration.spec.ts`,
   `plans/rfc-0014-0015-upgrade.md` (Phase 7 → DONE). No `ASSUMPTIONS.md` entries.
-Next: Phase 8 (witness key resolution — did:key witnesses and retired witness keys; B2, B3).
+
+## Phase 8 — Witness key resolution: did:key witnesses and retired witness keys (B2, B3)
+
+- 2026-09-23. Verdict: **PASS**, round 1. Verifier tier: fresh Opus (not Fable) — the
+  one schema change (migration 0021) is a single additive nullable column, the lowest-
+  risk migration shape possible, and the plan's own Approach section already reasoned
+  through the two defects' fix at planning time; no genuine one-way-door analysis was
+  left to do at implementation time.
+- B2 fix: `checkpoint-witness.service.ts`'s witness-key-resolution loop (inside
+  `consumeQuorumSafe`) now branches BEFORE falling through to `did:web` resolution — a
+  `did:key:z…` witness_id decodes LOCALLY via new `src/common/multibase.ts`
+  (`decodeEd25519Multibase`, a Result-type return since this file is NOT in
+  `ci-conventions.sh`'s `throw new Error` exemption list), with zero outbound HTTP.
+  `encodeEd25519Multibase` replaces the two previously copy-pasted base58/multicodec
+  encoders in `witness-signing.service.ts` and `cosign.ts` (deleted, both now import the
+  shared module) — no local `BASE58_ALPHABET` constant survives anywhere but
+  `multibase.ts` itself.
+- B3 fix: new `DidWebResolverService.resolveWitnessKey` delegates to the existing
+  `resolveReceiptKey` (RFC-ACDP-0010 §9 lifecycle-tolerant path — a key retired from
+  `assertionMethod` but retained in `verificationMethod` still verifies, `historical:
+  true`) rather than the strict assertionMethod-only `resolveKey` the code previously
+  (wrongly) used for a witness's own key. `QuorumReport`/`QuorumInputs` gain
+  `historicalWitnessedCount`/`historicalWitnessIds`, persisted via new
+  `drizzle/0021_witness_historical_quorum.sql` (`historical_witnessed_count integer` on
+  `log_witness_checkpoints`) and threaded through `LogWitnessRepository.updateQuorum`
+  (arity 8→9) exactly as Phase 7 threaded `freshWitnessedCount`.
+- Historical/native-host parity (the phase's most important correctness property,
+  independently traced by both me and the verifier): a historical witness's cosignature
+  is EXCLUDED from `witnessedCount`/`meetsQuorum` in BOTH evaluator branches — host
+  (`hostEvaluateQuorum`) skips historical ids before they can reach the `verified` set;
+  native (`nativeEvaluateQuorum`) strips historical ids from the `trustedWitnessIds` list
+  handed to the SDK's `evaluateWitnessQuorum` (which has no historical-key concept of its
+  own, so exclusion-from-input is the only way to keep it out of the binding's own
+  report). A shared `countHistoricalWitnesses` helper computes the sub-count identically
+  in both branches, called by both — never delegated to the SDK. Both host+native tested
+  directly (not just through `evaluateQuorum`'s dispatch), and the native path was
+  confirmed to actually exercise the real SDK binding (`sdkHasCosignatureSurface() ===
+  true` in this environment), not a stub.
+- `historicalWitnessedCount` is deliberately named similarly to, but kept orthogonal
+  from, `receipt_audits.verified_historical` (registry's own receipt key) and
+  RFC-ACDP-0014's future `pre_compromise` (producer's key) — a doc comment on each
+  distinguishes them per the plan's explicit "do not unify these names" instruction.
+- Empirical DB verification (same discipline as Phases 6/7, both executor and verifier
+  independently): applied migration 0021 to the real test Postgres, confirmed via `\d
+  log_witness_checkpoints` that `historical_witnessed_count integer` (nullable) exists,
+  re-ran the raw SQL a second time and confirmed a clean idempotent no-op (`NOTICE:
+  column ... already exists, skipping`, no error) — this is the simplest migration shape
+  in the plan so far (a single `ADD COLUMN IF NOT EXISTS`, no constraint changes, no lock
+  contention beyond the near-instant metadata-only add).
+- Verifier's two non-blocking notes (no action required against the acceptance
+  criteria, both diagnostic-completeness gaps rather than defects): (1) a bad-multicodec
+  `did:key` is proven rejected at the `decodeEd25519Multibase` unit level but not
+  end-to-end through a full `sweep()` into `QuorumReport.failures`; (2) in
+  `hostEvaluateQuorum`, a historical witness whose cosignature FAILS verification is
+  skipped before reaching the `failures.push(...)` line, so it's invisible in
+  `failures` even though a non-historical witness failing the same check would be
+  recorded — asymmetric diagnostics, not a miscount or crash risk.
+- Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 137 files · unit 73 suites/935 passed/3 skipped/939 total
+  (+21 new since Phase 7; 1 pre-existing unrelated flaky failure under full-suite
+  parallel load, `common/pino-logger.spec.ts`, confirmed passing in isolation by both
+  me and the verifier, and confirmed via diff to be untouched by this phase) ·
+  integration 30 suites/193 passed (0 new files, +1 new assertion in an existing test).
+- Files touched: `src/common/multibase.ts` (new), `src/common/multibase.spec.ts` (new),
+  `drizzle/0021_witness_historical_quorum.sql` (new), `src/audit/cosign.ts`,
+  `src/audit/checkpoint-witness.service.ts`, `src/auth/did-web/did-document.ts`,
+  `src/auth/did-web/did-web-resolver.service.ts`, `src/db/schema.ts`,
+  `src/storage/log-witness.repository.ts`, `src/witness/witness-signing.service.ts`,
+  `docs/API.md`, `docs/CONFIGURATION.md`, `CLAUDE.md`, `src/audit/cosign.spec.ts`,
+  `src/audit/checkpoint-witness.service.spec.ts`,
+  `src/auth/did-web/did-web-resolver.service.spec.ts`,
+  `test/integration/log-witness.integration.spec.ts`,
+  `plans/rfc-0014-0015-upgrade.md` (Phase 8 → DONE). No `ASSUMPTIONS.md` entries.
+Next: Phase 9 (quorum result fidelity — failure reasons as objects not `"[object
+Object]"` strings, the `invalid_witness_cosignature` error code, cleanup; B4, B5, B9).

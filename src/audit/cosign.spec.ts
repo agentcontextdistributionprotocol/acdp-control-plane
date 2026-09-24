@@ -525,6 +525,24 @@ describe('evaluateQuorum (RFC-ACDP-0015 §8 N-witnessed consumption)', () => {
     expect(report.meetsQuorum).toBe(false);
   });
 
+  it('B3 acceptance criterion 5: a trusted witness whose key never resolved counts toward neither count and is recorded in failures', () => {
+    const trusted = witness('11'.repeat(32), 'did:web:witness-gone.example');
+    const report = hostEvaluateQuorum({
+      cosignatures: [trusted.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [trusted.id],
+      // No entry for trusted.id — the key was never resolvable (absent from
+      // verificationMethod entirely, or undecodable did:key multibase).
+      witnessKeysB64: {},
+      minWitnesses: 1,
+      nowMs: now,
+    });
+    expect(report.witnessedCount).toBe(0);
+    expect(report.meetsQuorum).toBe(false);
+    expect(report.historicalWitnessedCount).toBe(0);
+    expect(report.failures).toEqual([expect.stringContaining(`${trusted.id}' key unresolved`)]);
+  });
+
   it('§8.1 freshness split: a stale-but-valid cosignature counts toward witnessedCount, not freshWitnessedCount', () => {
     const fresh = witness('11'.repeat(32), 'did:web:witness-fresh.example');
     // A second witness, cosigned the exact same tuple, but 10 minutes before
@@ -602,6 +620,66 @@ describe('evaluateQuorum (RFC-ACDP-0015 §8 N-witnessed consumption)', () => {
     if (native === null) return;
     expect(native.freshWitnessedCount).toBe(host.freshWitnessedCount);
     expect(native.meetsFreshQuorum).toBe(host.meetsFreshQuorum);
+  });
+
+  it('§9 historical sub-count: a cosignature under a historical witness key counts separately, never toward witnessedCount/meetsQuorum', () => {
+    const current = witness('11'.repeat(32), 'did:web:witness-current.example');
+    const historical = witness('22'.repeat(32), 'did:web:witness-retired.example');
+    const report = hostEvaluateQuorum({
+      cosignatures: [current.cosignature, historical.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [current.id, historical.id],
+      witnessKeysB64: { [current.id]: current.publicKeyB64, [historical.id]: historical.publicKeyB64 },
+      historicalWitnessIds: new Set([historical.id]),
+      minWitnesses: 2,
+      nowMs: now,
+    });
+    expect(report.witnessedCount).toBe(1);
+    expect(report.verifiedWitnessIds).toEqual([current.id]);
+    expect(report.historicalWitnessedCount).toBe(1);
+    // 1 current + 1 historical still does not satisfy a 2-witnessed policy —
+    // historical evidence never substitutes for a current attestation.
+    expect(report.meetsQuorum).toBe(false);
+  });
+
+  it('§9 negative: meetsQuorum stays false with minWitnesses=1 when only a historical cosignature is present', () => {
+    const historical = witness('22'.repeat(32), 'did:web:witness-retired.example');
+    const report = hostEvaluateQuorum({
+      cosignatures: [historical.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [historical.id],
+      witnessKeysB64: { [historical.id]: historical.publicKeyB64 },
+      historicalWitnessIds: new Set([historical.id]),
+      minWitnesses: 1,
+      nowMs: now,
+    });
+    expect(report.witnessedCount).toBe(0);
+    expect(report.meetsQuorum).toBe(false);
+    expect(report.historicalWitnessedCount).toBe(1);
+  });
+
+  it('host and native agree on the historical sub-count for the same inputs (parity)', () => {
+    const current = witness('11'.repeat(32), 'did:web:witness-current.example');
+    const historical = witness('22'.repeat(32), 'did:web:witness-retired.example');
+    const inputs = {
+      cosignatures: [current.cosignature, historical.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [current.id, historical.id],
+      witnessKeysB64: { [current.id]: current.publicKeyB64, [historical.id]: historical.publicKeyB64 },
+      historicalWitnessIds: new Set([historical.id]),
+      minWitnesses: 1,
+      nowMs: now,
+    };
+    const host = hostEvaluateQuorum(inputs);
+    expect(host.witnessedCount).toBe(1);
+    expect(host.historicalWitnessedCount).toBe(1);
+    if (!sdkHasCosignatureSurface()) return;
+    const native = nativeEvaluateQuorum(inputs);
+    expect(native).not.toBeNull();
+    if (native === null) return;
+    expect(native.witnessedCount).toBe(host.witnessedCount);
+    expect(native.historicalWitnessedCount).toBe(host.historicalWitnessedCount);
+    expect(native.meetsQuorum).toBe(host.meetsQuorum);
   });
 });
 

@@ -1,0 +1,39 @@
+-- 0021_witness_historical_quorum.sql
+-- B3 fix: RFC-ACDP-0015 §9 reuses the RFC-ACDP-0010 §9 key lifecycle for a
+-- WITNESS'S OWN key, not just the registry's receipt key -- a witness key
+-- retired from assertionMethod but retained in verificationMethod still
+-- verifies cosignatures, as "historically authorized" ("retired witness keys
+-- remain in verificationMethod indefinitely so historical cosignatures stay
+-- verifiable"). This control plane previously resolved a witness's own key
+-- via the STRICT assertionMethod-only path (`resolveKey`), so a quorum
+-- consumer would silently stop counting a witness the moment its key
+-- rotated, even though the SDK's own `verifyWitnessCosignature` binding
+-- tolerates exactly this (a plain find_by_fragment with no assertionMethod
+-- gate).
+--
+-- log_witness_checkpoints gains historical_witnessed_count: the RFC-ACDP-0015
+-- §8 quorum report's new sub-count of trusted witnesses whose cosignature
+-- verified under a retired key. This is a SEPARATE sub-count from
+-- witnessed_count/meets_quorum (migration 0018) and fresh_witnessed_count/
+-- meets_fresh_quorum (migration 0020) -- a historical cosignature is real
+-- evidence but must never by itself satisfy quorum, mirroring how
+-- receipt_audits already treats a registry's own retired receipt key
+-- (verified_historical). These are deliberately similarly-named but
+-- ORTHOGONAL axes across three different RFCs' key-lifecycle rules
+-- (receipt key / witness key / RFC-ACDP-0014's future producer
+-- pre_compromise) -- not to be unified into one name.
+--
+-- No data migration: NULL is the correct starting value for the new nullable
+-- column on every existing row (quorum consumption may be disabled, or the
+-- row predates this phase, same as fresh_witnessed_count in 0020).
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS is native and safe to re-run.
+--
+-- Lock note: ADD COLUMN with no default is metadata-only and near-instant --
+-- no table rewrite, no ACCESS EXCLUSIVE hold beyond that instant.
+--
+-- Rollback: there is no down migration -- an added nullable column never
+-- rejects or loses data the prior schema accepted.
+
+ALTER TABLE log_witness_checkpoints
+  ADD COLUMN IF NOT EXISTS historical_witnessed_count integer;

@@ -364,6 +364,15 @@ signal when quorum consumption is enabled:
   condition as `witnessedCount`). A stale cosignature still counts toward
   `witnessedCount`/`meetsQuorum` above — this is never a failure, just excluded here.
 - `meetsFreshQuorum` — whether `freshWitnessedCount ≥ WITNESS_QUORUM_MIN_WITNESSES`.
+- `historicalWitnessedCount` — RFC-ACDP-0015 §9 (RFC-ACDP-0010 §9 key lifecycle
+  applied to a witness's own key): DISTINCT trusted witnesses whose cosignature
+  verified under a RETIRED key (rotated out of `assertionMethod`, retained in
+  `verificationMethod`) — same as the registry's own `verified_historical`
+  receipt-key treatment, but this is a SEPARATE sub-count, never folded into
+  `witnessedCount`/`meetsQuorum` above: historical evidence is real but must
+  never by itself satisfy quorum (`null` under the same condition as
+  `witnessedCount`). A `did:key` witness never contributes here — that DID has
+  no document, so no key ever "retires" out of it.
 
 ### `GET /registries/log-witness/alerts?includeAcknowledged=true`
 
@@ -572,17 +581,24 @@ RFC-ACDP-0012 log inclusion/consistency verification uses the native binding
 **Quorum consumption (§8), the mirror of cosigning.** With `WITNESS_QUORUM_ENABLED=true`,
 the same checkpoint-witness fetch of `GET /log/checkpoint` *also* reads the cosignatures
 the registry **aggregates** and serves as the top-level `witness_signatures` sibling
-(§6.1). Each is verified against its witness's **own** resolved `did:web` document via
-`evaluateWitnessQuorum`, and DISTINCT `WITNESS_QUORUM_TRUSTED` witnesses over the
-checkpoint's exact tuple are counted — external attestations only, never the CP's own
-mint. The `witnessedCount` / `meetsQuorum` land on the witnessed head (see
-`GET /registries/:authority/log-witness`). A did:web `WITNESS_ID`'s host is asserted to
-match `PUBLIC_HOST` at boot (§9) so the witness's own DID document is actually resolvable.
-§8.1 layers a **freshness split** (`freshWitnessedCount` / `meetsFreshQuorum`,
-`WITNESS_QUORUM_MAX_AGE_SECONDS`) on top: a stale-but-otherwise-valid cosignature still
-counts toward the base `witnessedCount` — never a failure — but not the fresh count. Both
-the native (`AcdpVerifier.evaluateWitnessQuorum`) and host-TS fallback quorum paths
-compute this split identically (parity-tested).
+(§6.1). Each is verified against its witness's **own** key via `evaluateWitnessQuorum`,
+and DISTINCT `WITNESS_QUORUM_TRUSTED` witnesses over the checkpoint's exact tuple are
+counted — external attestations only, never the CP's own mint. **§9 witness key
+resolution** (B2/B3) branches by DID method: a `did:key` witness is self-describing (the
+multibase-encoded key IS the identity, RFC-ACDP-0001 §5.11.1), so it resolves LOCALLY
+with no DID document fetch at all; a `did:web` witness's own key resolves through the
+SAME RFC-ACDP-0010 §9 lifecycle tolerance the registry's receipt key already gets — a key
+rotated out of `assertionMethod` but retained in `verificationMethod` still verifies, as
+**historical** (`historicalWitnessedCount`, a separate sub-count, never counted toward
+`witnessedCount`/`meetsQuorum`). The `witnessedCount` / `meetsQuorum` land on the
+witnessed head (see `GET /registries/:authority/log-witness`). A did:web `WITNESS_ID`'s
+host is asserted to match `PUBLIC_HOST` at boot (§9) so the witness's own DID document is
+actually resolvable. §8.1 layers a **freshness split** (`freshWitnessedCount` /
+`meetsFreshQuorum`, `WITNESS_QUORUM_MAX_AGE_SECONDS`) on top: a stale-but-otherwise-valid
+cosignature still counts toward the base `witnessedCount` — never a failure — but not the
+fresh count. Both the native (`AcdpVerifier.evaluateWitnessQuorum`) and host-TS fallback
+quorum paths compute the freshness split and the historical sub-count identically
+(parity-tested).
 
 **B1 re-mint (§4/§8.1/§15).** A witness MUST cosign on **every** observation, including
 at an unchanged `tree_size` — a silent stop is indistinguishable from merely being

@@ -33,7 +33,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { AcdpDid, AcdpDidDocument } from '@agentcontextdistributionprotocol/acdp';
-import { ResolvedKey, ResolvedReceiptKey } from './did-document';
+import { ResolvedKey, ResolvedReceiptKey, ResolvedWitnessKey } from './did-document';
 import { SsrfPolicy, SsrfPolicyError } from './ssrf-guard';
 
 const MAX_BODY_BYTES = 64 * 1024;        // RFC-ACDP-0006 §7.3
@@ -242,6 +242,31 @@ export class DidWebResolverService implements OnModuleDestroy {
     } catch (e) {
       throw new DidResolutionError('PICK', bindingErrDetail(e));
     }
+  }
+
+  /**
+   * Resolve a **witness's own** did:web key (RFC-ACDP-0015 §9, B3), applying
+   * the SAME lifecycle-tolerant path as {@link resolveReceiptKey} rather than
+   * the strict `assertionMethod` gate {@link resolveKey} uses: §9 explicitly
+   * reuses RFC-ACDP-0010 §9's key lifecycle for a witness's own key — "retired
+   * witness keys remain in `verificationMethod` indefinitely so historical
+   * cosignatures stay verifiable." A key rotated out of `assertionMethod` but
+   * still in `verificationMethod` resolves with `historical: true`; one
+   * removed from `verificationMethod` entirely still fails closed.
+   *
+   * `did:key` witnesses never reach this method — they resolve locally via
+   * `src/common/multibase.ts`, with no DID document fetch at all (RFC-ACDP-0001
+   * §5.11.1: a `did:key` is self-describing).
+   *
+   * Delegates to the exact same `receiptKeyForAlgorithm` binding call as
+   * {@link resolveReceiptKey}; the name differs only so a witness call site
+   * never reads as resolving a REGISTRY's receipt key.
+   */
+  async resolveWitnessKey(
+    didUrl: string,
+    requestedAlg: 'ed25519' | 'ecdsa-p256',
+  ): Promise<ResolvedWitnessKey> {
+    return this.resolveReceiptKey(didUrl, requestedAlg);
   }
 
   /** Drop the cached document for a DID — used by admin rotation hooks. */

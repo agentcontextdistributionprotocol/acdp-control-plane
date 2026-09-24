@@ -49,6 +49,7 @@
 import { createHash, sign as edSign, type KeyObject } from 'node:crypto';
 import { AcdpCanonicalizer, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 import { verifySignatureB64 } from '../auth/acdp-verify';
+import { encodeEd25519Multibase } from '../common/multibase';
 import type { LogCheckpoint } from './log-verify';
 
 /** RFC-ACDP-0015 §4: the sole cosignature envelope version / domain separator. */
@@ -610,6 +611,17 @@ export interface QuorumReport {
   freshWitnessedCount: number;
   /** `freshWitnessedCount >= minWitnesses`. */
   meetsFreshQuorum: boolean;
+  /**
+   * §9 (RFC-ACDP-0010 §9 key lifecycle, carried over to a witness's OWN key
+   * per RFC-ACDP-0015 §9 — mirrors `receipt_audits.verified_historical` on
+   * the registry-receipt side, a deliberately similarly-named but ORTHOGONAL
+   * axis): DISTINCT trusted witnesses whose cosignature verified under a
+   * RETIRED (historical) key. A SEPARATE sub-count, NEVER folded into
+   * `witnessedCount`/`meetsQuorum` — historical evidence is real (the
+   * cosignature cryptographically verifies) but must not by itself satisfy
+   * quorum. Always 0 when no historical witness keys were resolved.
+   */
+  historicalWitnessedCount: number;
 }
 
 export interface QuorumInputs {
@@ -621,6 +633,15 @@ export interface QuorumInputs {
   trustedWitnessIds: string[];
   /** Resolved witness assertionMethod public keys, keyed by witness_id (base64). */
   witnessKeysB64: Record<string, string>;
+  /**
+   * Witness IDs whose `witnessKeysB64` entry was resolved from a RETIRED
+   * (historical) verificationMethod key rather than a current assertionMethod
+   * one (RFC-ACDP-0010 §9 lifecycle applied to the witness's own key per
+   * RFC-ACDP-0015 §9). Never populated for a `did:key` witness — that DID has
+   * no document, so no key ever "retires" out of it. Omit or leave empty when
+   * no witness key resolution used the lifecycle-tolerant path.
+   */
+  historicalWitnessIds?: Set<string>;
   /** The N in N-witnessed. */
   minWitnesses: number;
   /**
@@ -652,12 +673,61 @@ export function evaluateQuorum(inp: QuorumInputs): QuorumReport {
 }
 
 /**
+ * §9 historical sub-count, shared by BOTH evaluator branches so a historical
+ * witness is counted identically regardless of which one produced the base
+ * report. Neither the native `evaluateWitnessQuorum` surface nor its wire
+ * policy has any concept of a retired witness key — the base report only
+ * knows a synthesized DID document's current `assertionMethod`, never a
+ * lifecycle state — so this NEVER delegates to it. It reuses the same
+ * {@link verifyCosignature} the host branch already calls per cosignature
+ * (itself SDK-delegating for the actual Ed25519 check when available), just
+ * scoped to the witnesses `historicalIds` names.
+ */
+function countHistoricalWitnesses(
+  inp: QuorumInputs,
+  historicalIds: Set<string>,
+  nowMs: number,
+  maxClockSkewMs: number,
+): number {
+  if (historicalIds.size === 0) return 0;
+  const counted = new Set<string>();
+  for (const raw of inp.cosignatures) {
+    const parsed = parseCosignature(raw);
+    if (!parsed.ok) continue;
+    const cosig = parsed.cosignature;
+    if (!historicalIds.has(cosig.witness_id) || counted.has(cosig.witness_id)) continue;
+    const key = inp.witnessKeysB64[cosig.witness_id];
+    if (key === undefined) continue;
+    const wc = cosig.witnessed_checkpoint;
+    if (
+      wc.log_id !== inp.checkpoint.log_id ||
+      wc.tree_size !== inp.checkpoint.tree_size ||
+      wc.root_hash !== inp.checkpoint.root_hash
+    ) {
+      continue;
+    }
+    if (!cosignatureFreshnessOk(cosig, nowMs, maxClockSkewMs).ok) continue;
+    if (!verifyCosignature(cosig, key, inp.checkpoint).ok) continue;
+    counted.add(cosig.witness_id);
+  }
+  return counted.size;
+}
+
+/**
  * The native-binding branch (exported for the parity cross-check): delegate the
  * §8 report to `AcdpVerifier.evaluateWitnessQuorum`, synthesizing each trusted
  * witness's resolvable DID document from its resolved public key. Returns null
- * (fall back to host) on a malformed-input throw or non-JSON reply.
+ * (fall back to host) on a malformed-input throw or non-JSON reply. Historical
+ * witnesses are excluded from the trusted-id list handed to the binding (so it
+ * never counts them toward its own report) and tallied separately via
+ * {@link countHistoricalWitnesses}.
  */
 export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
+  const historicalIds = inp.historicalWitnessIds ?? new Set<string>();
+  const nativeTrustedIds =
+    historicalIds.size === 0
+      ? inp.trustedWitnessIds
+      : inp.trustedWitnessIds.filter((id) => !historicalIds.has(id));
   const didDocs: Record<string, unknown> = {};
   for (const raw of inp.cosignatures) {
     const parsed = parseCosignature(raw);
@@ -678,15 +748,16 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
   };
   if (inp.maxAgeSecs !== undefined) policy.max_age_secs = inp.maxAgeSecs;
   if (inp.maxClockSkewSecs !== undefined) policy.max_clock_skew_secs = inp.maxClockSkewSecs;
+  const nowMs = inp.nowMs ?? Date.now();
   let json: string;
   try {
     json = surface.evaluateWitnessQuorum(
       JSON.stringify(inp.cosignatures),
       JSON.stringify(inp.checkpoint),
-      JSON.stringify(inp.trustedWitnessIds),
+      JSON.stringify(nativeTrustedIds),
       JSON.stringify(didDocs),
       JSON.stringify(policy),
-      new Date(inp.nowMs ?? Date.now()).toISOString(),
+      new Date(nowMs).toISOString(),
     );
   } catch {
     return null;
@@ -710,6 +781,7 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
   // split were disabled (fresh == verified), not as if nothing were fresh.
   const freshCount =
     typeof report.fresh_witnessed_count === 'number' ? report.fresh_witnessed_count : count;
+  const maxClockSkewMs = (inp.maxClockSkewSecs ?? 120) * 1000;
   return {
     witnessedCount: count,
     meetsQuorum: report.meets_quorum === true,
@@ -720,6 +792,7 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
     freshWitnessedCount: freshCount,
     meetsFreshQuorum:
       report.meets_fresh_quorum === undefined ? report.meets_quorum === true : report.meets_fresh_quorum === true,
+    historicalWitnessedCount: countHistoricalWitnesses(inp, historicalIds, nowMs, maxClockSkewMs),
   };
 }
 
@@ -737,6 +810,7 @@ export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
   const maxAgeSecs = inp.maxAgeSecs === undefined ? 300 : inp.maxAgeSecs;
   const maxClockSkewMs = (inp.maxClockSkewSecs ?? 120) * 1000;
   const trusted = new Set(inp.trustedWitnessIds);
+  const historicalIds = inp.historicalWitnessIds ?? new Set<string>();
   const verified = new Set<string>();
   const freshVerified = new Set<string>();
   const failures: string[] = [];
@@ -749,6 +823,9 @@ export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
     const cosig = parsed.cosignature;
     // Untrusted witnesses are silently ignored — not a failure, just not counted.
     if (!trusted.has(cosig.witness_id)) continue;
+    // Historical (retired-key) witnesses are counted separately below —
+    // never toward witnessedCount/meetsQuorum, see QuorumReport.historicalWitnessedCount.
+    if (historicalIds.has(cosig.witness_id)) continue;
     if (verified.has(cosig.witness_id)) continue;
     const key = inp.witnessKeysB64[cosig.witness_id];
     if (key === undefined) {
@@ -791,6 +868,7 @@ export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
     failures,
     freshWitnessedCount: freshVerified.size,
     meetsFreshQuorum: freshVerified.size >= inp.minWitnesses,
+    historicalWitnessedCount: countHistoricalWitnesses(inp, historicalIds, nowMs, maxClockSkewMs),
   };
 }
 
@@ -821,27 +899,9 @@ function witnessDidDocFromPubkey(
         id: keyId,
         type: 'Ed25519VerificationKey2020',
         controller: witnessId,
-        publicKeyMultibase: ed25519Multibase(raw),
+        publicKeyMultibase: encodeEd25519Multibase(raw),
       },
     ],
     assertionMethod: [keyId],
   };
-}
-
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-
-/** Encode a raw 32-byte Ed25519 key as `did:key`-style multibase (0xed01 prefix). */
-function ed25519Multibase(rawPub: Buffer): string {
-  const prefixed = Buffer.concat([Buffer.from([0xed, 0x01]), rawPub]);
-  let x = BigInt('0x' + (prefixed.toString('hex') || '0'));
-  let out = '';
-  while (x > 0n) {
-    out = BASE58_ALPHABET[Number(x % 58n)] + out;
-    x /= 58n;
-  }
-  for (const byte of prefixed) {
-    if (byte === 0) out = BASE58_ALPHABET[0] + out;
-    else break;
-  }
-  return 'z' + out;
 }

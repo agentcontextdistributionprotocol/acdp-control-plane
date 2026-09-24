@@ -31,3 +31,12 @@ export interface ResolvedKey {
 export interface ResolvedReceiptKey extends ResolvedKey {
   historical: boolean;
 }
+
+/**
+ * A resolved witness assertionMethod/verificationMethod key
+ * (RFC-ACDP-0015 §9, which explicitly reuses the RFC-ACDP-0010 §9 key
+ * lifecycle for a witness's own key rather than defining a new one) —
+ * same shape as {@link ResolvedReceiptKey}, aliased for readability at
+ * witness call sites rather than duplicated.
+ */
+export type ResolvedWitnessKey = ResolvedReceiptKey;

@@ -59,6 +59,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { AcdpDid } from '@agentcontextdistributionprotocol/acdp';
 import { RegistryEnrollment } from '../db/schema';
 import { authorityToDidWeb, nonCanonicalAuthorityReason } from '../common/did-authority';
+import { decodeEd25519Multibase } from '../common/multibase';
 import { AppConfigService } from '../config/app-config.service';
 import { SafeFederationClient } from '../contexts/safe-federation-client';
 import { AcdpStreamEvent } from '../contracts/acdp';
@@ -129,6 +130,13 @@ export interface QuorumResult {
   freshWitnessedCount: number | null;
   /** Whether `freshWitnessedCount` meets the configured N-witnessed policy. */
   meetsFreshQuorum: boolean | null;
+  /**
+   * §9 (RFC-ACDP-0010 §9 key lifecycle carried over to a witness's own key,
+   * RFC-ACDP-0015 §9): trusted witnesses whose cosignature verified under a
+   * RETIRED key. Never counted toward `witnessedCount`/`meetsQuorum`. Null
+   * when quorum consumption is disabled, same as the other fields.
+   */
+  historicalWitnessedCount: number | null;
 }
 
 @Injectable()
@@ -695,6 +703,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       meetsQuorum: null,
       freshWitnessedCount: null,
       meetsFreshQuorum: null,
+      historicalWitnessedCount: null,
     },
   ): Promise<void> {
     try {
@@ -712,6 +721,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         meetsQuorum: quorum.meetsQuorum,
         freshWitnessedCount: quorum.freshWitnessedCount,
         meetsFreshQuorum: quorum.meetsFreshQuorum,
+        historicalWitnessedCount: quorum.historicalWitnessedCount,
       });
       // The evidence row is append-once (null = a re-observation of an existing
       // head). The §8 quorum, however, evolves as the registry aggregates more
@@ -721,7 +731,8 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         quorum.witnessedCount !== null &&
         quorum.meetsQuorum !== null &&
         quorum.freshWitnessedCount !== null &&
-        quorum.meetsFreshQuorum !== null
+        quorum.meetsFreshQuorum !== null &&
+        quorum.historicalWitnessedCount !== null
       ) {
         await this.witnessRepo.updateQuorum(
           tenantId,
@@ -732,6 +743,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
           quorum.meetsQuorum,
           quorum.freshWitnessedCount,
           quorum.meetsFreshQuorum,
+          quorum.historicalWitnessedCount,
         );
       }
     } catch (err) {
@@ -762,23 +774,44 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         meetsQuorum: null,
         freshWitnessedCount: null,
         meetsFreshQuorum: null,
+        historicalWitnessedCount: null,
       };
     }
     try {
       const trusted = this.config.witnessQuorumTrusted;
-      // Resolve each TRUSTED witness's own assertionMethod key from its DID
-      // document (§8 step 2). Resolution failure for one witness just means it
-      // cannot count — it is never treated as registry dishonesty.
+      // Resolve each TRUSTED witness's own key. RFC-ACDP-0015 §9: a did:key
+      // witness is self-describing — the multibase-encoded key IS the
+      // identity, so it resolves LOCALLY with no DID document fetch at all
+      // (RFC-ACDP-0001 §5.11.1). A did:web witness's own key follows the
+      // SAME RFC-ACDP-0010 §9 lifecycle tolerance the registry's receipt key
+      // already gets (`resolveWitnessKey`, not the strict assertionMethod-
+      // only `resolveKey`): a key retired from `assertionMethod` but retained
+      // in `verificationMethod` still verifies, tracked as historical.
+      // Resolution failure for one witness just means it cannot count — it
+      // is never treated as registry dishonesty.
       const witnessKeysB64: Record<string, string> = {};
+      const historicalWitnessIds = new Set<string>();
       for (const raw of witnessSignatures) {
         const parsed = parseCosignature(raw);
         if (!parsed.ok) continue;
         const cosig = parsed.cosignature;
         if (!trusted.includes(cosig.witness_id)) continue;
         if (witnessKeysB64[cosig.witness_id] !== undefined) continue;
+        if (cosig.witness_id.startsWith('did:key:')) {
+          const decoded = decodeEd25519Multibase(cosig.witness_id);
+          if (decoded.ok) {
+            witnessKeysB64[cosig.witness_id] = decoded.publicKey.toString('base64');
+          } else {
+            this.logger.debug(
+              `witness key undecodable for quorum (did:key '${cosig.witness_id}'): ${decoded.reason}`,
+            );
+          }
+          continue;
+        }
         try {
-          const resolved = await this.didResolver.resolveKey(cosig.signature.key_id, 'ed25519');
+          const resolved = await this.didResolver.resolveWitnessKey(cosig.signature.key_id, 'ed25519');
           witnessKeysB64[cosig.witness_id] = resolved.publicKeyB64;
+          if (resolved.historical) historicalWitnessIds.add(cosig.witness_id);
         } catch (err) {
           this.logger.debug(
             `witness key '${cosig.signature.key_id}' unresolved for quorum: ${msgOf(err)}`,
@@ -790,6 +823,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         checkpoint,
         trustedWitnessIds: trusted,
         witnessKeysB64,
+        historicalWitnessIds,
         minWitnesses: this.config.witnessQuorumMinWitnesses,
         maxAgeSecs: this.config.witnessQuorumMaxAgeSeconds,
         maxClockSkewSecs: this.config.witnessQuorumMaxClockSkewSeconds,
@@ -807,6 +841,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         meetsQuorum: report.meetsQuorum,
         freshWitnessedCount: report.freshWitnessedCount,
         meetsFreshQuorum: report.meetsFreshQuorum,
+        historicalWitnessedCount: report.historicalWitnessedCount,
       };
     } catch (err) {
       this.logger.warn(`witness quorum evaluation failed for '${authority}': ${msgOf(err)}`);
@@ -815,6 +850,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         meetsQuorum: null,
         freshWitnessedCount: null,
         meetsFreshQuorum: null,
+        historicalWitnessedCount: null,
       };
     }
   }

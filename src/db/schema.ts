@@ -438,6 +438,15 @@ export const logWitnessCheckpoints = pgTable(
     // quorum consumption is disabled, same as witnessedCount/meetsQuorum.
     freshWitnessedCount: integer('fresh_witnessed_count'),
     meetsFreshQuorum: boolean('meets_fresh_quorum'),
+    // RFC-ACDP-0010 §9 key lifecycle carried over to a witness's own key per
+    // RFC-ACDP-0015 §9 (migration 0021): DISTINCT trusted witnesses whose
+    // cosignature verified under a RETIRED (historical) key. NEVER folded
+    // into witnessedCount/meetsQuorum above — a separate sub-count, same
+    // NULL-when-disabled convention as the other quorum fields. Deliberately
+    // similarly named to, but ORTHOGONAL from, receipt_audits.verified_historical
+    // (the registry's receipt key) and RFC-ACDP-0014's producer pre_compromise —
+    // three different RFCs' key-lifecycle axes, not to be unified.
+    historicalWitnessedCount: integer('historical_witnessed_count'),
   },
   (t) => ({
     // Dedupes re-fetches of the same head, PER TENANT (migration 0019 — two

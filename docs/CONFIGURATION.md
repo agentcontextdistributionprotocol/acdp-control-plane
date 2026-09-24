@@ -195,9 +195,15 @@ surviving cosignature for a head is *stronger* evidence it existed early).
 **Witness quorum consumption (RFC-ACDP-0015 §8).** The mirror of cosigning: instead of
 minting, evaluate the **N-witnessed quorum** over the cosignatures a registry *aggregates*
 and serves on `GET /log/checkpoint` (the top-level `witness_signatures` sibling, §6.1).
-Each is verified against its witness's **own** resolved `did:web` document, and DISTINCT
-trusted witnesses over the checkpoint's exact `(log_id, tree_size, root_hash)` tuple are
-counted — never the CP's own local mint. The count + `meets_quorum` are recorded on the
+Each is verified against its witness's **own** key, and DISTINCT trusted witnesses over
+the checkpoint's exact `(log_id, tree_size, root_hash)` tuple are counted — never the
+CP's own local mint. **§9 witness key resolution** branches by DID method: a `did:key`
+witness is self-describing (the multibase-encoded key IS the identity), so it resolves
+LOCALLY with no DID document fetch at all; a `did:web` witness's own key resolves through
+the SAME RFC-ACDP-0010 §9 lifecycle tolerance the registry's receipt key already gets — a
+key rotated out of `assertionMethod` but retained in `verificationMethod` still verifies,
+as **historical** (`historical_witnessed_count`, a separate sub-count, never folded into
+`witnessed_count`/`meets_quorum`). The count + `meets_quorum` are recorded on the
 witnessed head (surfaced on `GET /registries/:authority/log-witness` per checkpoint and on
 the dashboard `logWitness.headsMeetingQuorum` tile). Rides the checkpoint witness, so it
 requires `LOG_WITNESS_ENABLED=true`.
