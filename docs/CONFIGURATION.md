@@ -238,6 +238,30 @@ seal once per event in `log_inclusion_audits`.
 | `LOG_INCLUSION_AUDIT_BATCH_SIZE` | number | `50` | Events audited per sweep. **≥1** when enabled. |
 | `LOG_INCLUSION_AUDIT_LOOKBACK_HOURS` | number | `24` | Only events younger than this are picked up. |
 
+## Producer key-revocation (RFC-ACDP-0014)
+
+When enabled, the receipt-audit sweep additionally classifies each audited event
+under any applicable `key-revocation` context published for the same producer key
+(§7 consumer semantics): a receipt-attested publish before the revocation's
+`compromised_since` boundary is historically authorized; at or after it — or
+unverifiable — fails closed, unconditionally. Requires `RECEIPT_AUDIT_ENABLED=true`,
+because the classification reuses the same receipt-attested `created_at` that sweep
+already establishes. The revocation format and consumer semantics are normative in
+[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md).
+
+Two trust classes are reported distinguishably, never collapsed (§7): producer-signed
+(strong — needs no registry trust at all) and registry-attested (weaker — the
+revocation's `publisher` must pass the §6 registry-binding check against the serving
+registry's own DID and its advertised `capabilities.registry_did`, both via the
+canonical `authorityToDidWeb` encoder — see `src/audit/revocation-binding.ts`).
+
+| Var | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `KEY_REVOCATION_CHECK_ENABLED` | bool | `false` | Enable §7 revocation classification. Requires `RECEIPT_AUDIT_ENABLED=true`. |
+| `KEY_REVOCATION_ATTESTED_SCOPE` | `same_registry`\|`global`\|`off` | `same_registry` | How far a registry-attested (not producer-signed) revocation reaches: only events from the attesting registry, every registry, or ignored entirely. |
+| `KEY_REVOCATION_IGNORE_FINGERPRINTS` | list | `''` | §13 operator override: fingerprints listed here never disarm producer trust, even if named by a revocation. |
+| `KEY_REVOCATION_LOOKBACK_HOURS` | number | `720` | How far back the revocation-discovery sweep looks. **Not** the same default as `RECEIPT_AUDIT_LOOKBACK_HOURS` (24h) — revocations are irreversible (§4), so a longer window avoids a registry outage silently and permanently losing one. **≥1** when enabled. |
+
 ## Data retention
 
 | Var | Type | Default | Meaning |
@@ -297,6 +321,9 @@ seal once per event in `log_inclusion_audits`.
   `WITNESS_QUORUM_TRUSTED` (self-cosignature would count toward its own quorum).
   A consume-only deployment (`WITNESS_COSIGNING_ENABLED=false`, `WITNESS_ID`
   unset) is unaffected by this check.
+- `KEY_REVOCATION_CHECK_ENABLED=true` without `RECEIPT_AUDIT_ENABLED=true`; with
+  `KEY_REVOCATION_ATTESTED_SCOPE` not in {`same_registry`,`global`,`off`}; or with
+  `KEY_REVOCATION_LOOKBACK_HOURS < 1`.
 
 **Warns** (starts, but flags a risk) on, in production:
 

@@ -215,6 +215,82 @@ describe('AppConfigService', () => {
     });
   });
 
+  describe('key-revocation config (RFC-ACDP-0014 §6/§7)', () => {
+    it('defaults KEY_REVOCATION_CHECK_ENABLED to false and the scope to same_registry', () => {
+      delete process.env.KEY_REVOCATION_CHECK_ENABLED;
+      delete process.env.KEY_REVOCATION_ATTESTED_SCOPE;
+      const cfg = freshConfig();
+      expect(cfg.keyRevocationCheckEnabled).toBe(false);
+      expect(cfg.keyRevocationAttestedScope).toBe('same_registry');
+      expect(cfg.keyRevocationIgnoreFingerprints).toEqual([]);
+      expect(cfg.keyRevocationLookbackHours).toBe(720);
+    });
+
+    it('parses KEY_REVOCATION_IGNORE_FINGERPRINTS as a comma-separated, trimmed list', () => {
+      process.env.KEY_REVOCATION_IGNORE_FINGERPRINTS = '  sha256:aaa, sha256:bbb ,,';
+      expect(freshConfig().keyRevocationIgnoreFingerprints).toEqual(['sha256:aaa', 'sha256:bbb']);
+    });
+
+    describe('production validation', () => {
+      beforeEach(() => {
+        process.env.NODE_ENV = 'production';
+        process.env.AUTH_API_KEYS = 'k';
+        process.env.WEBHOOK_SECRET = 'shh';
+      });
+
+      it('throws when enabled without RECEIPT_AUDIT_ENABLED, naming both variables', () => {
+        process.env.KEY_REVOCATION_CHECK_ENABLED = 'true';
+        process.env.RECEIPT_AUDIT_ENABLED = 'false';
+        const cfg = freshConfig();
+        expect(() => cfg.onModuleInit()).toThrow(/KEY_REVOCATION_CHECK_ENABLED/);
+        expect(() => cfg.onModuleInit()).toThrow(/RECEIPT_AUDIT_ENABLED/);
+      });
+
+      it('throws on an invalid KEY_REVOCATION_ATTESTED_SCOPE, naming all three valid values', () => {
+        process.env.KEY_REVOCATION_CHECK_ENABLED = 'true';
+        process.env.RECEIPT_AUDIT_ENABLED = 'true';
+        process.env.KEY_REVOCATION_ATTESTED_SCOPE = 'bogus';
+        const cfg = freshConfig();
+        expect(() => cfg.onModuleInit()).toThrow(/same_registry/);
+        expect(() => cfg.onModuleInit()).toThrow(/global/);
+        expect(() => cfg.onModuleInit()).toThrow(/off/);
+      });
+
+      it('throws when KEY_REVOCATION_LOOKBACK_HOURS < 1', () => {
+        process.env.KEY_REVOCATION_CHECK_ENABLED = 'true';
+        process.env.RECEIPT_AUDIT_ENABLED = 'true';
+        process.env.KEY_REVOCATION_LOOKBACK_HOURS = '0';
+        const cfg = freshConfig();
+        expect(() => cfg.onModuleInit()).toThrow(/KEY_REVOCATION_LOOKBACK_HOURS/);
+      });
+
+      it('passes validation when enabled with valid prerequisites', () => {
+        process.env.KEY_REVOCATION_CHECK_ENABLED = 'true';
+        process.env.RECEIPT_AUDIT_ENABLED = 'true';
+        process.env.KEY_REVOCATION_ATTESTED_SCOPE = 'global';
+        process.env.KEY_REVOCATION_LOOKBACK_HOURS = '48';
+        const cfg = freshConfig();
+        expect(() => cfg.onModuleInit()).not.toThrow();
+      });
+
+      it('does not validate scope/lookback when the check is disabled', () => {
+        process.env.KEY_REVOCATION_CHECK_ENABLED = 'false';
+        process.env.KEY_REVOCATION_ATTESTED_SCOPE = 'bogus';
+        process.env.KEY_REVOCATION_LOOKBACK_HOURS = '0';
+        const cfg = freshConfig();
+        expect(() => cfg.onModuleInit()).not.toThrow();
+      });
+    });
+
+    it('skips validation in development regardless of misconfiguration', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.KEY_REVOCATION_CHECK_ENABLED = 'true';
+      process.env.RECEIPT_AUDIT_ENABLED = 'false';
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).not.toThrow();
+    });
+  });
+
   describe('multi-tenant fail-fast (all environments)', () => {
     beforeEach(() => {
       // Run in development to prove the check is NOT gated behind prod.

@@ -342,6 +342,34 @@ export class AppConfigService implements OnModuleInit {
     24,
   );
 
+  // Producer key-revocation signal (RFC-ACDP-0014 §4/§6/§7). When enabled,
+  // the receipt-audit sweep additionally classifies each audited event
+  // under any applicable `key-revocation` context published for the same
+  // producer key — requires RECEIPT_AUDIT_ENABLED, because the §7
+  // classification reuses the same receipt-attested `created_at` the
+  // receipt-audit sweep already establishes. See
+  // `src/audit/revocation-binding.ts` (the §6 registry-binding check).
+  readonly keyRevocationCheckEnabled = readBoolean('KEY_REVOCATION_CHECK_ENABLED', false);
+  // §7's two trust classes must be reported distinguishably, never
+  // collapsed (RFC-ACDP-0014 §7). A registry-attested revocation (not
+  // signed by the compromised producer itself) is the weaker class.
+  // `same_registry` (default) applies it only against events from the SAME
+  // registry that attested it (the §6 binding check enforces this); `global`
+  // applies it across every registry; `off` ignores registry-attested
+  // revocations entirely — producer-signed ones still apply either way, since
+  // they need no registry trust at all.
+  readonly keyRevocationAttestedScope = (process.env.KEY_REVOCATION_ATTESTED_SCOPE ??
+    'same_registry') as 'same_registry' | 'global' | 'off';
+  // §13 operator override: fingerprints listed here never disarm producer
+  // trust, even if a (possibly cross-producer-forged) revocation names them.
+  readonly keyRevocationIgnoreFingerprints = readStringList('KEY_REVOCATION_IGNORE_FINGERPRINTS');
+  // How far back the revocation-discovery sweep looks for `key-revocation`
+  // events. Deliberately NOT the same as RECEIPT_AUDIT_LOOKBACK_HOURS's 24h
+  // default — revocations are irreversible (§4), so a registry outage
+  // spanning more than a day must not silently and permanently lose a
+  // revocation from the sweep's window. 720h = 30 days.
+  readonly keyRevocationLookbackHours = readNumber('KEY_REVOCATION_LOOKBACK_HOURS', 720);
+
   // Data retention
   readonly dataRetentionEnabled = readBoolean('DATA_RETENTION_ENABLED', false);
   readonly dataRetentionTtlDays = readNumber('DATA_RETENTION_TTL_DAYS', 30);
@@ -520,6 +548,33 @@ export class AppConfigService implements OnModuleInit {
       if (this.logInclusionAuditBatchSize < 1) {
         throw new Error(
           'LOG_INCLUSION_AUDIT_BATCH_SIZE must be >= 1 when the inclusion audit is enabled',
+        );
+      }
+    }
+
+    // Producer key-revocation signal (RFC-ACDP-0014 §6/§7). The §7
+    // classification reuses the receipt-audit sweep's receipt-attested
+    // `created_at`, so it can only ever run alongside that sweep.
+    if (this.keyRevocationCheckEnabled) {
+      if (!this.receiptAuditEnabled) {
+        throw new Error(
+          'KEY_REVOCATION_CHECK_ENABLED=true requires RECEIPT_AUDIT_ENABLED=true — ' +
+            'the §7 classification reuses the receipt-attested created_at the receipt-audit sweep already establishes',
+        );
+      }
+      if (
+        this.keyRevocationAttestedScope !== 'same_registry' &&
+        this.keyRevocationAttestedScope !== 'global' &&
+        this.keyRevocationAttestedScope !== 'off'
+      ) {
+        throw new Error(
+          `KEY_REVOCATION_ATTESTED_SCOPE must be one of 'same_registry', 'global', 'off' ` +
+            `(got '${this.keyRevocationAttestedScope}')`,
+        );
+      }
+      if (this.keyRevocationLookbackHours < 1) {
+        throw new Error(
+          'KEY_REVOCATION_LOOKBACK_HOURS must be >= 1 when key-revocation checking is enabled',
         );
       }
     }

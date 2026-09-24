@@ -2362,3 +2362,61 @@ PR2, then start PR3 (Phases 10-15, RFC-ACDP-0014 producer key-revocation, branch
   entries.
 Next: Phase 11 (revocation configuration, registry-profile widening, the §6 binding
 check — no behaviour change yet, config surface only).
+
+## Phase 11 — Revocation configuration, registry-profile widening, and the §6 binding check
+
+- 2026-09-23. Verdict: **PASS**, round 1. Verifier tier: fresh Opus (not Fable) — a
+  config surface plus two pure, no-I/O functions; no public contract, no schema, no
+  migration in this phase.
+- Delivers (no behaviour change yet — the sweep consuming these lands in Phase 12+):
+  - `AppConfigService`: four new knobs — `KEY_REVOCATION_CHECK_ENABLED` (bool, requires
+    `RECEIPT_AUDIT_ENABLED=true`, enforced via a `throw` in the production-only section
+    of `validate()`, positioned after `if (this.isDevelopment) return;` and mirroring
+    the `witnessCosigningEnabled` block's placement/style exactly), `KEY_REVOCATION_
+    ATTESTED_SCOPE` (`same_registry`|`global`|`off`, default `same_registry`, validated
+    against exactly those three strings), `KEY_REVOCATION_IGNORE_FINGERPRINTS` (string
+    list, the §13 operator override), `KEY_REVOCATION_LOOKBACK_HOURS` (default `720` =
+    30 days — deliberately not `RECEIPT_AUDIT_LOOKBACK_HOURS`'s 24h, since a registry
+    outage must not silently and permanently lose a revocation; enforced `>= 1`).
+  - `RegistryProfileService` widened: `ProfileCacheEntry` now also carries `registryDid`
+    and `acdpVersion` (both `string | null`, tri-stated together), extracted from the
+    SAME cached `/.well-known/acdp.json` probe as the existing `advertisesX` checks — no
+    additional HTTP request. New public `registryCapabilities(authority, tenantId)`.
+  - New `src/audit/revocation-binding.ts`: `crossCheckRegistryBinding` — a direct
+    transliteration of the SDK's `KeyRevocation::cross_check_registry_binding`
+    (`acdp-rs/crates/acdp-types/src/revocation.rs:384-405`), not exposed to Node. Two
+    comparisons, each naming which failed: `publisher === authorityToDidWeb
+    (servingAuthority)` (reusing Phase 3's `%3A`-encoding helper, not a naive template)
+    and `publisher === capabilitiesRegistryDid`.
+- Gates (mine, then independently re-run by the verifier — identical counts both times):
+  `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 · `check:build`
+  both builds 139 files · unit 75 suites/975 passed/3 skipped/978 total (+18 new,
+  960→978) · integration 30 suites/196 passed (unchanged — this phase adds no
+  integration surface).
+- All 6 acceptance criteria verified individually by the verifier: the four knobs and
+  their exact readers/validators; the two `validate()` throws (naming both variables /
+  all three valid values); `registryCapabilities`'s zero-extra-HTTP-request guarantee
+  (asserted at 1 call across 3 consecutive queries — stronger than the plan's required
+  2); `crossCheckRegistryBinding`'s exact example call plus both failure directions
+  including the port-bearing `%3A` case; the `npm test` delta matching exactly (+18, no
+  other tests changed).
+- Verifier's 3 non-blocking notes, addressed/deferred:
+  - A misleading test title in `registry-profile.service.spec.ts` (said "both fields as
+    null", asserted only one) — fixed same commit.
+  - `keyRevocationAttestedScope`'s `as` cast is unchecked at field-init (consistent with
+    this file's `streamHubStrategy`-style deferred validation, not the `policyBackend`/
+    `jwtSigningAlg`-style eager IIFE validation) and a literal empty string doesn't fall
+    back to the default (`??` only catches `undefined`) — both fail closed via the
+    production `validate()` throw, so left as-is; noted for whoever writes Phase 12's
+    `switch` over this value.
+  - `registryCapabilities` returning `{null, null}` is ambiguous between "document
+    unreadable" and "readable but both fields individually malformed" — callers needing
+    to disambiguate should also consult the `profiles` tri-state. Both fail closed under
+    §6 either way; flagged for Phase 12, not fixed here (no behaviour to fix yet).
+- Files touched: `src/config/app-config.service.ts`, `src/config/app-config.service.spec.ts`,
+  `src/audit/registry-profile.service.ts`, `src/audit/registry-profile.service.spec.ts`,
+  `src/audit/revocation-binding.ts` (new), `src/audit/revocation-binding.spec.ts` (new),
+  `docs/CONFIGURATION.md`, `.env.example`, `plans/rfc-0014-0015-upgrade.md` (Phase 11 →
+  DONE, no divergence). No `ASSUMPTIONS.md` entries.
+Next: Phase 12 (verified revocation facts — schema, repositories, and the verification
+sweep; depends on Phase 2, Phase 10, Phase 11).
