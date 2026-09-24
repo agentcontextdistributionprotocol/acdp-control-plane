@@ -2883,3 +2883,4 @@ PASS, hand PR3 (Phases 10-15, branch `rfc-0014/pr3-key-revocation`) to
 
 ### Ship (PR3)
 pushed rfc-0014/pr3-key-revocation dec5933fb892286a2a7bb91cc8ba40bf627dbacd
+PR #168 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/168
