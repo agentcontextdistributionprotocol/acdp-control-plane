@@ -13,6 +13,18 @@ function readNumber(name: string, defaultValue: number): number {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
+// RFC-ACDP-0015 §8.1's max_age_secs is explicitly nullable in the SDK policy
+// (null disables the freshness split entirely) — distinct from "unset, use
+// the default." An operator opts into "no staleness window" by setting the
+// var to the empty string or literal "0", not by omitting it.
+function readNullableNumber(name: string, defaultValue: number | null): number | null {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+  if (raw.trim() === '' || raw.trim() === '0') return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
 function readStringList(name: string): string[] {
   const raw = process.env[name];
   if (!raw) return [];
@@ -295,6 +307,25 @@ export class AppConfigService implements OnModuleInit {
   // The N in "N-witnessed": meets_quorum is true once this many DISTINCT trusted
   // witnesses have a valid cosignature over the exact head tuple.
   readonly witnessQuorumMinWitnesses = readNumber('WITNESS_QUORUM_MIN_WITNESSES', 1);
+  // §8.1 freshness split: a cosignature older than this many seconds still
+  // counts toward witnessedCount/meetsQuorum (a stale-but-valid cosignature
+  // is never a failure — §8.1's anti-backdating principle), but is excluded
+  // from freshWitnessedCount/meetsFreshQuorum. Set to "" or "0" to disable
+  // the split entirely (every verified cosignature counts as fresh).
+  readonly witnessQuorumMaxAgeSeconds = readNullableNumber('WITNESS_QUORUM_MAX_AGE_SECONDS', 300);
+  // §8 step 5 HARD gate: a cosignature claiming a witnessed_at more than this
+  // far in the future is rejected outright (never counted at all), same
+  // category as an invalid signature — distinct from the SOFT freshness
+  // split above.
+  readonly witnessQuorumMaxClockSkewSeconds = readNumber(
+    'WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS',
+    120,
+  );
+  // B1: keep this many cosignatures per (tenant, witness, log, head) tuple
+  // during retention purge — the newest N-1 plus the single oldest row
+  // unconditionally (§8.1 anti-backdating: the oldest surviving cosignature
+  // is the strongest evidence a head existed early, so it is never purged).
+  readonly witnessCosignatureKeepPerHead = readNumber('WITNESS_COSIGNATURE_KEEP_PER_HEAD', 10);
 
   // Receipt ↔ log inclusion cross-check (RFC-ACDP-0012 §9.1): for stored
   // publish events with receipts from log-advertising registries, fetch
@@ -435,6 +466,15 @@ export class AppConfigService implements OnModuleInit {
           'WITNESS_COSIGNING_ENABLED=true requires LOG_WITNESS_ENABLED=true — cosigning rides the checkpoint witness verification',
         );
       }
+      // B1 re-mints a fresh cosignature on EVERY observation (not just on
+      // tree_size change), so log_cosignatures grows without bound unless
+      // DataRetentionService's purgeOldPerTuple sweep is running.
+      if (!this.dataRetentionEnabled) {
+        this.logger.warn(
+          'WITNESS_COSIGNING_ENABLED=true but DATA_RETENTION_ENABLED=false — ' +
+            'log_cosignatures gains a fresh row on every observation sweep and will grow unbounded without the retention purge.',
+        );
+      }
     }
 
     // Witness quorum consumption (RFC-ACDP-0015 §8). Rides the checkpoint
@@ -452,6 +492,21 @@ export class AppConfigService implements OnModuleInit {
       if (this.witnessQuorumTrusted.length === 0) {
         this.logger.warn(
           'WITNESS_QUORUM_ENABLED=true but WITNESS_QUORUM_TRUSTED is empty — no witness can ever count, so every head reports witnessed_count=0.',
+        );
+      }
+      // B8: a self-listed witness would let this CP's own mint count toward
+      // its own quorum, defeating the entire point (RFC-ACDP-0015 §13/§15 —
+      // a witness sharing a failure domain with the registry must not count;
+      // sharing one with ONESELF is the limit case). Fail closed at boot, not
+      // silently at evaluation time. `witnessId` may legitimately be empty
+      // here — WITNESS_QUORUM_ENABLED requires only LOG_WITNESS_ENABLED, not
+      // WITNESS_COSIGNING_ENABLED, so a consume-only deployment never sets
+      // WITNESS_ID — hence the non-empty guard before the membership check.
+      if (this.witnessId.trim() && this.witnessQuorumTrusted.includes(this.witnessId.trim())) {
+        throw new Error(
+          `WITNESS_QUORUM_TRUSTED must not contain this CP's own WITNESS_ID ` +
+            `('${this.witnessId.trim()}') — counting your own cosignature toward ` +
+            `your own quorum defeats the independent-vantage point of witnessing.`,
         );
       }
     }

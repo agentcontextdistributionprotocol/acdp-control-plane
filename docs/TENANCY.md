@@ -118,6 +118,29 @@ not authenticated principals:
 
 See [INGEST.md](./INGEST.md#registry-trust--enrollment).
 
+## Transparency-log witness evidence
+
+`log_witness_checkpoints` and `log_cosignatures` (RFC-ACDP-0012/0015) are
+tenant-owned like any other table — two tenants witnessing the same registry
+head each get their own evidence row and their own cosignature. Their unique
+constraints lead with `tenant_id` (migration `0019_witness_tenant_scope.sql`;
+before it, the constraints omitted `tenant_id` entirely, so a second tenant's
+insert silently no-opped and that tenant saw an empty witness history despite
+the sweep reporting success). `LogWitnessRepository.updateQuorum` and
+`.findByLogIdAndSize` take `tenantId` as a required parameter for the same
+reason. `LogCosignatureRepository.list`/`.coveredLogs` are the one deliberate
+exception — they back the `GET /log/witness` public feed for this CP's single
+witness identity (`WITNESS_ID`), not a tenant view; see the class doc comment
+in `src/storage/log-cosignature.repository.ts`.
+
+`log_cosignatures`' unique constraint was widened again in migration
+`0020_cosignature_freshness.sql` (RFC-ACDP-0015 §4/§8.1/§15, B1): a witness
+re-mints a fresh cosignature on every observation, including an unchanged head
+(a liveness signal — "a witness that silently stops cosigning is
+indistinguishable from one that is merely offline"), so the key now includes
+`witnessed_at` — one row per (tenant, witness, log, head) *observation*, not
+per head. Same per-tenant scoping as above; only the granularity changed.
+
 ## Testing
 
 `test/integration/tenancy-isolation.integration.spec.ts` exercises cross-tenant

@@ -1,10 +1,18 @@
 import { DataRetentionService } from './data-retention.service';
 
-function makeDeps(overrides: { enabled?: boolean; ttlDays?: number; lock?: boolean } = {}) {
+function makeDeps(
+  overrides: {
+    enabled?: boolean;
+    ttlDays?: number;
+    lock?: boolean;
+    keepPerHead?: number;
+  } = {},
+) {
   const config = {
     dataRetentionEnabled: overrides.enabled ?? true,
     dataRetentionTtlDays: overrides.ttlDays ?? 30,
     dataRetentionIntervalHours: 6,
+    witnessCosignatureKeepPerHead: overrides.keepPerHead ?? 10,
   } as any;
   const database = {
     tryAdvisoryLock: jest.fn().mockResolvedValue(overrides.lock ?? true),
@@ -13,24 +21,27 @@ function makeDeps(overrides: { enabled?: boolean; ttlDays?: number; lock?: boole
   const contextEventRepo = { deleteBefore: jest.fn().mockResolvedValue(5) };
   const runRepo = { deleteTerminalBefore: jest.fn().mockResolvedValue(3) };
   const deliveryRepo = { deleteDeliveredBefore: jest.fn().mockResolvedValue(2) };
+  const cosignatureRepo = { purgeOldPerTuple: jest.fn().mockResolvedValue(4) };
   const svc = new DataRetentionService(
     config,
     database as any,
     contextEventRepo as any,
     runRepo as any,
     deliveryRepo as any,
+    cosignatureRepo as any,
   );
-  return { svc, config, database, contextEventRepo, runRepo, deliveryRepo };
+  return { svc, config, database, contextEventRepo, runRepo, deliveryRepo, cosignatureRepo };
 }
 
 describe('DataRetentionService', () => {
   describe('purge()', () => {
     it('purges each table under an advisory lock and returns per-table counts', async () => {
-      const { svc, database, contextEventRepo, runRepo, deliveryRepo } = makeDeps();
+      const { svc, database, contextEventRepo, runRepo, deliveryRepo, cosignatureRepo } =
+        makeDeps({ keepPerHead: 7 });
 
       const result = await svc.purge();
 
-      expect(result).toEqual({ events: 5, runs: 3, deliveries: 2 });
+      expect(result).toEqual({ events: 5, runs: 3, deliveries: 2, cosignatures: 4 });
       expect(database.tryAdvisoryLock).toHaveBeenCalledWith('acdp-cp-retention');
       // Lock is always released, even on the success path.
       expect(database.advisoryUnlock).toHaveBeenCalledWith('acdp-cp-retention');
@@ -40,6 +51,7 @@ describe('DataRetentionService', () => {
       expect(cutoff).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       expect(runRepo.deleteTerminalBefore).toHaveBeenCalledWith(cutoff);
       expect(deliveryRepo.deleteDeliveredBefore).toHaveBeenCalledWith(cutoff);
+      expect(cosignatureRepo.purgeOldPerTuple).toHaveBeenCalledWith(cutoff, 7);
     });
 
     it('computes the cutoff as now minus TTL days', async () => {
@@ -53,14 +65,16 @@ describe('DataRetentionService', () => {
     });
 
     it('skips the purge (and never touches repos) when the advisory lock is held elsewhere', async () => {
-      const { svc, database, contextEventRepo, runRepo, deliveryRepo } = makeDeps({ lock: false });
+      const { svc, database, contextEventRepo, runRepo, deliveryRepo, cosignatureRepo } =
+        makeDeps({ lock: false });
 
       const result = await svc.purge();
 
-      expect(result).toEqual({ events: 0, runs: 0, deliveries: 0 });
+      expect(result).toEqual({ events: 0, runs: 0, deliveries: 0, cosignatures: 0 });
       expect(contextEventRepo.deleteBefore).not.toHaveBeenCalled();
       expect(runRepo.deleteTerminalBefore).not.toHaveBeenCalled();
       expect(deliveryRepo.deleteDeliveredBefore).not.toHaveBeenCalled();
+      expect(cosignatureRepo.purgeOldPerTuple).not.toHaveBeenCalled();
       // Lock wasn't acquired, so we must NOT release it.
       expect(database.advisoryUnlock).not.toHaveBeenCalled();
     });

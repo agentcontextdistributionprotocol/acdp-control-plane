@@ -6,8 +6,12 @@
  * trust path entirely (§6.2): a consumer learns what the witness saw without the
  * registry able to withhold or filter it.
  *
- *   - GET /log/witness[?log_id=…&tree_size=…]     — this witness's cosignatures,
- *     most-recent first (§6.2).
+ *   - GET /log/witness[?log_id=…&tree_size=…&all=true] — this witness's
+ *     cosignatures, most-recent first (§6.2). Default view collapses B1's
+ *     one-row-per-observation series to the latest cosignature per distinct
+ *     head; `all=true` serves the full per-observation series (the §8.1
+ *     anti-backdating use — an older surviving cosignature for a head is
+ *     stronger evidence it existed early).
  *   - GET /.well-known/acdp-witness.json          — witness capabilities (§9).
  *   - GET /.well-known/did.json                   — the witness DID document,
  *     whose `assertionMethod` key a consumer resolves `signature.key_id` to (§8
@@ -25,13 +29,12 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { LOG_ID_RE } from '../audit/log-verify';
 import { Public } from '../auth/public.decorator';
 import { AppException } from '../errors/app-exception';
 import { ErrorCode } from '../errors/error-codes';
 import { LogCosignatureRepository } from '../storage/log-cosignature.repository';
 import { WitnessSigningService } from './witness-signing.service';
-
-const LOG_ID_RE = /^did:web:[A-Za-z0-9._%:-]+\/log\/[a-z0-9-]{1,32}$/;
 
 @ApiTags('witness')
 @Controller()
@@ -48,11 +51,13 @@ export class WitnessController {
   @ApiOperation({
     summary:
       "This witness's transparency-log cosignatures (RFC-ACDP-0015 §6.2), " +
-      'most-recent first, optionally filtered by ?log_id= and ?tree_size=.',
+      'most-recent first, optionally filtered by ?log_id= and ?tree_size=, ' +
+      'and ?all=true for the full per-observation series.',
   })
   async cosignatures(
     @Query('log_id') logId?: string,
     @Query('tree_size') treeSize?: string,
+    @Query('all') all?: string,
   ): Promise<{ witness_id: string; witness_signatures: Record<string, unknown>[] }> {
     this.requireEnabled();
 
@@ -80,7 +85,8 @@ export class WitnessController {
       witnessId: this.witnessSigning.witnessId,
       logId,
       treeSize: sizeNum,
-      limit: 50,
+      limit: all === 'true' ? 200 : 50,
+      all: all === 'true',
     });
     return {
       witness_id: this.witnessSigning.witnessId,

@@ -18,12 +18,16 @@ import { createHash, createPrivateKey, KeyObject } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AcdpCanonicalizer, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
+import { ErrorCode } from '../errors/error-codes';
 import {
+  cosignatureAgeOk,
   cosignatureFreshnessOk,
   cosignatureHash,
   evaluateQuorum,
+  formatQuorumFailure,
   hostEvaluateQuorum,
   mintCosignature,
+  nativeEvaluateQuorum,
   nativeMintCosignature,
   nativeVerifyCosignature,
   nodeWitnessSigner,
@@ -117,6 +121,47 @@ describe('cosignature construction (RFC-ACDP-0015 §4–§5)', () => {
     expect(verifyCosignature(tampered, witnessPubB64).ok).toBe(false);
   });
 
+  it('B5: host-path (tsVerifyCosignature) failure carries ErrorCode.INVALID_WITNESS_COSIGNATURE', () => {
+    const minted = mintCosignature(CHECKPOINT, '2026-07-04T12:00:05.000Z', signer);
+    if (!minted.ok) throw new Error('mint failed');
+    const tampered = {
+      ...minted.cosignature,
+      signature: { ...minted.cosignature.signature, key_id: 'did:web:evil.example.org#k1' },
+    };
+    const witnessPubB64 = b64FromHex(
+      '17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce',
+    );
+    const outcome = tsVerifyCosignature(tampered, witnessPubB64);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.code).toBe(ErrorCode.INVALID_WITNESS_COSIGNATURE);
+  });
+
+  (sdkHasCosignatureSurface() ? it : it.skip)(
+    'B5: native-path (nativeVerifyCosignature) §8 step-3 binding failure carries the binding\'s own lowercase `invalid_witness_cosignature` wire code',
+    () => {
+      const minted = mintCosignature(CHECKPOINT, '2026-07-04T12:00:05.000Z', signer);
+      if (!minted.ok) throw new Error('mint failed');
+      const tampered = {
+        ...minted.cosignature,
+        signature: { ...minted.cosignature.signature, key_id: 'did:web:evil.example.org#k1' },
+      };
+      const witnessPubB64 = b64FromHex(
+        '17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce',
+      );
+      const expectedCheckpoint: LogCheckpoint = {
+        checkpoint_version: 'acdp-log/1',
+        log_id: CHECKPOINT.log_id,
+        tree_size: CHECKPOINT.tree_size,
+        root_hash: CHECKPOINT.root_hash,
+        timestamp: CHECKPOINT.timestamp,
+        signature: { algorithm: 'ed25519', key_id: 'did:web:registry.example.com#receipt-key-1', value: 'x' },
+      };
+      const outcome = nativeVerifyCosignature(tampered, witnessPubB64, expectedCheckpoint);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.code).toBe('invalid_witness_cosignature');
+    },
+  );
+
   it('parseCosignature enforces the closed §4 schema', () => {
     const minted = mintCosignature(CHECKPOINT, '2026-07-04T12:00:05.000Z', signer);
     if (!minted.ok) throw new Error('mint failed');
@@ -136,6 +181,39 @@ describe('cosignature construction (RFC-ACDP-0015 §4–§5)', () => {
     const minted = mintCosignature(CHECKPOINT, future, signer);
     if (!minted.ok) throw new Error('mint failed');
     expect(cosignatureFreshnessOk(minted.cosignature).ok).toBe(false);
+  });
+});
+
+describe('cosignatureAgeOk (RFC-ACDP-0015 §8.1 freshness split)', () => {
+  const CHECKPOINT: WitnessedCheckpoint = {
+    log_id: 'did:web:registry.example.com/log/1',
+    tree_size: 5,
+    root_hash: 'sha256:0b5978172c671ca050b44790a749b18fc29d58a7a17495fbb4e0f86eb885f731',
+    timestamp: '2026-07-04T12:00:00.000Z',
+  };
+  const signer = signerFromSeed(
+    '11'.repeat(32),
+    'did:web:witness.example.com',
+    'did:web:witness.example.com#witness-key-1',
+  );
+  const now = new Date('2026-07-04T12:10:00.000Z').getTime();
+
+  it('is fresh within the window', () => {
+    const minted = mintCosignature(CHECKPOINT, '2026-07-04T12:08:00.000Z', signer); // 2m old
+    if (!minted.ok) throw new Error('mint failed');
+    expect(cosignatureAgeOk(minted.cosignature, now, 300)).toBe(true); // 300s window
+  });
+
+  it('is stale beyond the window', () => {
+    const minted = mintCosignature(CHECKPOINT, '2026-07-04T12:00:00.000Z', signer); // 10m old
+    if (!minted.ok) throw new Error('mint failed');
+    expect(cosignatureAgeOk(minted.cosignature, now, 300)).toBe(false); // 300s window
+  });
+
+  it('maxAgeSecs === null disables the split — always fresh regardless of age', () => {
+    const minted = mintCosignature(CHECKPOINT, '2020-01-01T00:00:00.000Z', signer); // years old
+    if (!minted.ok) throw new Error('mint failed');
+    expect(cosignatureAgeOk(minted.cosignature, now, null)).toBe(true);
   });
 });
 
@@ -489,6 +567,248 @@ describe('evaluateQuorum (RFC-ACDP-0015 §8 N-witnessed consumption)', () => {
     expect(report.witnessedCount).toBe(1);
     expect(report.meetsQuorum).toBe(false);
   });
+
+  it('B3 acceptance criterion 5: a trusted witness whose key never resolved counts toward neither count and is recorded in failures', () => {
+    const trusted = witness('11'.repeat(32), 'did:web:witness-gone.example');
+    const report = hostEvaluateQuorum({
+      cosignatures: [trusted.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [trusted.id],
+      // No entry for trusted.id — the key was never resolvable (absent from
+      // verificationMethod entirely, or undecodable did:key multibase).
+      witnessKeysB64: {},
+      minWitnesses: 1,
+      nowMs: now,
+    });
+    expect(report.witnessedCount).toBe(0);
+    expect(report.meetsQuorum).toBe(false);
+    expect(report.historicalWitnessedCount).toBe(0);
+    expect(report.failures).toEqual([expect.stringContaining(`${trusted.id}' key unresolved`)]);
+  });
+
+  it('§8.1 freshness split: a stale-but-valid cosignature counts toward witnessedCount, not freshWitnessedCount', () => {
+    const fresh = witness('11'.repeat(32), 'did:web:witness-fresh.example');
+    // A second witness, cosigned the exact same tuple, but 10 minutes before
+    // `now` — beyond a 300s freshness window.
+    const staleCosig = mintCosignature(
+      tuple,
+      '2026-07-04T11:55:00.000Z',
+      signerFromSeed('22'.repeat(32), 'did:web:witness-stale.example', 'did:web:witness-stale.example#witness-key-1'),
+    );
+    if (!staleCosig.ok) throw new Error('mint failed');
+    const { createPublicKey } = require('node:crypto');
+    const staleKey = createPrivateKey({
+      key: Buffer.concat([
+        Buffer.from('302e020100300506032b657004220420', 'hex'),
+        Buffer.from('22'.repeat(32), 'hex'),
+      ]),
+      format: 'der',
+      type: 'pkcs8',
+    });
+    const staleSpki = createPublicKey(staleKey).export({ format: 'der', type: 'spki' }) as Buffer;
+    const stalePubB64 = staleSpki.subarray(staleSpki.length - 32).toString('base64');
+
+    const report = hostEvaluateQuorum({
+      cosignatures: [fresh.cosignature, staleCosig.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [fresh.id, 'did:web:witness-stale.example'],
+      witnessKeysB64: { [fresh.id]: fresh.publicKeyB64, 'did:web:witness-stale.example': stalePubB64 },
+      minWitnesses: 2,
+      maxAgeSecs: 300,
+      nowMs: now, // 2026-07-04T12:05:00.000Z
+    });
+    // Both verified — a stale cosignature is never a failure (§8.1).
+    expect(report.witnessedCount).toBe(2);
+    expect(report.meetsQuorum).toBe(true);
+    // Only the fresh one counts toward the freshness split.
+    expect(report.freshWitnessedCount).toBe(1);
+    expect(report.meetsFreshQuorum).toBe(false); // 1 < minWitnesses(2)
+  });
+
+  it('maxAgeSecs: null disables the freshness split — every verified cosignature also counts as fresh', () => {
+    const ancient = witness('11'.repeat(32), 'did:web:witness-a.example');
+    const report = hostEvaluateQuorum({
+      cosignatures: [ancient.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [ancient.id],
+      witnessKeysB64: { [ancient.id]: ancient.publicKeyB64 },
+      minWitnesses: 1,
+      maxAgeSecs: null,
+      // Ten years after the cosignature's witnessed_at — would fail any
+      // finite window, but the split is disabled.
+      nowMs: new Date('2036-07-04T12:05:00.000Z').getTime(),
+    });
+    expect(report.witnessedCount).toBe(1);
+    expect(report.freshWitnessedCount).toBe(1);
+    expect(report.meetsFreshQuorum).toBe(true);
+  });
+
+  it('host and native agree on the freshness split for the same inputs (parity)', () => {
+    const a = witness('11'.repeat(32), 'did:web:witness-a.example');
+    const inputs = {
+      cosignatures: [a.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [a.id],
+      witnessKeysB64: { [a.id]: a.publicKeyB64 },
+      minWitnesses: 1,
+      maxAgeSecs: 60, // the fixture cosignature is ~4m before `now` — stale under 60s
+      nowMs: now,
+    };
+    const host = hostEvaluateQuorum(inputs);
+    expect(host.freshWitnessedCount).toBe(0);
+    expect(host.meetsFreshQuorum).toBe(false);
+    if (!sdkHasCosignatureSurface()) return;
+    const native = nativeEvaluateQuorum(inputs);
+    expect(native).not.toBeNull();
+    if (native === null) return;
+    expect(native.freshWitnessedCount).toBe(host.freshWitnessedCount);
+    expect(native.meetsFreshQuorum).toBe(host.meetsFreshQuorum);
+  });
+
+  it('§9 historical sub-count: a cosignature under a historical witness key counts separately, never toward witnessedCount/meetsQuorum', () => {
+    const current = witness('11'.repeat(32), 'did:web:witness-current.example');
+    const historical = witness('22'.repeat(32), 'did:web:witness-retired.example');
+    const report = hostEvaluateQuorum({
+      cosignatures: [current.cosignature, historical.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [current.id, historical.id],
+      witnessKeysB64: { [current.id]: current.publicKeyB64, [historical.id]: historical.publicKeyB64 },
+      historicalWitnessIds: new Set([historical.id]),
+      minWitnesses: 2,
+      nowMs: now,
+    });
+    expect(report.witnessedCount).toBe(1);
+    expect(report.verifiedWitnessIds).toEqual([current.id]);
+    expect(report.historicalWitnessedCount).toBe(1);
+    // 1 current + 1 historical still does not satisfy a 2-witnessed policy —
+    // historical evidence never substitutes for a current attestation.
+    expect(report.meetsQuorum).toBe(false);
+  });
+
+  it('§9 negative: meetsQuorum stays false with minWitnesses=1 when only a historical cosignature is present', () => {
+    const historical = witness('22'.repeat(32), 'did:web:witness-retired.example');
+    const report = hostEvaluateQuorum({
+      cosignatures: [historical.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [historical.id],
+      witnessKeysB64: { [historical.id]: historical.publicKeyB64 },
+      historicalWitnessIds: new Set([historical.id]),
+      minWitnesses: 1,
+      nowMs: now,
+    });
+    expect(report.witnessedCount).toBe(0);
+    expect(report.meetsQuorum).toBe(false);
+    expect(report.historicalWitnessedCount).toBe(1);
+  });
+
+  it('host and native agree on the historical sub-count for the same inputs (parity)', () => {
+    const current = witness('11'.repeat(32), 'did:web:witness-current.example');
+    const historical = witness('22'.repeat(32), 'did:web:witness-retired.example');
+    const inputs = {
+      cosignatures: [current.cosignature, historical.cosignature],
+      checkpoint: CP,
+      trustedWitnessIds: [current.id, historical.id],
+      witnessKeysB64: { [current.id]: current.publicKeyB64, [historical.id]: historical.publicKeyB64 },
+      historicalWitnessIds: new Set([historical.id]),
+      minWitnesses: 1,
+      nowMs: now,
+    };
+    const host = hostEvaluateQuorum(inputs);
+    expect(host.witnessedCount).toBe(1);
+    expect(host.historicalWitnessedCount).toBe(1);
+    if (!sdkHasCosignatureSurface()) return;
+    const native = nativeEvaluateQuorum(inputs);
+    expect(native).not.toBeNull();
+    if (native === null) return;
+    expect(native.witnessedCount).toBe(host.witnessedCount);
+    expect(native.historicalWitnessedCount).toBe(host.historicalWitnessedCount);
+    expect(native.meetsQuorum).toBe(host.meetsQuorum);
+  });
+});
+
+describe('formatQuorumFailure (B4: a native failures() entry is an object, never a bare string)', () => {
+  it('formats a {code, error} object as "code: error"', () => {
+    expect(
+      formatQuorumFailure({ valid: false, code: 'invalid_witness_cosignature', error: 'boom' }),
+    ).toBe('invalid_witness_cosignature: boom');
+  });
+
+  it('defaults the code to acdp_error when only `error` is a string', () => {
+    expect(formatQuorumFailure({ error: 'no code here' })).toBe('acdp_error: no code here');
+  });
+
+  it('passes a bare string through unchanged (in case a future binding reverts to strings)', () => {
+    expect(formatQuorumFailure('already a string')).toBe('already a string');
+  });
+
+  it('never renders any shape as the literal "[object Object]" (the B4 defect)', () => {
+    for (const shape of [
+      { valid: false, code: 'x', error: 'y' },
+      { foo: 'bar' },
+      null,
+      42,
+      [1, 2, 3],
+      undefined,
+    ]) {
+      expect(formatQuorumFailure(shape)).not.toBe('[object Object]');
+    }
+  });
+
+  it('falls back to (bounded) JSON for a shape with neither `code` nor `error`', () => {
+    expect(formatQuorumFailure({ foo: 'bar' })).toBe(JSON.stringify({ foo: 'bar' }));
+    expect(formatQuorumFailure(null)).toBe('null');
+    expect(formatQuorumFailure(42)).toBe('42');
+  });
+
+  it('truncates an oversized garbage-shaped entry to 500 chars plus an ellipsis', () => {
+    const out = formatQuorumFailure({ data: 'x'.repeat(1000) });
+    expect(out.length).toBe(501);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  (sdkHasCosignatureSurface() ? it : it.skip)(
+    "a real native evaluateWitnessQuorum() failure — an unresolved trusted witness's cosignature — never renders as \"[object Object]\"",
+    () => {
+      const witnessId = 'did:web:witness-unresolved.example';
+      const cp: LogCheckpoint = {
+        checkpoint_version: 'acdp-log/1',
+        log_id: 'did:web:registry.example.com/log/1',
+        tree_size: 5,
+        root_hash: 'sha256:0b5978172c671ca050b44790a749b18fc29d58a7a17495fbb4e0f86eb885f731',
+        timestamp: '2026-07-04T12:00:00.000Z',
+        signature: { algorithm: 'ed25519', key_id: 'did:web:registry.example.com#receipt-key-1', value: 'x' },
+      };
+      const tuple: WitnessedCheckpoint = {
+        log_id: cp.log_id,
+        tree_size: cp.tree_size,
+        root_hash: cp.root_hash,
+        timestamp: cp.timestamp,
+      };
+      const signer = signerFromSeed('44'.repeat(32), witnessId, `${witnessId}#witness-key-1`);
+      const minted = mintCosignature(tuple, '2026-07-04T12:00:01.000Z', signer);
+      if (!minted.ok) throw new Error('mint failed');
+      const native = nativeEvaluateQuorum({
+        cosignatures: [minted.cosignature],
+        checkpoint: cp,
+        trustedWitnessIds: [witnessId],
+        // No entry for witnessId — the key never resolved, so the native
+        // binding cannot synthesize a DID document for it and must reject.
+        witnessKeysB64: {},
+        minWitnesses: 1,
+        nowMs: new Date('2026-07-04T12:05:00.000Z').getTime(),
+      });
+      expect(native).not.toBeNull();
+      if (native === null) return;
+      expect(native.witnessedCount).toBe(0);
+      expect(native.failures.length).toBeGreaterThan(0);
+      for (const f of native.failures) {
+        expect(f).not.toBe('[object Object]');
+        // Acceptance criterion 2: `code: message` (`/^[a-z_]+: /`), never a
+        // bare object stringification.
+        expect(f).toMatch(/^[a-z_]+: /);
+      }
+    },
+  );
 });
 
 /** A minimal resolvable witness DID document for `evaluateWitnessQuorum` (§9). */

@@ -402,8 +402,10 @@ export const receiptAudits = pgTable(
 
 // Transparency-log checkpoint witness (ACDP 0.3.0 Tier 3, RFC-ACDP-0012,
 // migration 0016). Every checkpoint (signed tree head) this control plane has
-// witnessed, verbatim — the forensic anchors §13/§15 call for. Witness/monitor
-// role only: cosigning is the reserved RFC-ACDP-0009 §2.12 work.
+// witnessed, verbatim — the forensic anchors §13/§15 call for. Cosigning
+// (RFC-ACDP-0015, migration 0017) and quorum consumption (migration 0018)
+// are separate, independently-gated tables below (logCosignatures etc.) —
+// this table is detection/retention only.
 export const logWitnessCheckpoints = pgTable(
   'log_witness_checkpoints',
   {
@@ -430,11 +432,30 @@ export const logWitnessCheckpoints = pgTable(
     // detect/cosign layers work without it).
     witnessedCount: integer('witnessed_count'),
     meetsQuorum: boolean('meets_quorum'),
+    // RFC-ACDP-0015 §8.1 freshness split (migration 0020): DISTINCT trusted
+    // witnesses whose cosignature ALSO passes the max_age_secs staleness
+    // check, and whether that meets the same N-witnessed policy. NULL when
+    // quorum consumption is disabled, same as witnessedCount/meetsQuorum.
+    freshWitnessedCount: integer('fresh_witnessed_count'),
+    meetsFreshQuorum: boolean('meets_fresh_quorum'),
+    // RFC-ACDP-0010 §9 key lifecycle carried over to a witness's own key per
+    // RFC-ACDP-0015 §9 (migration 0021): DISTINCT trusted witnesses whose
+    // cosignature verified under a RETIRED (historical) key. NEVER folded
+    // into witnessedCount/meetsQuorum above — a separate sub-count, same
+    // NULL-when-disabled convention as the other quorum fields. Deliberately
+    // similarly named to, but ORTHOGONAL from, receipt_audits.verified_historical
+    // (the registry's receipt key) and RFC-ACDP-0014's producer pre_compromise —
+    // three different RFCs' key-lifecycle axes, not to be unified.
+    historicalWitnessedCount: integer('historical_witnessed_count'),
   },
   (t) => ({
-    // Dedupes re-fetches of the same head; two rows sharing (log_id,
-    // tree_size) with different root_hash are split-view evidence.
-    uniqueHead: uniqueIndex('log_witness_checkpoints_log_id_tree_size_root_hash_key').on(
+    // Dedupes re-fetches of the same head, PER TENANT (migration 0019 — two
+    // tenants witnessing the same registry head must each get their own
+    // evidence row, not have the second silently no-op). Two rows sharing
+    // (tenant_id, log_id, tree_size) with different root_hash are split-view
+    // evidence.
+    uniqueHead: uniqueIndex('log_witness_checkpoints_tenant_head_key').on(
+      t.tenantId,
       t.logId,
       t.treeSize,
       t.rootHash,
@@ -551,13 +572,31 @@ export const logCosignatures = pgTable(
       .defaultNow(),
   },
   (t) => ({
-    // Idempotent per observed tuple for a given witness: re-observing the same
-    // head keeps the first cosignature (RFC-ACDP-0015 §4/§7).
-    uniqueCosig: uniqueIndex('log_cosignatures_witness_log_size_root_key').on(
+    // WIDENED to include witnessedAt (migration 0020, B1 fix): §4 requires a
+    // FRESH cosignature on every re-observation, including at an unchanged
+    // tree_size (a liveness signal) — the narrower (pre-0020) key kept only
+    // the first cosignature per head, silently defeating that requirement.
+    // Widening rather than dropping preserves genuine idempotence (a sweep
+    // retried within the same millisecond still cannot double-insert) while
+    // allowing one row per observation. Still PER TENANT (migration 0019,
+    // B7 fix).
+    uniqueCosig: uniqueIndex('log_cosignatures_tenant_witness_head_ts_key').on(
+      t.tenantId,
       t.witnessId,
       t.logId,
       t.treeSize,
       t.rootHash,
+      t.witnessedAt,
+    ),
+    // Serves "latest per tuple" (LogCosignatureRepository.list's DISTINCT ON)
+    // and the retention purge's per-tuple ranking (migration 0020).
+    tupleWitnessedIdx: index('lcs_tuple_witnessed_idx').on(
+      t.tenantId,
+      t.witnessId,
+      t.logId,
+      t.treeSize,
+      t.rootHash,
+      t.witnessedAt.desc(),
     ),
     logSizeIdx: index('lcs_log_size_idx').on(t.logId, t.treeSize),
     tenantIdx: index('lcs_tenant_idx').on(t.tenantId),

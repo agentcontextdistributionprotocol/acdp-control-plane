@@ -2029,3 +2029,299 @@ seam (a different RFC, or a real code dependency edge).
   this session — deploy remains a deliberate separate step, not owed by this PR.
 - **PR1 shipped end-to-end.** Next: PR2 (Phases 5-9, RFC-ACDP-0015 witness/cosign correctness
   fixes B1-B9) on a fresh branch `rfc-0014/pr2-witness-fixes` cut from updated main.
+
+### /implement checkpoints — rfc-0014/pr2-witness-fixes
+
+**Phase 5 — Correct the three false claims that cosigning is unimplemented.** PASS r1
+(fresh Opus verifier, not critical — doc/comment-only, zero behavior change, no one-way
+door). Fixed: `CLAUDE.md:332-333` (false "deliberately NOT implemented" claim, replaced +
+new paragraph documenting `WitnessSigningService`/`WITNESS_COSIGNING_ENABLED`/
+`WITNESS_QUORUM_ENABLED`/`/log/witness`/`log_cosignatures`, plus the "Key env vars" table
+entry), `src/audit/checkpoint-witness.service.ts:8-10` (header now describes `cosignSafe`
++ `evaluateQuorum`), `src/db/schema.ts:405-406` (comment no longer claims cosigning
+unimplemented), `docs/ARCHITECTURE.md:255-256` (precisely distinguishes implemented
+witness-side cosign/quorum from correctly-still-unimplemented registry-side §6.1
+aggregation). Verifier confirmed: grep acceptance criterion clean (one surviving hit is an
+accurate, scoped test-fixture comment about the default-disabled test setup — exactly the
+carve-out the plan's own criterion text allows), all 5 documented capabilities verified
+true against code (not just prose), diff touches only comment/doc lines (`git diff -U0`
+checked), unit suite pass count identical to pre-phase baseline (72/895/3/898),
+`drizzle/0016_log_witness.sql` untouched. Files touched: `CLAUDE.md`,
+`src/audit/checkpoint-witness.service.ts`, `src/db/schema.ts`, `docs/ARCHITECTURE.md`,
+`plans/rfc-0014-0015-upgrade.md` (Phase 5 → DONE). No `ASSUMPTIONS.md` entries.
+Next: Phase 6 (tenant isolation on witness evidence + self-cosignature guard, B7/B8).
+
+**Phase 6 — Tenant isolation on witness evidence, and the self-cosignature guard (B7, B8).**
+PASS r1 (fresh Opus verifier, routed to extra empirical rigor rather than a Fable pass —
+this phase carries an irreversible DB schema migration with no down-migration path, which
+the Autonomy ladder flags critical; the plan's own planning-time analysis already did the
+one-way-door thinking in full detail — exact old constraint names, the "wrong DROP name is
+a silent no-op and the ADD then succeeds anyway" failure mode, why a data backfill is
+unnecessary — so rather than a redundant Fable re-derivation, both the executor and the
+verifier independently reproduced the migration against the real test Postgres and queried
+`pg_constraint` directly, which is the strongest possible verification for a claim that's
+fundamentally about what a real database does).
+- B7 fix: new `drizzle/0019_witness_tenant_scope.sql` drops the old
+  `log_witness_checkpoints_log_id_tree_size_root_hash_key` /
+  `log_cosignatures_witness_id_log_id_tree_size_root_hash_key` constraints (their exact
+  Postgres-generated names, confirmed via the CREATE TABLE source) and adds
+  tenant-id-leading replacements. `LogWitnessRepository.updateQuorum` and
+  `.findByLogIdAndSize` now take `tenantId` as a required first parameter (2 call sites
+  updated: `checkpoint-witness.service.ts`, `log-inclusion-audit.service.ts`); a 3rd call
+  site in `test/integration/log-witness.integration.spec.ts` needed the same fix (caught by
+  `tsc`, not by the phase's own new tests — a useful reminder that the compiler is part of
+  the safety net here).
+- B8 fix: `AppConfigService.validate()` now throws at boot if `WITNESS_ID` appears in
+  `WITNESS_QUORUM_TRUSTED`, guarded so an empty `WITNESS_ID` (consume-only deployment)
+  never trips it.
+- Empirical DB verification (both executor and verifier, independently): applied migration
+  0019 to the real test Postgres, confirmed via direct `pg_constraint` query that exactly
+  one unique constraint remains per table with the correct new name and column list, then
+  manually re-ran the raw SQL file a second time and reconfirmed no duplicate constraint
+  was created — idempotency proven, not assumed.
+- Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 136 files · unit 72 suites/900 passed/3 skipped/903 total
+  (+5 new) · integration 30 suites/189 passed (+3 new).
+- Files touched: `drizzle/0019_witness_tenant_scope.sql` (new), `src/db/schema.ts`,
+  `src/storage/log-witness.repository.ts`, `src/storage/log-cosignature.repository.ts`,
+  `src/audit/checkpoint-witness.service.ts`, `src/audit/log-inclusion-audit.service.ts`,
+  `src/config/app-config.service.ts`, `docs/CONFIGURATION.md`, `docs/TENANCY.md`,
+  `src/config/app-config.service.spec.ts`, `src/audit/checkpoint-witness.service.spec.ts`,
+  `src/audit/log-inclusion-audit.service.spec.ts`,
+  `test/integration/tenancy-isolation.integration.spec.ts`,
+  `test/integration/log-witness.integration.spec.ts`,
+  `plans/rfc-0014-0015-upgrade.md` (Phase 6 → DONE). No `ASSUMPTIONS.md` entries.
+
+**Phase 7 — Cosignature freshness: re-mint on every observation, consume the §8.1 split
+(B1, B6, B11).** PASS r1 (fresh Opus verifier; carries a second irreversible DB migration
+— same reasoning as Phase 6 applies again: the plan's own Approach section already did
+the one-way-door analysis in full, so the verifier's mandate was to independently
+reproduce the migration against the real test Postgres rather than redo that analysis —
+it did, twice, confirming a clean no-op on retry).
+- B1 fix: `log_cosignatures`' unique key widened again (`drizzle/0020_cosignature_freshness.sql`,
+  dropping 0019's exact constraint name) to `(tenant_id, witness_id, log_id, tree_size,
+  root_hash, witnessed_at)` — a witness now mints a fresh cosignature on every observation,
+  including an unchanged head, per §4/§8.1/§15's liveness requirement. Only a genuine
+  same-millisecond re-mint still dedups.
+- B11 fix: `LogCosignatureRepository.list()` rewritten around a `selectDistinctOn` +
+  subquery (inner query orders `logId, treeSize, rootHash, witnessedAt DESC` to satisfy
+  Postgres's DISTINCT-ON-must-lead-ORDER-BY rule; outer query re-sorts `witnessedAt DESC`
+  and applies `LIMIT` post-dedup) — default view is the latest cosignature per distinct
+  head; new `all: true` / `GET /log/witness?all=true` serves the full per-observation
+  series for the §8.1 anti-backdating use.
+- B6 fix: `cosign.ts`'s `nativeEvaluateQuorum`/`hostEvaluateQuorum` both now thread
+  `max_age_secs`/`max_clock_skew_secs` into the policy and compute
+  `freshWitnessedCount`/`meetsFreshQuorum` (a stale-but-valid cosignature still counts
+  toward the base `witnessedCount` — never a failure — just excluded from the fresh
+  count); persisted via two new nullable columns on `log_witness_checkpoints`
+  (`fresh_witnessed_count`, `meets_fresh_quorum`, same migration 0020).
+- Retention: new `LogCosignatureRepository.purgeOldPerTuple` (raw SQL, two `ROW_NUMBER()`
+  windows) keeps the newest N-1 plus the single oldest row per tuple unconditionally
+  (§8.1 anti-backdating — never purge from the ends), wired into
+  `DataRetentionService.purge()` behind new `WITNESS_COSIGNATURE_KEEP_PER_HEAD` (default
+  10); `AppConfigService` now warns (not throws) when `WITNESS_COSIGNING_ENABLED=true`
+  and `DATA_RETENTION_ENABLED=false`.
+- Config: new `readNullableNumber` helper backs `WITNESS_QUORUM_MAX_AGE_SECONDS`
+  (`''`/`'0'` → `null`, explicitly disabling the freshness split) alongside plain
+  `WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS` (default 120, the hard §8 step 5 gate).
+- Two pre-existing tests updated because this phase's fix deliberately falsifies their
+  prior assumptions (not new gaps): `checkpoint-witness.service.spec.ts`'s idempotence
+  test (replaced with a fresh-re-mint test + a narrower exact-millisecond-collision
+  case) and `tenancy-isolation.integration.spec.ts`'s Phase-6 constraint-name assertion
+  (0019 name → 0020 name).
+- Empirical DB verification (both executor and verifier, independently, same discipline
+  as Phase 6): applied migration 0020 to the real test Postgres, confirmed via direct
+  `pg_constraint`/`\d` inspection that the widened constraint and both new columns exist
+  under the exact expected names, then re-ran the raw SQL file a second time and
+  reconfirmed a clean no-op (NOTICE-level skips only, constraint count still exactly 1).
+- Verifier nits (non-blocking, no action required against the acceptance criteria):
+  `purgeOldPerTuple`'s CTE scans the whole table per sweep rather than pre-filtering
+  candidate tuples (matches the rest of the retention sweep's existing unbatched style);
+  `WITNESS_COSIGNATURE_KEEP_PER_HEAD` has no lower-bound clamp (a negative value degrades
+  gracefully rather than crashing). Added a lock-note/rollback paragraph to
+  `drizzle/0020_cosignature_freshness.sql` (mirroring 0019's) in response to the one
+  documentation nit raised; re-verified idempotent after the comment-only edit.
+- Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 136 files · unit 72 suites/915 passed/3 skipped/918 total
+  (+15 new since Phase 6) · integration 30 suites/193 passed (+4 new).
+- Files touched: `drizzle/0020_cosignature_freshness.sql` (new), `src/db/schema.ts`,
+  `src/storage/log-cosignature.repository.ts`, `src/storage/log-witness.repository.ts`,
+  `src/audit/cosign.ts`, `src/audit/checkpoint-witness.service.ts`,
+  `src/config/app-config.service.ts`, `src/retention/data-retention.service.ts`,
+  `src/witness/witness.controller.ts`, `CLAUDE.md`, `docs/API.md`,
+  `docs/CONFIGURATION.md`, `docs/TENANCY.md`, `.env.example`,
+  `src/audit/cosign.spec.ts`, `src/audit/checkpoint-witness.service.spec.ts`,
+  `src/config/app-config.service.spec.ts`, `src/retention/data-retention.service.spec.ts`,
+  `test/integration/witness-cosigning.integration.spec.ts`,
+  `test/integration/tenancy-isolation.integration.spec.ts`,
+  `test/integration/log-witness.integration.spec.ts`,
+  `plans/rfc-0014-0015-upgrade.md` (Phase 7 → DONE). No `ASSUMPTIONS.md` entries.
+
+## Phase 8 — Witness key resolution: did:key witnesses and retired witness keys (B2, B3)
+
+- 2026-09-23. Verdict: **PASS**, round 1. Verifier tier: fresh Opus (not Fable) — the
+  one schema change (migration 0021) is a single additive nullable column, the lowest-
+  risk migration shape possible, and the plan's own Approach section already reasoned
+  through the two defects' fix at planning time; no genuine one-way-door analysis was
+  left to do at implementation time.
+- B2 fix: `checkpoint-witness.service.ts`'s witness-key-resolution loop (inside
+  `consumeQuorumSafe`) now branches BEFORE falling through to `did:web` resolution — a
+  `did:key:z…` witness_id decodes LOCALLY via new `src/common/multibase.ts`
+  (`decodeEd25519Multibase`, a Result-type return since this file is NOT in
+  `ci-conventions.sh`'s `throw new Error` exemption list), with zero outbound HTTP.
+  `encodeEd25519Multibase` replaces the two previously copy-pasted base58/multicodec
+  encoders in `witness-signing.service.ts` and `cosign.ts` (deleted, both now import the
+  shared module) — no local `BASE58_ALPHABET` constant survives anywhere but
+  `multibase.ts` itself.
+- B3 fix: new `DidWebResolverService.resolveWitnessKey` delegates to the existing
+  `resolveReceiptKey` (RFC-ACDP-0010 §9 lifecycle-tolerant path — a key retired from
+  `assertionMethod` but retained in `verificationMethod` still verifies, `historical:
+  true`) rather than the strict assertionMethod-only `resolveKey` the code previously
+  (wrongly) used for a witness's own key. `QuorumReport`/`QuorumInputs` gain
+  `historicalWitnessedCount`/`historicalWitnessIds`, persisted via new
+  `drizzle/0021_witness_historical_quorum.sql` (`historical_witnessed_count integer` on
+  `log_witness_checkpoints`) and threaded through `LogWitnessRepository.updateQuorum`
+  (arity 8→9) exactly as Phase 7 threaded `freshWitnessedCount`.
+- Historical/native-host parity (the phase's most important correctness property,
+  independently traced by both me and the verifier): a historical witness's cosignature
+  is EXCLUDED from `witnessedCount`/`meetsQuorum` in BOTH evaluator branches — host
+  (`hostEvaluateQuorum`) skips historical ids before they can reach the `verified` set;
+  native (`nativeEvaluateQuorum`) strips historical ids from the `trustedWitnessIds` list
+  handed to the SDK's `evaluateWitnessQuorum` (which has no historical-key concept of its
+  own, so exclusion-from-input is the only way to keep it out of the binding's own
+  report). A shared `countHistoricalWitnesses` helper computes the sub-count identically
+  in both branches, called by both — never delegated to the SDK. Both host+native tested
+  directly (not just through `evaluateQuorum`'s dispatch), and the native path was
+  confirmed to actually exercise the real SDK binding (`sdkHasCosignatureSurface() ===
+  true` in this environment), not a stub.
+- `historicalWitnessedCount` is deliberately named similarly to, but kept orthogonal
+  from, `receipt_audits.verified_historical` (registry's own receipt key) and
+  RFC-ACDP-0014's future `pre_compromise` (producer's key) — a doc comment on each
+  distinguishes them per the plan's explicit "do not unify these names" instruction.
+- Empirical DB verification (same discipline as Phases 6/7, both executor and verifier
+  independently): applied migration 0021 to the real test Postgres, confirmed via `\d
+  log_witness_checkpoints` that `historical_witnessed_count integer` (nullable) exists,
+  re-ran the raw SQL a second time and confirmed a clean idempotent no-op (`NOTICE:
+  column ... already exists, skipping`, no error) — this is the simplest migration shape
+  in the plan so far (a single `ADD COLUMN IF NOT EXISTS`, no constraint changes, no lock
+  contention beyond the near-instant metadata-only add).
+- Verifier's two non-blocking notes (no action required against the acceptance
+  criteria, both diagnostic-completeness gaps rather than defects): (1) a bad-multicodec
+  `did:key` is proven rejected at the `decodeEd25519Multibase` unit level but not
+  end-to-end through a full `sweep()` into `QuorumReport.failures`; (2) in
+  `hostEvaluateQuorum`, a historical witness whose cosignature FAILS verification is
+  skipped before reaching the `failures.push(...)` line, so it's invisible in
+  `failures` even though a non-historical witness failing the same check would be
+  recorded — asymmetric diagnostics, not a miscount or crash risk.
+- Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 137 files · unit 73 suites/935 passed/3 skipped/939 total
+  (+21 new since Phase 7; 1 pre-existing unrelated flaky failure under full-suite
+  parallel load, `common/pino-logger.spec.ts`, confirmed passing in isolation by both
+  me and the verifier, and confirmed via diff to be untouched by this phase) ·
+  integration 30 suites/193 passed (0 new files, +1 new assertion in an existing test).
+- Files touched: `src/common/multibase.ts` (new), `src/common/multibase.spec.ts` (new),
+  `drizzle/0021_witness_historical_quorum.sql` (new), `src/audit/cosign.ts`,
+  `src/audit/checkpoint-witness.service.ts`, `src/auth/did-web/did-document.ts`,
+  `src/auth/did-web/did-web-resolver.service.ts`, `src/db/schema.ts`,
+  `src/storage/log-witness.repository.ts`, `src/witness/witness-signing.service.ts`,
+  `docs/API.md`, `docs/CONFIGURATION.md`, `CLAUDE.md`, `src/audit/cosign.spec.ts`,
+  `src/audit/checkpoint-witness.service.spec.ts`,
+  `src/auth/did-web/did-web-resolver.service.spec.ts`,
+  `test/integration/log-witness.integration.spec.ts`,
+  `plans/rfc-0014-0015-upgrade.md` (Phase 8 → DONE). No `ASSUMPTIONS.md` entries.
+Next: Phase 9 (quorum result fidelity — failure reasons as objects not `"[object
+Object]"` strings, the `invalid_witness_cosignature` error code, cleanup; B4, B5, B9).
+
+## Phase 9 — Quorum result fidelity: failure reasons, `invalid_witness_cosignature`, cleanup (B4, B5, B9)
+
+- 2026-09-23. Verdict: **PASS**, round 1. Verifier tier: fresh Opus (not Fable) — no
+  schema/migration, no public-contract shape decision left open at implementation time;
+  the plan's own Approach section already specified the exact fix for each of the four
+  defects.
+- B4 fix: `nativeEvaluateQuorum`'s `report.failures.map((f) => String(f))` — which
+  collapsed every native-path rejection reason to the literal `"[object Object]"`, since
+  the binding's `evaluate_witness_quorum_report` (confirmed directly against
+  `acdp-rs/bindings/acdp-node/src/v040.rs`) returns each entry as `{valid, code, error}`,
+  never a string — replaced with a new `formatQuorumFailure` helper: `{code, error}` →
+  `"code: error"`, bare string → passthrough (future-proofing against a binding
+  reverting to strings), anything else → bounded (500-char) `JSON.stringify`. Exported
+  for direct unit testing of all three shape branches.
+- B5 fix: new `ErrorCode.INVALID_WITNESS_COSIGNATURE` (`error-codes.ts`), with a comment
+  block modelled on `INVALID_LOG_PROOF`'s explaining the RFC-ACDP-0015 §10 distinction
+  (log-proof failures indict the log; cosignature failures indict an independent
+  witness's attestation — never collapsed into one wire code). `CosignOutcome` widened
+  to `{ok:false; code?: string; reason: string}`; the native branch now propagates the
+  binding's own lowercase code (`invalid_witness_cosignature`) instead of discarding it,
+  and every host-fallback failure branch (`tsVerifyCosignature`,
+  `cosignatureFreshnessOk`) carries the TS enum's uppercase value — the same
+  unreconciled dual-convention precedent this codebase already has for
+  `INVALID_LOG_PROOF` vs. the binding's `invalid_log_proof`.
+- B9a fix: deleted `WitnessSigningService.ownCosignatureVerifies` (zero call sites
+  confirmed via `grep -rn` across `src/`, `test/`, `e2e/`) and its misleading doc
+  comment; removed the now-unused `LogCosignature` type import.
+- B9b fix: `LOG_ID_RE` was declared three times, each over-permissive (accepting `_` in
+  the authority, which the closed JSON schema — verified directly against
+  `schemas/json/acdp-log-checkpoint.schema.json` — does not allow). Consolidated into
+  one `export`ed constant in `log-verify.ts` (the log-vocabulary owner), built from
+  shared `LOG_ID_AUTHORITY`/`LOG_ID_INSTANCE` string fragments so the plain and
+  capture-group forms can never drift apart; `witness.controller.ts` and `cosign.ts`
+  now import it instead of each declaring their own copy. This is a real behavior
+  change on `GET /log/witness?log_id=…` (an underscore now 400s instead of silently
+  matching nothing) — covered by a new integration test.
+- Tests added: `cosign.spec.ts` — a host-path binding-mismatch test asserting
+  `ErrorCode.INVALID_WITNESS_COSIGNATURE`, a native-path equivalent asserting the
+  binding's raw `invalid_witness_cosignature` code (guarded on
+  `sdkHasCosignatureSurface()`, which is true in this environment — so it actually
+  exercises the real SDK, not a stub), and a 6-case `formatQuorumFailure` describe block
+  (object/string/no-code-or-error/oversized-truncation/never-`[object Object]`, plus a
+  live native `evaluateWitnessQuorum()` call against an unresolved trusted witness,
+  proving the real binding's output formats as `code: message` and never
+  `[object Object]`). `log-verify.spec.ts` — `LOG_ID_RE` accepts the schema's character
+  class and rejects `_` in both the authority and the instance segment.
+  `witness-cosigning.integration.spec.ts` — extended the existing malformed-`log_id`
+  test with a dedicated `_`-rejection case (`GET /log/witness` → 400).
+- Acceptance criteria 1-7 all verified concretely by both me and the verifier (not just
+  asserted): the `[object Object]` grep over the witness/cosign suites' test output
+  returns nothing; `LOG_ID_RE` greps to exactly one declaration in `src/`;
+  `ownCosignatureVerifies` greps to zero; `WitnessAlertReason` is untouched by the diff.
+- Verifier's non-blocking observations (no action required): `hostEvaluateQuorum`'s own
+  failure strings don't prefix `verdict.code` the way the native path now does (B4 was
+  scoped to the native `String(f)` defect only — the host path never had that bug);
+  `CosignOutcome.code` has no downstream consumer yet beyond tests, which is intentional
+  per the plan (verdict/diagnostic category only, never a `WitnessAlertReason`); all
+  touched files fail `prettier --check`, but that's pre-existing repo-wide and prettier
+  isn't wired into CI or any npm script.
+- Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 137 files · unit 73 suites/947 passed/3 skipped/950 total
+  (+10 new since Phase 8) · integration 30 suites/194 passed (+1 new test in an existing
+  file; ran against a temporary standalone Postgres on an alternate port since the usual
+  5433 was occupied by an unrelated foreign `aitp_control_plane_test` container — the
+  documented, sanctioned `DATABASE_URL`-override workflow per `test/helpers/test-db.ts`'s
+  own comment, not a new problem).
+- Files touched: `src/errors/error-codes.ts`, `src/audit/cosign.ts`,
+  `src/audit/checkpoint-witness.service.ts`, `src/witness/witness-signing.service.ts`,
+  `src/witness/witness.controller.ts`, `src/audit/log-verify.ts`, `docs/API.md`,
+  `CLAUDE.md`, `src/audit/cosign.spec.ts`, `src/audit/log-verify.spec.ts`,
+  `test/integration/witness-cosigning.integration.spec.ts`,
+  `plans/rfc-0014-0015-upgrade.md` (Phase 9 → DONE, divergence notes). No new
+  `ASSUMPTIONS.md` entries.
+
+This closes out PR2's scope (Phases 5-9, `rfc-0014/pr2-witness-fixes`). Next: `/ship`
+PR2, then start PR3 (Phases 10-15, RFC-ACDP-0014 producer key-revocation, branch
+`rfc-0014/pr3-key-revocation`, depends on PR1 only — already merged).
+
+## PR2 shipped
+
+- 2026-09-23. PR-level verification gate (fresh Opus, full diff `main...HEAD`, 5 commits /
+  35 files / +2536/-163): **PASS**, no gaps. Independently re-ran the full local gate
+  suite (matched exactly: unit 73/947/3-skipped/950, `check:conventions` 6✓, `lint` 0,
+  `tsc` x2 clean, `check:build` 137 files), traced the `QuorumReport`/`QuorumInputs`/
+  `CosignOutcome` seams across Phases 6-9 for silent drops/overwrites (none), sanity-
+  checked migrations 0019-0021 are all additive (guarded `DROP CONSTRAINT IF EXISTS` by
+  exact Postgres-generated name + re-`ADD CONSTRAINT`, `ADD COLUMN IF NOT EXISTS`; no
+  `NOT NULL` added without a default on a populated table), confirmed `plans/
+  rfc-0014-0015-upgrade.md` shows Phases 5-9 all `Status: DONE` with `PROGRESS.md`'s
+  trail matching the actual diff, and confirmed `ASSUMPTIONS.md` has zero entries tagged
+  to this plan (nothing to `/reconcile` before merge).
+- `pushed rfc-0014/pr2-witness-fixes 3b04ed1`.
+- `PR #167 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/167`

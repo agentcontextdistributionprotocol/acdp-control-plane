@@ -252,6 +252,30 @@ describe('LogInclusionAuditService', () => {
     const verdict = await h.svc.auditEvent(makeEvent());
     expect(verdict.status).toBe('invalid_proof');
     expect(verdict.detail.join(' ')).toContain('split-view');
+    // The cross-binding lookup is scoped to the EVENT's own tenant — a
+    // tenant-B event must never be cross-bound against tenant-A's witnessed
+    // heads (B7).
+    expect(h.witnessRepo.findByLogIdAndSize).toHaveBeenCalledWith('default', LOG_ID, 5);
+  });
+
+  it('scopes the witness cross-binding lookup to the event tenant — a same-tuple head witnessed under a DIFFERENT tenant does not satisfy it', async () => {
+    const h = makeHarness();
+    // The repository mock is tenant-blind by construction here: it always
+    // resolves to null, simulating "no row for tenant-B" even though a row
+    // exists for tenant-A at the identical (log_id, tree_size) — proving the
+    // service passes the tenant through rather than querying globally.
+    h.witnessRepo.findByLogIdAndSize.mockResolvedValue(null);
+    h.federationClient.get.mockResolvedValue({
+      status: 200,
+      contentType: 'application/acdp+json',
+      body: JSON.stringify(inclusionResponse()),
+    });
+
+    const verdict = await h.svc.auditEvent(makeEvent({ tenantId: 'tenant-b' }));
+    // No cross-binding evidence for tenant-b (the mock returned null) → the
+    // proof still verifies on its own merits, not flagged split-view.
+    expect(verdict.status).toBe('included');
+    expect(h.witnessRepo.findByLogIdAndSize).toHaveBeenCalledWith('tenant-b', LOG_ID, 5);
   });
 
   it('404 for a receipt-bearing ctx_id is the §3 omission evidence → not_logged', async () => {

@@ -16,6 +16,7 @@ import {
 import { AppConfigService } from '../config/app-config.service';
 import { DatabaseService } from '../db/database.service';
 import { ContextEventRepository } from '../storage/context-event.repository';
+import { LogCosignatureRepository } from '../storage/log-cosignature.repository';
 import { RunRepository } from '../storage/run.repository';
 import { WebhookDeliveryRepository } from '../webhooks/webhook-delivery.repository';
 
@@ -32,6 +33,7 @@ export class DataRetentionService implements OnModuleInit, OnModuleDestroy {
     private readonly contextEventRepo: ContextEventRepository,
     private readonly runRepo: RunRepository,
     private readonly deliveryRepo: WebhookDeliveryRepository,
+    private readonly cosignatureRepo: LogCosignatureRepository,
   ) {}
 
   onModuleInit(): void {
@@ -63,11 +65,16 @@ export class DataRetentionService implements OnModuleInit, OnModuleDestroy {
    * Delete everything older than the TTL. Guarded by an advisory lock so
    * concurrent instances don't double-purge. Returns per-table counts.
    */
-  async purge(): Promise<{ events: number; runs: number; deliveries: number }> {
+  async purge(): Promise<{
+    events: number;
+    runs: number;
+    deliveries: number;
+    cosignatures: number;
+  }> {
     const acquired = await this.database.tryAdvisoryLock(ADVISORY_LOCK_KEY);
     if (!acquired) {
       this.logger.debug('retention purge skipped — another instance holds the lock');
-      return { events: 0, runs: 0, deliveries: 0 };
+      return { events: 0, runs: 0, deliveries: 0, cosignatures: 0 };
     }
     try {
       const cutoff = new Date();
@@ -79,13 +86,22 @@ export class DataRetentionService implements OnModuleInit, OnModuleDestroy {
       const runs = await this.runRepo.deleteTerminalBefore(cutoffIso);
       const deliveries = await this.deliveryRepo.deleteDeliveredBefore(cutoffIso);
       const events = await this.contextEventRepo.deleteBefore(cutoffIso);
+      // B1 (RFC-ACDP-0015): witness cosigning re-mints a fresh row on every
+      // observation, so log_cosignatures needs its own bounded-per-tuple
+      // purge, independent of the flat TTL above (§8.1 anti-backdating: the
+      // oldest row per tuple is kept unconditionally — see
+      // LogCosignatureRepository.purgeOldPerTuple).
+      const cosignatures = await this.cosignatureRepo.purgeOldPerTuple(
+        cutoffIso,
+        this.config.witnessCosignatureKeepPerHead,
+      );
 
-      if (events || runs || deliveries) {
+      if (events || runs || deliveries || cosignatures) {
         this.logger.log(
-          `retention purge: events=${events} runs=${runs} deliveries=${deliveries} cutoff=${cutoffIso}`,
+          `retention purge: events=${events} runs=${runs} deliveries=${deliveries} cosignatures=${cosignatures} cutoff=${cutoffIso}`,
         );
       }
-      return { events, runs, deliveries };
+      return { events, runs, deliveries, cosignatures };
     } finally {
       await this.database.advisoryUnlock(ADVISORY_LOCK_KEY);
     }

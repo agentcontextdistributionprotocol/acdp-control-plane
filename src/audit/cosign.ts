@@ -49,20 +49,31 @@
 import { createHash, sign as edSign, type KeyObject } from 'node:crypto';
 import { AcdpCanonicalizer, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 import { verifySignatureB64 } from '../auth/acdp-verify';
-import type { LogCheckpoint } from './log-verify';
+import { encodeEd25519Multibase } from '../common/multibase';
+import { ErrorCode } from '../errors/error-codes';
+import { LOG_ID_RE, type LogCheckpoint } from './log-verify';
 
 /** RFC-ACDP-0015 §4: the sole cosignature envelope version / domain separator. */
 export const COSIGNATURE_VERSION = 'acdp-cosig/1';
 /** RFC-ACDP-0015 §8 step 5 skew allowance (RFC-ACDP-0011 §7 step 6). */
 export const COSIGNATURE_MAX_FUTURE_SKEW_MS = 120_000;
 
-export type CosignOutcome = { ok: true } | { ok: false; reason: string };
+/**
+ * `code` carries the verdict category for a FAILING cosignature (B5): the
+ * native binding's own lowercase wire code (e.g. `invalid_witness_cosignature`,
+ * RFC-ACDP-0015 §10) when the native path ran, or `ErrorCode.INVALID_WITNESS_COSIGNATURE`
+ * when the host §8 fallback (`tsVerifyCosignature`) computed the failure
+ * itself — both name the SAME verdict category, just in each path's own
+ * string convention (mirrors how this codebase's local `ErrorCode` enum and
+ * the SDK's own wire codes already coexist unreconciled elsewhere, e.g.
+ * `INVALID_LOG_PROOF` usage vs. the binding's `invalid_log_proof`). Optional
+ * because a malformed-shape / JCS failure never reaches a binding call.
+ */
+export type CosignOutcome = { ok: true } | { ok: false; code?: string; reason: string };
 
 const WIRE_HASH_RE = /^sha256:[0-9a-f]{64}$/;
 /** Canonical millisecond-precision RFC 3339 UTC (RFC-ACDP-0001 §5.3). */
 const CANONICAL_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-/** §6: `<did:web DID>/log/<instance>` with instance `[a-z0-9-]{1,32}`. */
-const LOG_ID_RE = /^did:web:[A-Za-z0-9._%:-]+\/log\/[a-z0-9-]{1,32}$/;
 /** §4: witness_id is a did:web or did:key. */
 const WITNESS_DID_RE = /^did:(web:[a-zA-Z0-9.%:-]+|key:z[1-9A-HJ-NP-Za-km-z]+)$/;
 
@@ -196,6 +207,38 @@ function nativeErr(err: unknown): string {
     return `${String((err as { code: unknown }).code)}: ${err instanceof Error ? err.message : String(err)}`;
   }
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Longest a garbage-shaped `failures` entry may render as, before truncation. */
+const QUORUM_FAILURE_MAX_CHARS = 500;
+
+/**
+ * B4 fix: `evaluate_witness_quorum_report` returns each `failures` entry as
+ * an OBJECT (`{valid: false, code, error}` — see `v040.rs`'s `failure()`),
+ * never a string. The bare `String(f)` this replaces coerced every entry to
+ * the literal text `"[object Object]"`, destroying the ONLY reason the
+ * native path (always taken — the binding is native-first and the pinned
+ * floor is `^0.14.1`) ever surfaces for a rejected cosignature. Handles
+ * every shape defensively, never throws: `{code, error}` → `"code: error"`;
+ * a bare string → passthrough (in case a future binding version reverts to
+ * strings); anything else → bounded `JSON.stringify` so a shape drift is
+ * still legible rather than reproducing the same "[object Object]" defect
+ * one level down.
+ */
+export function formatQuorumFailure(f: unknown): string {
+  if (typeof f === 'string') return f;
+  if (f !== null && typeof f === 'object') {
+    const obj = f as { code?: unknown; error?: unknown };
+    if (typeof obj.code === 'string' || typeof obj.error === 'string') {
+      const code = typeof obj.code === 'string' ? obj.code : 'acdp_error';
+      const error = typeof obj.error === 'string' ? obj.error : JSON.stringify(obj);
+      return `${code}: ${error}`;
+    }
+  }
+  const json = JSON.stringify(f) ?? String(f);
+  return json.length > QUORUM_FAILURE_MAX_CHARS
+    ? `${json.slice(0, QUORUM_FAILURE_MAX_CHARS)}…`
+    : json;
 }
 
 /**
@@ -489,15 +532,16 @@ export function nativeVerifyCosignature(
   } catch (err) {
     return { ok: false, reason: nativeErr(err) };
   }
-  let parsed: { valid?: unknown; error?: unknown };
+  let parsed: { valid?: unknown; code?: unknown; error?: unknown };
   try {
-    parsed = JSON.parse(json) as { valid?: unknown; error?: unknown };
+    parsed = JSON.parse(json) as { valid?: unknown; code?: unknown; error?: unknown };
   } catch {
     return { ok: false, reason: 'native cosignature verification returned non-JSON' };
   }
   if (parsed.valid === true) return { ok: true };
   return {
     ok: false,
+    code: typeof parsed.code === 'string' ? parsed.code : undefined,
     reason:
       typeof parsed.error === 'string' ? parsed.error : 'native cosignature verification failed',
   };
@@ -511,6 +555,7 @@ export function tsVerifyCosignature(
   if (cosignature.signature.algorithm !== 'ed25519') {
     return {
       ok: false,
+      code: ErrorCode.INVALID_WITNESS_COSIGNATURE,
       reason: `unsupported cosignature algorithm '${cosignature.signature.algorithm}' — ed25519 is mandatory (RFC-ACDP-0015 §5)`,
     };
   }
@@ -519,13 +564,14 @@ export function tsVerifyCosignature(
   if (keyDid !== cosignature.witness_id) {
     return {
       ok: false,
+      code: ErrorCode.INVALID_WITNESS_COSIGNATURE,
       reason: `signature.key_id '${cosignature.signature.key_id}' is not a key of witness_id '${cosignature.witness_id}'`,
     };
   }
   const { signature: _omit, ...unsigned } = cosignature;
   const hash = cosignatureHash(unsigned);
   if (hash === null) {
-    return { ok: false, reason: 'cosignature could not be canonicalized (JCS)' };
+    return { ok: false, code: ErrorCode.INVALID_WITNESS_COSIGNATURE, reason: 'cosignature could not be canonicalized (JCS)' };
   }
   const valid = verifySignatureB64(
     'ed25519',
@@ -533,22 +579,50 @@ export function tsVerifyCosignature(
     hash,
     cosignature.signature.value,
   );
-  return valid ? { ok: true } : { ok: false, reason: 'witness cosignature signature invalid' };
+  return valid
+    ? { ok: true }
+    : { ok: false, code: ErrorCode.INVALID_WITNESS_COSIGNATURE, reason: 'witness cosignature signature invalid' };
 }
 
-/** §8 step 5: `witnessed_at` must not be in the future beyond the skew allowance. */
+/**
+ * §8 step 5: `witnessed_at` must not be in the future beyond the skew
+ * allowance — a HARD gate (a cosignature failing this never counts at all,
+ * same category as an invalid signature). `maxFutureSkewMs` defaults to the
+ * constant below when the caller (e.g. a standalone verify with no quorum
+ * policy in scope) has no configured value to pass.
+ */
 export function cosignatureFreshnessOk(
   cosignature: LogCosignature,
   nowMs: number = Date.now(),
+  maxFutureSkewMs: number = COSIGNATURE_MAX_FUTURE_SKEW_MS,
 ): CosignOutcome {
   const ts = Date.parse(cosignature.witnessed_at);
-  if (ts - nowMs > COSIGNATURE_MAX_FUTURE_SKEW_MS) {
+  if (ts - nowMs > maxFutureSkewMs) {
     return {
       ok: false,
-      reason: `witnessed_at '${cosignature.witnessed_at}' is in the future beyond the 120s skew allowance`,
+      code: ErrorCode.INVALID_WITNESS_COSIGNATURE,
+      reason: `witnessed_at '${cosignature.witnessed_at}' is in the future beyond the ${Math.round(maxFutureSkewMs / 1000)}s skew allowance`,
     };
   }
   return { ok: true };
+}
+
+/**
+ * §8.1 freshness SPLIT (soft, applied only to already-verified cosignatures):
+ * true when `witnessed_at` is within `maxAgeSecs` of now. `maxAgeSecs ===
+ * null` disables the split entirely — every verified cosignature also counts
+ * as fresh, matching the native binding's documented null semantics. A
+ * cosignature failing this still counts toward `witnessedCount` — it is
+ * excluded from `freshWitnessedCount` only, never treated as invalid.
+ */
+export function cosignatureAgeOk(
+  cosignature: LogCosignature,
+  nowMs: number,
+  maxAgeSecs: number | null,
+): boolean {
+  if (maxAgeSecs === null) return true;
+  const ts = Date.parse(cosignature.witnessed_at);
+  return nowMs - ts <= maxAgeSecs * 1000;
 }
 
 // ── §8 N-witnessed quorum CONSUMPTION ─────────────────────────────────────
@@ -575,6 +649,27 @@ export interface QuorumReport {
   verifiedWitnessIds: string[];
   /** Human-readable per-cosignature rejects (untrusted witnesses are silent). */
   failures: string[];
+  /**
+   * §8.1 freshness split: the SUBSET of `witnessedCount` whose `witnessed_at`
+   * is also within `maxAgeSecs` — a stale-but-otherwise-valid cosignature
+   * still counts toward `witnessedCount`, just not this. Equals
+   * `witnessedCount` when the freshness split is disabled (`maxAgeSecs ===
+   * null`).
+   */
+  freshWitnessedCount: number;
+  /** `freshWitnessedCount >= minWitnesses`. */
+  meetsFreshQuorum: boolean;
+  /**
+   * §9 (RFC-ACDP-0010 §9 key lifecycle, carried over to a witness's OWN key
+   * per RFC-ACDP-0015 §9 — mirrors `receipt_audits.verified_historical` on
+   * the registry-receipt side, a deliberately similarly-named but ORTHOGONAL
+   * axis): DISTINCT trusted witnesses whose cosignature verified under a
+   * RETIRED (historical) key. A SEPARATE sub-count, NEVER folded into
+   * `witnessedCount`/`meetsQuorum` — historical evidence is real (the
+   * cosignature cryptographically verifies) but must not by itself satisfy
+   * quorum. Always 0 when no historical witness keys were resolved.
+   */
+  historicalWitnessedCount: number;
 }
 
 export interface QuorumInputs {
@@ -586,8 +681,27 @@ export interface QuorumInputs {
   trustedWitnessIds: string[];
   /** Resolved witness assertionMethod public keys, keyed by witness_id (base64). */
   witnessKeysB64: Record<string, string>;
+  /**
+   * Witness IDs whose `witnessKeysB64` entry was resolved from a RETIRED
+   * (historical) verificationMethod key rather than a current assertionMethod
+   * one (RFC-ACDP-0010 §9 lifecycle applied to the witness's own key per
+   * RFC-ACDP-0015 §9). Never populated for a `did:key` witness — that DID has
+   * no document, so no key ever "retires" out of it. Omit or leave empty when
+   * no witness key resolution used the lifecycle-tolerant path.
+   */
+  historicalWitnessIds?: Set<string>;
   /** The N in N-witnessed. */
   minWitnesses: number;
+  /**
+   * §8.1 freshness window in seconds; `null` explicitly disables the
+   * freshness split (every verified cosignature also counts as fresh).
+   * `undefined` lets each branch apply its own RFC-recommended default
+   * (native: the binding's own default of 300; host: 300 here too, for
+   * native/host parity).
+   */
+  maxAgeSecs?: number | null;
+  /** §8 step 5 future-dating tolerance in seconds. Default 120 when omitted. */
+  maxClockSkewSecs?: number;
   /** Consumer clock override (ms); defaults to now. */
   nowMs?: number;
 }
@@ -607,12 +721,61 @@ export function evaluateQuorum(inp: QuorumInputs): QuorumReport {
 }
 
 /**
+ * §9 historical sub-count, shared by BOTH evaluator branches so a historical
+ * witness is counted identically regardless of which one produced the base
+ * report. Neither the native `evaluateWitnessQuorum` surface nor its wire
+ * policy has any concept of a retired witness key — the base report only
+ * knows a synthesized DID document's current `assertionMethod`, never a
+ * lifecycle state — so this NEVER delegates to it. It reuses the same
+ * {@link verifyCosignature} the host branch already calls per cosignature
+ * (itself SDK-delegating for the actual Ed25519 check when available), just
+ * scoped to the witnesses `historicalIds` names.
+ */
+function countHistoricalWitnesses(
+  inp: QuorumInputs,
+  historicalIds: Set<string>,
+  nowMs: number,
+  maxClockSkewMs: number,
+): number {
+  if (historicalIds.size === 0) return 0;
+  const counted = new Set<string>();
+  for (const raw of inp.cosignatures) {
+    const parsed = parseCosignature(raw);
+    if (!parsed.ok) continue;
+    const cosig = parsed.cosignature;
+    if (!historicalIds.has(cosig.witness_id) || counted.has(cosig.witness_id)) continue;
+    const key = inp.witnessKeysB64[cosig.witness_id];
+    if (key === undefined) continue;
+    const wc = cosig.witnessed_checkpoint;
+    if (
+      wc.log_id !== inp.checkpoint.log_id ||
+      wc.tree_size !== inp.checkpoint.tree_size ||
+      wc.root_hash !== inp.checkpoint.root_hash
+    ) {
+      continue;
+    }
+    if (!cosignatureFreshnessOk(cosig, nowMs, maxClockSkewMs).ok) continue;
+    if (!verifyCosignature(cosig, key, inp.checkpoint).ok) continue;
+    counted.add(cosig.witness_id);
+  }
+  return counted.size;
+}
+
+/**
  * The native-binding branch (exported for the parity cross-check): delegate the
  * §8 report to `AcdpVerifier.evaluateWitnessQuorum`, synthesizing each trusted
  * witness's resolvable DID document from its resolved public key. Returns null
- * (fall back to host) on a malformed-input throw or non-JSON reply.
+ * (fall back to host) on a malformed-input throw or non-JSON reply. Historical
+ * witnesses are excluded from the trusted-id list handed to the binding (so it
+ * never counts them toward its own report) and tallied separately via
+ * {@link countHistoricalWitnesses}.
  */
 export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
+  const historicalIds = inp.historicalWitnessIds ?? new Set<string>();
+  const nativeTrustedIds =
+    historicalIds.size === 0
+      ? inp.trustedWitnessIds
+      : inp.trustedWitnessIds.filter((id) => !historicalIds.has(id));
   const didDocs: Record<string, unknown> = {};
   for (const raw of inp.cosignatures) {
     const parsed = parseCosignature(raw);
@@ -622,15 +785,27 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
     if (key === undefined || didDocs[c.witness_id] !== undefined) continue;
     didDocs[c.witness_id] = witnessDidDocFromPubkey(c.witness_id, c.signature.key_id, key);
   }
+  // Policy field names are the SDK's wire keys (max_age_secs, NOT
+  // max_age_seconds — the JSON key differs from the Rust field behind it).
+  // `undefined` fields are dropped by JSON.stringify, letting the binding
+  // apply its own default; an explicit `null` for maxAgeSecs passes through
+  // as JSON null, which the binding documents as "disable the freshness
+  // split" — never send `0` for that (0 means "everything is stale").
+  const policy: { min_witnesses: number; max_age_secs?: number | null; max_clock_skew_secs?: number } = {
+    min_witnesses: inp.minWitnesses,
+  };
+  if (inp.maxAgeSecs !== undefined) policy.max_age_secs = inp.maxAgeSecs;
+  if (inp.maxClockSkewSecs !== undefined) policy.max_clock_skew_secs = inp.maxClockSkewSecs;
+  const nowMs = inp.nowMs ?? Date.now();
   let json: string;
   try {
     json = surface.evaluateWitnessQuorum(
       JSON.stringify(inp.cosignatures),
       JSON.stringify(inp.checkpoint),
-      JSON.stringify(inp.trustedWitnessIds),
+      JSON.stringify(nativeTrustedIds),
       JSON.stringify(didDocs),
-      JSON.stringify({ min_witnesses: inp.minWitnesses }),
-      new Date(inp.nowMs ?? Date.now()).toISOString(),
+      JSON.stringify(policy),
+      new Date(nowMs).toISOString(),
     );
   } catch {
     return null;
@@ -640,6 +815,8 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
     meets_quorum?: unknown;
     witnesses?: unknown;
     failures?: unknown;
+    fresh_witnessed_count?: unknown;
+    meets_fresh_quorum?: unknown;
   };
   try {
     report = JSON.parse(json) as typeof report;
@@ -647,13 +824,23 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
     return null;
   }
   const count = typeof report.witnessed_count === 'number' ? report.witnessed_count : 0;
+  // Defensive fallback to `count`/`meetsQuorum`, not 0/false: an older
+  // binding response missing the freshness fields should behave as if the
+  // split were disabled (fresh == verified), not as if nothing were fresh.
+  const freshCount =
+    typeof report.fresh_witnessed_count === 'number' ? report.fresh_witnessed_count : count;
+  const maxClockSkewMs = (inp.maxClockSkewSecs ?? 120) * 1000;
   return {
     witnessedCount: count,
     meetsQuorum: report.meets_quorum === true,
     verifiedWitnessIds: Array.isArray(report.witnesses)
       ? report.witnesses.filter((w): w is string => typeof w === 'string')
       : [],
-    failures: Array.isArray(report.failures) ? report.failures.map((f) => String(f)) : [],
+    failures: Array.isArray(report.failures) ? report.failures.map(formatQuorumFailure) : [],
+    freshWitnessedCount: freshCount,
+    meetsFreshQuorum:
+      report.meets_fresh_quorum === undefined ? report.meets_quorum === true : report.meets_fresh_quorum === true,
+    historicalWitnessedCount: countHistoricalWitnesses(inp, historicalIds, nowMs, maxClockSkewMs),
   };
 }
 
@@ -661,12 +848,19 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
  * The host-arithmetic branch (exported for the parity cross-check): the §8 loop
  * over SDK JCS + Ed25519. Counts DISTINCT trusted witnesses whose cosignature
  * parses, binds to the checkpoint tuple, is not future-dated, and verifies
- * under the witness's own resolved key.
+ * under the witness's own resolved key — plus the §8.1 freshness split over
+ * that same verified set, for native/host parity.
  */
 export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
   const nowMs = inp.nowMs ?? Date.now();
+  // RFC §8.1 defaults, mirroring the native binding's own defaults so the
+  // two branches agree when the caller (e.g. a bare unit test) omits them.
+  const maxAgeSecs = inp.maxAgeSecs === undefined ? 300 : inp.maxAgeSecs;
+  const maxClockSkewMs = (inp.maxClockSkewSecs ?? 120) * 1000;
   const trusted = new Set(inp.trustedWitnessIds);
+  const historicalIds = inp.historicalWitnessIds ?? new Set<string>();
   const verified = new Set<string>();
+  const freshVerified = new Set<string>();
   const failures: string[] = [];
   for (const raw of inp.cosignatures) {
     const parsed = parseCosignature(raw);
@@ -677,6 +871,9 @@ export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
     const cosig = parsed.cosignature;
     // Untrusted witnesses are silently ignored — not a failure, just not counted.
     if (!trusted.has(cosig.witness_id)) continue;
+    // Historical (retired-key) witnesses are counted separately below —
+    // never toward witnessedCount/meetsQuorum, see QuorumReport.historicalWitnessedCount.
+    if (historicalIds.has(cosig.witness_id)) continue;
     if (verified.has(cosig.witness_id)) continue;
     const key = inp.witnessKeysB64[cosig.witness_id];
     if (key === undefined) {
@@ -694,9 +891,9 @@ export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
       );
       continue;
     }
-    const fresh = cosignatureFreshnessOk(cosig, nowMs);
-    if (!fresh.ok) {
-      failures.push(`witness '${cosig.witness_id}': ${fresh.reason}`);
+    const skewOk = cosignatureFreshnessOk(cosig, nowMs, maxClockSkewMs);
+    if (!skewOk.ok) {
+      failures.push(`witness '${cosig.witness_id}': ${skewOk.reason}`);
       continue;
     }
     const verdict = verifyCosignature(cosig, key, inp.checkpoint);
@@ -705,12 +902,21 @@ export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
       continue;
     }
     verified.add(cosig.witness_id);
+    // §8.1 freshness split: a STALE-but-otherwise-valid cosignature still
+    // counts toward witnessedCount above — it is excluded from the fresh
+    // count only, never treated as a failure.
+    if (cosignatureAgeOk(cosig, nowMs, maxAgeSecs)) {
+      freshVerified.add(cosig.witness_id);
+    }
   }
   return {
     witnessedCount: verified.size,
     meetsQuorum: verified.size >= inp.minWitnesses,
     verifiedWitnessIds: [...verified],
     failures,
+    freshWitnessedCount: freshVerified.size,
+    meetsFreshQuorum: freshVerified.size >= inp.minWitnesses,
+    historicalWitnessedCount: countHistoricalWitnesses(inp, historicalIds, nowMs, maxClockSkewMs),
   };
 }
 
@@ -741,27 +947,9 @@ function witnessDidDocFromPubkey(
         id: keyId,
         type: 'Ed25519VerificationKey2020',
         controller: witnessId,
-        publicKeyMultibase: ed25519Multibase(raw),
+        publicKeyMultibase: encodeEd25519Multibase(raw),
       },
     ],
     assertionMethod: [keyId],
   };
-}
-
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-
-/** Encode a raw 32-byte Ed25519 key as `did:key`-style multibase (0xed01 prefix). */
-function ed25519Multibase(rawPub: Buffer): string {
-  const prefixed = Buffer.concat([Buffer.from([0xed, 0x01]), rawPub]);
-  let x = BigInt('0x' + (prefixed.toString('hex') || '0'));
-  let out = '';
-  while (x > 0n) {
-    out = BASE58_ALPHABET[Number(x % 58n)] + out;
-    x /= 58n;
-  }
-  for (const byte of prefixed) {
-    if (byte === 0) out = BASE58_ALPHABET[0] + out;
-    else break;
-  }
-  return 'z' + out;
 }

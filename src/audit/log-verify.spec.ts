@@ -15,6 +15,7 @@ import {
   checkpointHash,
   checkpointTimestampOk,
   leafHash,
+  LOG_ID_RE,
   LogCheckpoint,
   logIdRegistryDid,
   nodeHash,
@@ -260,6 +261,16 @@ describe('log-verify: checkpoint parse + signature (§6, §9.3)', () => {
   it('extracts the registry DID from a log_id', () => {
     expect(logIdRegistryDid(LOG_ID)).toBe(`did:web:${AUTHORITY}`);
     expect(logIdRegistryDid('nonsense')).toBeNull();
+  });
+
+  it('LOG_ID_RE (B9b, the sole declaration in src/) matches the closed JSON schema exactly: accepts its character class, rejects `_`', () => {
+    // schemas/json/acdp-log-checkpoint.schema.json: `^did:web:[a-zA-Z0-9.%:-]+/log/[a-z0-9-]{1,32}$`.
+    expect(LOG_ID_RE.test('did:web:reg.example.com%3A8443/log/abc-123')).toBe(true);
+    // A `did:web` DID's general grammar (RFC-ACDP-0001 §5.11.2) allows `_` in a
+    // domain label, but the closed log_id schema does not — the regex must
+    // track the SCHEMA, not the general DID grammar.
+    expect(LOG_ID_RE.test('did:web:reg_istry.example/log/a')).toBe(false);
+    expect(LOG_ID_RE.test('did:web:reg.example/log/a_b')).toBe(false);
   });
 });
 

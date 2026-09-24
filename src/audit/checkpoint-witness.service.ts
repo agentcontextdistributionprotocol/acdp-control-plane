@@ -5,9 +5,18 @@
  * RFC-ACDP-0012 §13 says detection requires: it retains registry checkpoints
  * over time and demands consistency between them, so a history rewrite,
  * split view, or log reset produces persisted, non-repudiable evidence
- * instead of going unnoticed. Strictly the witness half of the reserved
- * RFC-ACDP-0009 §2.12 ecosystem: the cosigning protocol is NOT specified,
- * so no cosignatures are minted — witness + detect only.
+ * instead of going unnoticed.
+ *
+ * On top of detection, this file also implements RFC-ACDP-0015's two
+ * independent witness roles once a checkpoint passes §9.3 below:
+ *   - **Cosign** (`cosignSafe`, gated by `WITNESS_COSIGNING_ENABLED`): signs the
+ *     checkpoint with this witness's own Ed25519 key (`WitnessSigningService`)
+ *     and persists it via `LogCosignatureRepository` — served directly from
+ *     this witness at `GET /log/witness`, bypassing the registry (§6.2).
+ *   - **Quorum** (`evaluateQuorum`, gated by `WITNESS_QUORUM_ENABLED`): counts
+ *     distinct `WITNESS_QUORUM_TRUSTED` witnesses attesting a head and records
+ *     the §8.1 N-witnessed result (`QuorumResult`) alongside the witnessed head.
+ * Both are off by default and independent of each other and of detection.
  *
  * Per sweep (advisory-locked, config-gated — the receipt-audit pattern),
  * for every enrolled+enabled registry advertising
@@ -50,6 +59,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { AcdpDid } from '@agentcontextdistributionprotocol/acdp';
 import { RegistryEnrollment } from '../db/schema';
 import { authorityToDidWeb, nonCanonicalAuthorityReason } from '../common/did-authority';
+import { decodeEd25519Multibase } from '../common/multibase';
 import { AppConfigService } from '../config/app-config.service';
 import { SafeFederationClient } from '../contexts/safe-federation-client';
 import { AcdpStreamEvent } from '../contracts/acdp';
@@ -111,6 +121,22 @@ export interface QuorumResult {
   witnessedCount: number | null;
   /** Whether `witnessedCount` meets the configured N-witnessed policy. */
   meetsQuorum: boolean | null;
+  /**
+   * §8.1 freshness split: the subset of `witnessedCount` whose cosignature is
+   * also within WITNESS_QUORUM_MAX_AGE_SECONDS. A stale-but-valid cosignature
+   * still counts toward `witnessedCount`/`meetsQuorum` above — this is a
+   * SOFT liveness signal, never a failure.
+   */
+  freshWitnessedCount: number | null;
+  /** Whether `freshWitnessedCount` meets the configured N-witnessed policy. */
+  meetsFreshQuorum: boolean | null;
+  /**
+   * §9 (RFC-ACDP-0010 §9 key lifecycle carried over to a witness's own key,
+   * RFC-ACDP-0015 §9): trusted witnesses whose cosignature verified under a
+   * RETIRED key. Never counted toward `witnessedCount`/`meetsQuorum`. Null
+   * when quorum consumption is disabled, same as the other fields.
+   */
+  historicalWitnessedCount: number | null;
 }
 
 @Injectable()
@@ -406,9 +432,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         });
       }
       // Unchanged head re-signed with a fresh timestamp — a liveness signal
-      // (§6). Nothing new to prove; touch the cursor's success clock. The tuple
-      // is unchanged, so the cosignature is idempotent (RFC-ACDP-0015 §4/§7 —
-      // we retain the first per tuple rather than re-mint a liveness copy).
+      // (§6). Nothing new to prove; touch the cursor's success clock. The
+      // tuple is unchanged, but B1 re-mints a FRESH cosignature anyway (§4/
+      // §8.1/§15: a witness that silently stops cosigning is
+      // indistinguishable from one that is merely offline — the unique key
+      // now includes witnessed_at, so this is a genuinely new row, not a
+      // dedup no-op).
       // Quorum, however, DOES evolve: the registry may have aggregated more
       // cosignatures for this same tuple since we first saw it, so refresh the
       // recorded count (recordCheckpoint coalesces it onto the existing row).
@@ -669,7 +698,13 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     checkpoint: LogCheckpoint,
     signatureValid: boolean,
     consistencyOk: boolean | null,
-    quorum: QuorumResult = { witnessedCount: null, meetsQuorum: null },
+    quorum: QuorumResult = {
+      witnessedCount: null,
+      meetsQuorum: null,
+      freshWitnessedCount: null,
+      meetsFreshQuorum: null,
+      historicalWitnessedCount: null,
+    },
   ): Promise<void> {
     try {
       const inserted = await this.witnessRepo.recordCheckpoint({
@@ -684,6 +719,9 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         consistencyOk,
         witnessedCount: quorum.witnessedCount,
         meetsQuorum: quorum.meetsQuorum,
+        freshWitnessedCount: quorum.freshWitnessedCount,
+        meetsFreshQuorum: quorum.meetsFreshQuorum,
+        historicalWitnessedCount: quorum.historicalWitnessedCount,
       });
       // The evidence row is append-once (null = a re-observation of an existing
       // head). The §8 quorum, however, evolves as the registry aggregates more
@@ -691,14 +729,21 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       if (
         inserted === null &&
         quorum.witnessedCount !== null &&
-        quorum.meetsQuorum !== null
+        quorum.meetsQuorum !== null &&
+        quorum.freshWitnessedCount !== null &&
+        quorum.meetsFreshQuorum !== null &&
+        quorum.historicalWitnessedCount !== null
       ) {
         await this.witnessRepo.updateQuorum(
+          tenantId,
           checkpoint.log_id,
           checkpoint.tree_size,
           checkpoint.root_hash,
           quorum.witnessedCount,
           quorum.meetsQuorum,
+          quorum.freshWitnessedCount,
+          quorum.meetsFreshQuorum,
+          quorum.historicalWitnessedCount,
         );
       }
     } catch (err) {
@@ -724,23 +769,49 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     witnessSignatures: unknown[],
   ): Promise<QuorumResult> {
     if (!this.config.witnessQuorumEnabled) {
-      return { witnessedCount: null, meetsQuorum: null };
+      return {
+        witnessedCount: null,
+        meetsQuorum: null,
+        freshWitnessedCount: null,
+        meetsFreshQuorum: null,
+        historicalWitnessedCount: null,
+      };
     }
     try {
       const trusted = this.config.witnessQuorumTrusted;
-      // Resolve each TRUSTED witness's own assertionMethod key from its DID
-      // document (§8 step 2). Resolution failure for one witness just means it
-      // cannot count — it is never treated as registry dishonesty.
+      // Resolve each TRUSTED witness's own key. RFC-ACDP-0015 §9: a did:key
+      // witness is self-describing — the multibase-encoded key IS the
+      // identity, so it resolves LOCALLY with no DID document fetch at all
+      // (RFC-ACDP-0001 §5.11.1). A did:web witness's own key follows the
+      // SAME RFC-ACDP-0010 §9 lifecycle tolerance the registry's receipt key
+      // already gets (`resolveWitnessKey`, not the strict assertionMethod-
+      // only `resolveKey`): a key retired from `assertionMethod` but retained
+      // in `verificationMethod` still verifies, tracked as historical.
+      // Resolution failure for one witness just means it cannot count — it
+      // is never treated as registry dishonesty.
       const witnessKeysB64: Record<string, string> = {};
+      const historicalWitnessIds = new Set<string>();
       for (const raw of witnessSignatures) {
         const parsed = parseCosignature(raw);
         if (!parsed.ok) continue;
         const cosig = parsed.cosignature;
         if (!trusted.includes(cosig.witness_id)) continue;
         if (witnessKeysB64[cosig.witness_id] !== undefined) continue;
+        if (cosig.witness_id.startsWith('did:key:')) {
+          const decoded = decodeEd25519Multibase(cosig.witness_id);
+          if (decoded.ok) {
+            witnessKeysB64[cosig.witness_id] = decoded.publicKey.toString('base64');
+          } else {
+            this.logger.debug(
+              `witness key undecodable for quorum (did:key '${cosig.witness_id}'): ${decoded.reason}`,
+            );
+          }
+          continue;
+        }
         try {
-          const resolved = await this.didResolver.resolveKey(cosig.signature.key_id, 'ed25519');
+          const resolved = await this.didResolver.resolveWitnessKey(cosig.signature.key_id, 'ed25519');
           witnessKeysB64[cosig.witness_id] = resolved.publicKeyB64;
+          if (resolved.historical) historicalWitnessIds.add(cosig.witness_id);
         } catch (err) {
           this.logger.debug(
             `witness key '${cosig.signature.key_id}' unresolved for quorum: ${msgOf(err)}`,
@@ -752,20 +823,35 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         checkpoint,
         trustedWitnessIds: trusted,
         witnessKeysB64,
+        historicalWitnessIds,
         minWitnesses: this.config.witnessQuorumMinWitnesses,
+        maxAgeSecs: this.config.witnessQuorumMaxAgeSeconds,
+        maxClockSkewSecs: this.config.witnessQuorumMaxClockSkewSeconds,
       });
       this.instrumentation.logWitnessQuorumTotal.inc({
         meets: report.meetsQuorum ? 'true' : 'false',
       });
       if (report.failures.length > 0) {
         this.logger.debug(
-          `quorum for '${authority}' had ${report.failures.length} non-counting cosignature(s): ${report.failures.join('; ')}`,
+          `quorum for '${authority}' had ${report.failures.length} non-counting cosignature(s): ${boundedJoin(report.failures)}`,
         );
       }
-      return { witnessedCount: report.witnessedCount, meetsQuorum: report.meetsQuorum };
+      return {
+        witnessedCount: report.witnessedCount,
+        meetsQuorum: report.meetsQuorum,
+        freshWitnessedCount: report.freshWitnessedCount,
+        meetsFreshQuorum: report.meetsFreshQuorum,
+        historicalWitnessedCount: report.historicalWitnessedCount,
+      };
     } catch (err) {
       this.logger.warn(`witness quorum evaluation failed for '${authority}': ${msgOf(err)}`);
-      return { witnessedCount: null, meetsQuorum: null };
+      return {
+        witnessedCount: null,
+        meetsQuorum: null,
+        freshWitnessedCount: null,
+        meetsFreshQuorum: null,
+        historicalWitnessedCount: null,
+      };
     }
   }
 
@@ -781,6 +867,21 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
 
 function msgOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** Longest a joined-failures debug log line may render as, before truncation. */
+const QUORUM_FAILURES_LOG_MAX_CHARS = 2000;
+
+/**
+ * Join `QuorumReport.failures` for a debug log line, capped so a checkpoint
+ * with many aggregated cosignatures (a registry trusting a large witness
+ * set) can never produce an unbounded log line.
+ */
+function boundedJoin(failures: string[]): string {
+  const joined = failures.join('; ');
+  return joined.length > QUORUM_FAILURES_LOG_MAX_CHARS
+    ? `${joined.slice(0, QUORUM_FAILURES_LOG_MAX_CHARS)}… (+${failures.length} total)`
+    : joined;
 }
 
 /**

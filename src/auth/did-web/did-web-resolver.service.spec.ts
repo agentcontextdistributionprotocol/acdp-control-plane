@@ -240,6 +240,52 @@ describe('DidWebResolverService', () => {
       });
     });
   });
+
+  // ── resolveWitnessKey: RFC-ACDP-0015 §9 reuses the §9 receipt-key lifecycle
+  // for a WITNESS's own key (B3) ────────────────────────────────────────────
+  describe('resolveWitnessKey', () => {
+    function retiredKeyDoc(): unknown {
+      return {
+        id: DID,
+        verificationMethod: [
+          {
+            id: KEY_ID,
+            controller: DID,
+            type: 'Ed25519VerificationKey2020',
+            publicKeyMultibase: ED25519_MB,
+          },
+        ],
+        assertionMethod: [],
+      };
+    }
+
+    it('resolves a current witness key with historical=false', async () => {
+      const fetcher = new StubFetcher(() => jsonResp(goodDoc()));
+      const svc = new DidWebResolverService(new TestSsrfPolicy(), fetcher);
+      const key = await svc.resolveWitnessKey(KEY_ID, 'ed25519');
+      expect(key.keyId).toBe(KEY_ID);
+      expect(key.historical).toBe(false);
+      expect(Buffer.from(key.publicKeyB64, 'base64').length).toBe(32);
+    });
+
+    it('resolves a RETIRED witness key (rotated out of assertionMethod, still in verificationMethod) with historical=true', async () => {
+      const fetcher = new StubFetcher(() => jsonResp(retiredKeyDoc()));
+      const svc = new DidWebResolverService(new TestSsrfPolicy(), fetcher);
+      const key = await svc.resolveWitnessKey(KEY_ID, 'ed25519');
+      expect(key.historical).toBe(true);
+      expect(key.keyId).toBe(KEY_ID);
+    });
+
+    it('fails closed (PICK) when the witness key is gone from verificationMethod entirely', async () => {
+      const fetcher = new StubFetcher(() =>
+        jsonResp({ id: DID, verificationMethod: [], assertionMethod: [] }),
+      );
+      const svc = new DidWebResolverService(new TestSsrfPolicy(), fetcher);
+      await expect(svc.resolveWitnessKey(KEY_ID, 'ed25519')).rejects.toMatchObject({
+        code: 'PICK',
+      });
+    });
+  });
 });
 
 describe('DefaultDidFetcher', () => {

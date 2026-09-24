@@ -167,7 +167,10 @@ obligation (signature valid **and** consistency from the retained head) is **cos
 the witness mints a signed `acdp-log-cosignature` over the observed tuple with its own
 Ed25519 `assertionMethod` key and serves it at `GET /log/witness`. Riding the checkpoint
 witness, it requires `LOG_WITNESS_ENABLED=true`. A checkpoint that **fails** the
-obligation is never cosigned.
+obligation is never cosigned. Per §4/§8.1/§15 the witness re-mints a **fresh**
+cosignature on **every** observation — including at an unchanged `tree_size`, as a
+liveness signal — so `log_cosignatures` gains one row per sweep, not per head; only a
+genuine same-millisecond re-mint dedups.
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
@@ -175,6 +178,7 @@ obligation is never cosigned.
 | `WITNESS_ID` | string | `''` | The witness's DID (`did:web:<this-CP-host>` or `did:key`). Required when enabled. |
 | `WITNESS_SIGNING_PRIVATE_KEY_PEM` | string | `''` | PEM-encoded **Ed25519** private key the witness cosigns with. Required when enabled. **Dedicated** — never the JWT IdP key (§5/§15). |
 | `WITNESS_KEY_ID` | string | `''` | assertionMethod key id (DID URL under `WITNESS_ID`). Defaults to `<WITNESS_ID>#witness-key-1`. |
+| `WITNESS_COSIGNATURE_KEEP_PER_HEAD` | number | `10` | Retention: cosignatures kept per `(tenant, witness, log, head)` tuple — newest N-1 plus the single OLDEST row unconditionally (§8.1: the oldest surviving cosignature for a head is the strongest anti-backdating evidence, never purged). Requires `DATA_RETENTION_ENABLED=true` to actually run (see Warns below). |
 
 Generate the witness key with `openssl genpkey -algorithm ed25519`. When `WITNESS_ID`
 is a `did:web`, its host **must** match [`PUBLIC_HOST`](#core-server) so consumers can
@@ -182,21 +186,43 @@ dereference `/.well-known/did.json` on this CP — the binding is asserted at bo
 (RFC-ACDP-0015 §9): a mismatch is fatal, and an unset `PUBLIC_HOST` only warns. `did:key`
 witnesses are exempt (self-describing).
 
+`GET /log/witness` defaults to the **collapsed** view — the latest cosignature per
+distinct `(log_id, tree_size, root_hash)` head — since B1's per-observation minting would
+otherwise crowd a fixed-size page with liveness re-observations of the same head. Pass
+`?all=true` for the full per-observation series (the §8.1 anti-backdating use: an older
+surviving cosignature for a head is *stronger* evidence it existed early).
+
 **Witness quorum consumption (RFC-ACDP-0015 §8).** The mirror of cosigning: instead of
 minting, evaluate the **N-witnessed quorum** over the cosignatures a registry *aggregates*
 and serves on `GET /log/checkpoint` (the top-level `witness_signatures` sibling, §6.1).
-Each is verified against its witness's **own** resolved `did:web` document, and DISTINCT
-trusted witnesses over the checkpoint's exact `(log_id, tree_size, root_hash)` tuple are
-counted — never the CP's own local mint. The count + `meets_quorum` are recorded on the
+Each is verified against its witness's **own** key, and DISTINCT trusted witnesses over
+the checkpoint's exact `(log_id, tree_size, root_hash)` tuple are counted — never the
+CP's own local mint. **§9 witness key resolution** branches by DID method: a `did:key`
+witness is self-describing (the multibase-encoded key IS the identity), so it resolves
+LOCALLY with no DID document fetch at all; a `did:web` witness's own key resolves through
+the SAME RFC-ACDP-0010 §9 lifecycle tolerance the registry's receipt key already gets — a
+key rotated out of `assertionMethod` but retained in `verificationMethod` still verifies,
+as **historical** (`historical_witnessed_count`, a separate sub-count, never folded into
+`witnessed_count`/`meets_quorum`). The count + `meets_quorum` are recorded on the
 witnessed head (surfaced on `GET /registries/:authority/log-witness` per checkpoint and on
 the dashboard `logWitness.headsMeetingQuorum` tile). Rides the checkpoint witness, so it
 requires `LOG_WITNESS_ENABLED=true`.
 
+§8.1 layers a **freshness split** on top: `fresh_witnessed_count` / `meets_fresh_quorum`
+count only cosignatures also within `WITNESS_QUORUM_MAX_AGE_SECONDS`. A stale-but-valid
+cosignature still counts toward `witnessed_count`/`meets_quorum` — staleness is never a
+failure (§8.1's anti-backdating principle) — it is simply excluded from the fresh count.
+This is a **soft** overlay, distinct from the **hard** §8 step 5 future-dating gate
+(`WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS`): a cosignature failing that check never counts
+at all, same category as an invalid signature.
+
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `WITNESS_QUORUM_ENABLED` | bool | `false` | Enable quorum consumption over aggregated cosignatures. |
-| `WITNESS_QUORUM_TRUSTED` | list | `''` | Witness DIDs whose cosignatures count; others are verified-but-ignored. |
+| `WITNESS_QUORUM_TRUSTED` | list | `''` | Witness DIDs whose cosignatures count; others are verified-but-ignored. **Must not contain this CP's own `WITNESS_ID`** — startup refuses to start if it does (a self-attestation would defeat the independent-vantage point of a quorum). |
 | `WITNESS_QUORUM_MIN_WITNESSES` | number | `1` | The N in N-witnessed. **≥1** when enabled. |
+| `WITNESS_QUORUM_MAX_AGE_SECONDS` | number\|null | `300` | §8.1 freshness window. Set to `''` or `0` to **disable the split** — every verified cosignature then also counts as fresh. |
+| `WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS` | number | `120` | §8 step 5 hard future-dating tolerance — a cosignature claiming a `witnessed_at` further than this into the future is rejected outright. |
 
 **Log-inclusion audit ([RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)).**
 The sibling sweep to the checkpoint witness: for stored receipt-bearing publishes
@@ -267,6 +293,10 @@ seal once per event in `log_inclusion_audits`.
   `WITNESS_SIGNING_PRIVATE_KEY_PEM`, or without `LOG_WITNESS_ENABLED=true`.
   (`WitnessSigningService` additionally rejects a non-Ed25519 key, a malformed
   witness DID, or a `WITNESS_KEY_ID` not under `WITNESS_ID` — in every environment.)
+- `WITNESS_QUORUM_ENABLED=true` with this CP's own `WITNESS_ID` present in
+  `WITNESS_QUORUM_TRUSTED` (self-cosignature would count toward its own quorum).
+  A consume-only deployment (`WITNESS_COSIGNING_ENABLED=false`, `WITNESS_ID`
+  unset) is unaffected by this check.
 
 **Warns** (starts, but flags a risk) on, in production:
 
@@ -276,3 +306,6 @@ seal once per event in `log_inclusion_audits`.
 - `TOKEN_ISSUANCE_ENABLED=true` with `AUTH_PERSISTENCE=memory` (state not shared).
 - `WITNESS_QUORUM_ENABLED=true` with empty `WITNESS_QUORUM_TRUSTED` (no
   cosignature can ever count toward quorum).
+- `WITNESS_COSIGNING_ENABLED=true` with `DATA_RETENTION_ENABLED=false` (B1 mints a
+  fresh `log_cosignatures` row on every observation sweep — without the retention
+  purge running, the table grows unbounded).

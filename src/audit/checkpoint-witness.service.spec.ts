@@ -21,6 +21,7 @@ import {
   LOG_WITNESS_ALERT_EVENT,
 } from './checkpoint-witness.service';
 import { mintCosignature, nodeWitnessSigner } from './cosign';
+import { encodeEd25519Multibase } from '../common/multibase';
 import { checkpointHash, leafHash, LogCheckpoint, nodeHash } from './log-verify';
 
 const AUTHORITY = 'reg-a.example';
@@ -141,9 +142,10 @@ function makeHarness(overrides: Partial<Record<string, any>> = {}): Harness {
   const federationClient = { get: jest.fn() };
   const didResolver = {
     resolveReceiptKey: jest.fn().mockResolvedValue({ publicKeyB64: PUB_B64, historical: false }),
-    // Witness assertionMethod resolution for quorum consumption. Default rejects
-    // (no witness keys resolvable); quorum tests override with a keyed map.
-    resolveKey: jest.fn().mockRejectedValue(new Error('witness DID unresolvable')),
+    // A did:web witness's OWN key resolution for quorum consumption
+    // (RFC-ACDP-0015 §9, lifecycle-tolerant — see resolveWitnessKey). Default
+    // rejects (no witness keys resolvable); quorum tests override per case.
+    resolveWitnessKey: jest.fn().mockRejectedValue(new Error('witness DID unresolvable')),
   };
   const instrumentation = {
     logWitnessChecksTotal: { inc: jest.fn() },
@@ -657,8 +659,49 @@ describe('CheckpointWitnessPollerService — witness cosigning (RFC-ACDP-0015)',
     expect(record).not.toHaveBeenCalled();
   });
 
-  it('re-cosigning the same head is idempotent (repo dedups; no crash)', async () => {
-    // repo.record returns null on the (witness, log, size, root) conflict.
+  it('re-observing an unchanged head mints a FRESH cosignature each time (B1 liveness re-mint, not a dedup)', async () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      let n = 0;
+      const record = jest.fn().mockImplementation(async () => ({ id: `cosig-${++n}` }));
+      const h = makeHarness({
+        witnessSigning: enabledSigning(),
+        cosignatureRepo: { record },
+      });
+      const leaves = makeLeafHashes(5);
+      const cp = signCheckpoint(privateKey, { tree_size: 5, root_hash: wire(mth(leaves)) });
+      routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: JSON.stringify(cp) } });
+
+      const first = await h.svc.sweep();
+      expect(first[0]!.status).toBe('witnessed');
+
+      // A later sweep observing the identical (still-current) head — the
+      // witnessed_at unique-key widening (migration 0020) means this is a
+      // genuinely new row, not a conflict.
+      jest.setSystemTime(new Date('2026-01-01T00:05:00.000Z'));
+      const second = await h.svc.sweep();
+      expect(second[0]!.status).toBe('witnessed');
+
+      expect(record).toHaveBeenCalledTimes(2);
+      const [firstWitnessedAt, secondWitnessedAt] = record.mock.calls.map(
+        (c) => (c[0] as { witnessedAt: string }).witnessedAt,
+      );
+      expect(firstWitnessedAt).not.toBe(secondWitnessedAt);
+      // Both count as 'minted' — B1 makes a stale-cosignature 'duplicate'
+      // result vanishingly rare (only a genuine same-millisecond collision).
+      expect(h.instrumentation.logCosignaturesTotal.inc).toHaveBeenCalledWith({ result: 'minted' });
+      expect(h.instrumentation.logCosignaturesTotal.inc).not.toHaveBeenCalledWith({
+        result: 'duplicate',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('an exact-millisecond re-mint collision still dedupes at the DB layer (defense in depth)', async () => {
+    // repo.record returns null on the (tenant, witness, log, size, root, witnessed_at)
+    // conflict — the residual case the widened unique key still guards.
     const record = jest.fn().mockResolvedValue(null);
     const h = makeHarness({
       witnessSigning: enabledSigning(),
@@ -671,7 +714,7 @@ describe('CheckpointWitnessPollerService — witness cosigning (RFC-ACDP-0015)',
     const outcomes = await h.svc.sweep();
     expect(outcomes[0]!.status).toBe('witnessed');
     expect(record).toHaveBeenCalledTimes(1);
-    // A duplicate is counted, not an error, and never crashes the sweep.
+    // A conflict is counted, not an error, and never crashes the sweep.
     expect(h.instrumentation.logCosignaturesTotal.inc).toHaveBeenCalledWith({ result: 'duplicate' });
   });
 
@@ -743,11 +786,12 @@ describe('CheckpointWitnessPollerService — witness quorum consumption (RFC-ACD
         witnessQuorumMinWitnesses: 1,
       },
     });
-    // The witness's own assertionMethod key resolves to its public half.
-    h.didResolver.resolveKey.mockResolvedValue({
+    // The witness's own key resolves to its public half (current, not historical).
+    h.didResolver.resolveWitnessKey.mockResolvedValue({
       keyId: THIRD_PARTY_KEY,
       algorithm: 'ed25519',
       publicKeyB64: tp.publicKeyB64,
+      historical: false,
     });
 
     const leaves = makeLeafHashes(4);
@@ -761,7 +805,7 @@ describe('CheckpointWitnessPollerService — witness quorum consumption (RFC-ACD
     expect(h.witnessRepo.recordCheckpoint).toHaveBeenCalledWith(
       expect.objectContaining({ treeSize: 4, witnessedCount: 1, meetsQuorum: true }),
     );
-    expect(h.didResolver.resolveKey).toHaveBeenCalledWith(THIRD_PARTY_KEY, 'ed25519');
+    expect(h.didResolver.resolveWitnessKey).toHaveBeenCalledWith(THIRD_PARTY_KEY, 'ed25519');
     expect(h.instrumentation.logWitnessQuorumTotal.inc).toHaveBeenCalledWith({ meets: 'true' });
   });
 
@@ -774,10 +818,11 @@ describe('CheckpointWitnessPollerService — witness quorum consumption (RFC-ACD
         witnessQuorumMinWitnesses: 1,
       },
     });
-    h.didResolver.resolveKey.mockResolvedValue({
+    h.didResolver.resolveWitnessKey.mockResolvedValue({
       keyId: THIRD_PARTY_KEY,
       algorithm: 'ed25519',
       publicKeyB64: tp.publicKeyB64,
+      historical: false,
     });
     const cp = signCheckpoint(privateKey, {
       tree_size: 4,
@@ -792,7 +837,7 @@ describe('CheckpointWitnessPollerService — witness quorum consumption (RFC-ACD
       expect.objectContaining({ witnessedCount: 0, meetsQuorum: false }),
     );
     // The untrusted witness's key is never even resolved.
-    expect(h.didResolver.resolveKey).not.toHaveBeenCalled();
+    expect(h.didResolver.resolveWitnessKey).not.toHaveBeenCalled();
   });
 
   it('does NOT count a cosignature bound to a DIFFERENT root than the verified checkpoint', async () => {
@@ -804,10 +849,11 @@ describe('CheckpointWitnessPollerService — witness quorum consumption (RFC-ACD
         witnessQuorumMinWitnesses: 1,
       },
     });
-    h.didResolver.resolveKey.mockResolvedValue({
+    h.didResolver.resolveWitnessKey.mockResolvedValue({
       keyId: THIRD_PARTY_KEY,
       algorithm: 'ed25519',
       publicKeyB64: tp.publicKeyB64,
+      historical: false,
     });
     const cp = signCheckpoint(privateKey, {
       tree_size: 4,
@@ -848,6 +894,47 @@ describe('CheckpointWitnessPollerService — witness quorum consumption (RFC-ACD
     );
   });
 
+  it('refreshes the quorum trust signal on a re-observation, scoped to the enrollment tenant', async () => {
+    const tp = thirdPartySigner();
+    const h = makeHarness({
+      config: {
+        witnessQuorumEnabled: true,
+        witnessQuorumTrusted: [THIRD_PARTY],
+        witnessQuorumMinWitnesses: 1,
+      },
+    });
+    h.didResolver.resolveWitnessKey.mockResolvedValue({
+      keyId: THIRD_PARTY_KEY,
+      algorithm: 'ed25519',
+      publicKeyB64: tp.publicKeyB64,
+      historical: false,
+    });
+    // recordCheckpoint returns null for a re-observation of an already-known
+    // head (the evidence row is append-once) — the quorum-refresh branch only
+    // fires on that null.
+    h.witnessRepo.recordCheckpoint.mockResolvedValue(null);
+    const cp = signCheckpoint(privateKey, {
+      tree_size: 4,
+      root_hash: wire(mth(makeLeafHashes(4))),
+    });
+    const cosig = cosignOver(cp, tp.signer);
+    routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: envelope(cp, [cosig]) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('witnessed');
+    expect(h.witnessRepo.updateQuorum).toHaveBeenCalledWith(
+      TENANT,
+      cp.log_id,
+      cp.tree_size,
+      cp.root_hash,
+      1,
+      true,
+      1,
+      true,
+      0,
+    );
+  });
+
   it('records NULL quorum when consumption is disabled (default)', async () => {
     const h = makeHarness();
     const cp = signCheckpoint(privateKey, {
@@ -861,6 +948,182 @@ describe('CheckpointWitnessPollerService — witness quorum consumption (RFC-ACD
       expect.objectContaining({ witnessedCount: null, meetsQuorum: null }),
     );
     expect(h.instrumentation.logWitnessQuorumTotal.inc).not.toHaveBeenCalled();
+  });
+});
+
+// ── B2/B3: witness key resolution — did:key witnesses, retired witness keys ─
+
+describe('CheckpointWitnessPollerService — witness key resolution (RFC-ACDP-0015 §9)', () => {
+  const THIRD_PARTY = 'did:web:witness-3p.example.org';
+  const THIRD_PARTY_KEY = `${THIRD_PARTY}#witness-key-1`;
+
+  function thirdPartySigner(seedHex = '77'.repeat(32)) {
+    const pkcs8 = Buffer.concat([
+      Buffer.from('302e020100300506032b657004220420', 'hex'),
+      Buffer.from(seedHex, 'hex'),
+    ]);
+    const key = createPrivateKey({ key: pkcs8, format: 'der', type: 'pkcs8' });
+    const pub = require('node:crypto').createPublicKey(key);
+    const spki = pub.export({ format: 'der', type: 'spki' }) as Buffer;
+    return {
+      signer: nodeWitnessSigner(THIRD_PARTY, THIRD_PARTY_KEY, key),
+      publicKeyB64: spki.subarray(spki.length - 32).toString('base64'),
+    };
+  }
+
+  /**
+   * A THIRD-PARTY witness identified by `did:key` — self-describing, so no DID
+   * document resolution is ever needed for it (RFC-ACDP-0001 §5.11.1).
+   */
+  function thirdPartyDidKeySigner(seedHex = '88'.repeat(32)) {
+    const pkcs8 = Buffer.concat([
+      Buffer.from('302e020100300506032b657004220420', 'hex'),
+      Buffer.from(seedHex, 'hex'),
+    ]);
+    const key = createPrivateKey({ key: pkcs8, format: 'der', type: 'pkcs8' });
+    const pub = require('node:crypto').createPublicKey(key);
+    const spki = pub.export({ format: 'der', type: 'spki' }) as Buffer;
+    const rawPub = spki.subarray(spki.length - 32) as Buffer;
+    const witnessId = `did:key:${encodeEd25519Multibase(rawPub)}`;
+    const keyId = `${witnessId}#witness-key-1`;
+    return { signer: nodeWitnessSigner(witnessId, keyId, key), witnessId };
+  }
+
+  function cosignOver(cp: LogCheckpoint, signer: ReturnType<typeof nodeWitnessSigner>) {
+    const minted = mintCosignature(
+      {
+        log_id: cp.log_id,
+        tree_size: cp.tree_size,
+        root_hash: cp.root_hash,
+        timestamp: cp.timestamp,
+      },
+      new Date().toISOString(),
+      signer,
+    );
+    if (!minted.ok) throw new Error(`mint failed: ${minted.reason}`);
+    return minted.cosignature;
+  }
+
+  function envelope(cp: LogCheckpoint, cosigs: unknown[]) {
+    return JSON.stringify({ log_checkpoint: cp, witness_signatures: cosigs });
+  }
+
+  it('B2: a trusted did:key witness counts toward quorum with NO outbound HTTP request', async () => {
+    const dk = thirdPartyDidKeySigner();
+    const h = makeHarness({
+      config: {
+        witnessQuorumEnabled: true,
+        witnessQuorumTrusted: [dk.witnessId],
+        witnessQuorumMinWitnesses: 1,
+      },
+    });
+    const cp = signCheckpoint(privateKey, {
+      tree_size: 4,
+      root_hash: wire(mth(makeLeafHashes(4))),
+    });
+    const cosig = cosignOver(cp, dk.signer);
+    routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: envelope(cp, [cosig]) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('witnessed');
+    expect(h.witnessRepo.recordCheckpoint).toHaveBeenCalledWith(
+      expect.objectContaining({ witnessedCount: 1, meetsQuorum: true, historicalWitnessedCount: 0 }),
+    );
+    // did:key is self-describing — resolveWitnessKey (the did:web/HTTP path)
+    // is never called for it.
+    expect(h.didResolver.resolveWitnessKey).not.toHaveBeenCalled();
+  });
+
+  it('B3: a witness cosignature under a RETIRED (historical) key counts separately, never toward meetsQuorum', async () => {
+    const tp = thirdPartySigner();
+    const h = makeHarness({
+      config: {
+        witnessQuorumEnabled: true,
+        witnessQuorumTrusted: [THIRD_PARTY],
+        witnessQuorumMinWitnesses: 1,
+      },
+    });
+    h.didResolver.resolveWitnessKey.mockResolvedValue({
+      keyId: THIRD_PARTY_KEY,
+      algorithm: 'ed25519',
+      publicKeyB64: tp.publicKeyB64,
+      historical: true,
+    });
+    const cp = signCheckpoint(privateKey, {
+      tree_size: 4,
+      root_hash: wire(mth(makeLeafHashes(4))),
+    });
+    const cosig = cosignOver(cp, tp.signer);
+    routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: envelope(cp, [cosig]) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('witnessed');
+    expect(h.witnessRepo.recordCheckpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        witnessedCount: 0,
+        meetsQuorum: false,
+        historicalWitnessedCount: 1,
+      }),
+    );
+  });
+
+  it('B3 negative: meetsQuorum stays FALSE with WITNESS_QUORUM_MIN_WITNESSES=1 when only a historical cosignature is present', async () => {
+    const tp = thirdPartySigner();
+    const h = makeHarness({
+      config: {
+        witnessQuorumEnabled: true,
+        witnessQuorumTrusted: [THIRD_PARTY],
+        witnessQuorumMinWitnesses: 1,
+      },
+    });
+    h.didResolver.resolveWitnessKey.mockResolvedValue({
+      keyId: THIRD_PARTY_KEY,
+      algorithm: 'ed25519',
+      publicKeyB64: tp.publicKeyB64,
+      historical: true,
+    });
+    const cp = signCheckpoint(privateKey, {
+      tree_size: 4,
+      root_hash: wire(mth(makeLeafHashes(4))),
+    });
+    const cosig = cosignOver(cp, tp.signer);
+    routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: envelope(cp, [cosig]) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('witnessed');
+    const call = h.witnessRepo.recordCheckpoint.mock.calls[0]![0] as {
+      meetsQuorum: boolean;
+      historicalWitnessedCount: number;
+    };
+    expect(call.meetsQuorum).toBe(false);
+    expect(call.historicalWitnessedCount).toBe(1);
+    expect(h.instrumentation.logWitnessQuorumTotal.inc).toHaveBeenCalledWith({ meets: 'false' });
+  });
+
+  it('a key absent from verificationMethod entirely counts toward neither, and appears as non-counting', async () => {
+    const tp = thirdPartySigner();
+    const h = makeHarness({
+      config: {
+        witnessQuorumEnabled: true,
+        witnessQuorumTrusted: [THIRD_PARTY],
+        witnessQuorumMinWitnesses: 1,
+      },
+    });
+    h.didResolver.resolveWitnessKey.mockRejectedValue(
+      new Error(`key '${THIRD_PARTY_KEY}' not found in verificationMethod`),
+    );
+    const cp = signCheckpoint(privateKey, {
+      tree_size: 4,
+      root_hash: wire(mth(makeLeafHashes(4))),
+    });
+    const cosig = cosignOver(cp, tp.signer);
+    routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: envelope(cp, [cosig]) } });
+
+    const outcomes = await h.svc.sweep();
+    expect(outcomes[0]!.status).toBe('witnessed');
+    expect(h.witnessRepo.recordCheckpoint).toHaveBeenCalledWith(
+      expect.objectContaining({ witnessedCount: 0, meetsQuorum: false, historicalWitnessedCount: 0 }),
+    );
   });
 });
 

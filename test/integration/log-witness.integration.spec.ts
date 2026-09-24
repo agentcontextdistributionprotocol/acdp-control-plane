@@ -212,16 +212,28 @@ describe('transparency-log checkpoint witness (integration)', () => {
       meetsQuorum: false,
     });
     // A later sweep re-observes the SAME head after the registry aggregated a
-    // trusted witness's cosignature — the quorum refreshes on the append-once row.
-    await witnessRepo.updateQuorum(LOG_ID, 3, ROOT_3, 1, true);
+    // trusted witness's cosignature (one current, one historical) — the
+    // quorum refreshes on the append-once row (migrations 0018/0020/0021).
+    await witnessRepo.updateQuorum('default', LOG_ID, 3, ROOT_3, 1, true, 1, true, 1);
 
     const res = (await ctx.client.requestJson(
       'GET',
       `/registries/${encodeURIComponent(AUTHORITY)}/log-witness`,
-    )) as { checkpoints: Array<{ treeSize: number; witnessedCount: number; meetsQuorum: boolean }> };
+    )) as {
+      checkpoints: Array<{
+        treeSize: number;
+        witnessedCount: number;
+        meetsQuorum: boolean;
+        historicalWitnessedCount: number;
+      }>;
+    };
     const head = res.checkpoints.find((c) => c.treeSize === 3)!;
     expect(head.witnessedCount).toBe(1);
     expect(head.meetsQuorum).toBe(true);
+    // §9 historical sub-count round-trips through migration 0021's column and
+    // is served by the same plain select() the controller already runs — no
+    // controller code change needed, mirroring freshWitnessedCount (0020).
+    expect(head.historicalWitnessedCount).toBe(1);
   });
 
   it('alert worklist: unacknowledged listing + acknowledgement round-trip', async () => {

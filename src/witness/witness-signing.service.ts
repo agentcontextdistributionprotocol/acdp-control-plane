@@ -36,11 +36,11 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import { didWebToAuthority } from '../common/did-authority';
+import { encodeEd25519Multibase } from '../common/multibase';
 import { AppConfigService } from '../config/app-config.service';
 import {
   nodeWitnessSigner,
   sdkHasCosignatureSurface,
-  type LogCosignature,
   type WitnessSigner,
 } from '../audit/cosign';
 
@@ -163,7 +163,7 @@ export class WitnessSigningService {
     this.witnessId = witnessId;
     this.keyId = keyId;
     this.publicKeyB64 = Buffer.from(rawPub).toString('base64');
-    this.publicKeyMultibase = ed25519Multibase(rawPub);
+    this.publicKeyMultibase = encodeEd25519Multibase(rawPub);
     this.signer = nodeWitnessSigner(witnessId, keyId, priv);
     this.logger.log(
       `witness cosigning enabled: witness_id=${witnessId} key_id=${keyId} ` +
@@ -212,11 +212,6 @@ export class WitnessSigningService {
       cosignature_endpoint: '/log/witness',
     };
   }
-
-  /** A cosignature verifies under THIS witness's own assertionMethod key. */
-  ownCosignatureVerifies(cosignature: LogCosignature): boolean {
-    return cosignature.witness_id === this.witnessId;
-  }
 }
 
 /**
@@ -230,31 +225,6 @@ function extractEd25519RawPublic(pub: KeyObject): Buffer {
     throw new WitnessConfigError(`unexpected Ed25519 SPKI length ${der.length} (want 44)`);
   }
   return der.subarray(12, 44);
-}
-
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-
-/** Encode raw 32-byte Ed25519 key as `did:key`-style multibase (0xed01 prefix). */
-function ed25519Multibase(rawPub: Buffer): string {
-  const prefixed = Buffer.concat([Buffer.from([0xed, 0x01]), rawPub]);
-  return 'z' + base58btc(prefixed);
-}
-
-function base58btc(buf: Buffer): string {
-  let x = BigInt('0x' + (buf.toString('hex') || '0'));
-  let out = '';
-  const base = 58n;
-  while (x > 0n) {
-    const rem = Number(x % base);
-    x = x / base;
-    out = BASE58_ALPHABET[rem] + out;
-  }
-  // Preserve leading-zero bytes as leading '1's.
-  for (const byte of buf) {
-    if (byte === 0) out = BASE58_ALPHABET[0] + out;
-    else break;
-  }
-  return out;
 }
 
 function stripFragment(didUrl: string): string {
