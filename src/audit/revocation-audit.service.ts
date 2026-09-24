@@ -143,6 +143,27 @@
  * OTHER registry's lineages in the same pass. Fail-closed is preserved
  * PER-LINEAGE (no partial fold is ever recorded for a failed one); it is
  * only not escalated to aborting unrelated work.
+ *
+ * ## Retroactive re-audit fan-out (RFC-ACDP-0014 §7, Phase 15)
+ *
+ * After the discovery + lineage-walk phases above, every `sweep()` pass
+ * also re-attempts `ReceiptAuditService.reauditForFingerprint` for EVERY
+ * `(tenant_id, revoked_key_fingerprint)` pair currently in `key_revocations`
+ * — not only ones with a fact recorded THIS pass. That is what makes a
+ * fingerprint whose amendment fan-out exceeds one batch converge over
+ * subsequent sweeps (see that method's doc for the batching/idempotency
+ * story) rather than needing a separate retry mechanism here. Gated on
+ * `KEY_REVOCATION_CHECK_ENABLED` (re-checked inside
+ * `reauditForFingerprint` too, so this gate is belt-and-suspenders, not
+ * load-bearing on its own) and run under THIS service's own advisory lock
+ * — `receipt_audits` amendments and `ReceiptAuditService.sweep()`'s own
+ * inserts race under two DIFFERENT locks by design (see the plan's Phase 15
+ * edge cases): they touch disjoint rows in practice (one sweep inserts
+ * brand-new verdicts, the other amends only rows already at
+ * `key_revocation_status = 'none'`), so no additional coordination is
+ * needed. A failure re-auditing one fingerprint is logged and never aborts
+ * the rest — same "continue past one bad item" discipline as the lineage
+ * walk above.
  */
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { AcdpDid } from '@agentcontextdistributionprotocol/acdp';
@@ -156,6 +177,7 @@ import { ContextEvent, NewKeyRevocation } from '../db/schema';
 import { KeyRevocationRepository } from '../storage/key-revocation.repository';
 import { RegistryRepository } from '../storage/registry.repository';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
+import { ReceiptAuditService } from './receipt-audit.service';
 import { crossCheckRegistryBinding } from './revocation-binding';
 import {
   fingerprintEd25519B64,
@@ -213,6 +235,7 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
     private readonly federationClient: SafeFederationClient,
     private readonly didResolver: DidWebResolverService,
     private readonly instrumentation: InstrumentationService,
+    private readonly receiptAuditService: ReceiptAuditService,
   ) {}
 
   onModuleInit(): void {
@@ -366,6 +389,24 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
       } else {
         for (const item of lineageQueue.values()) {
           await this.walkAndPersistLineage(item);
+        }
+      }
+
+      // ── RFC-ACDP-0014 §7 retroactive re-audit fan-out (Phase 15) ────────
+      // See the file header. Every pass, every known-revoked fingerprint —
+      // not only ones touched above — so a fan-out exceeding one batch
+      // converges over subsequent sweeps with no separate cursor.
+      if (this.config.keyRevocationCheckEnabled) {
+        const known = await this.revocationRepo.distinctFingerprints();
+        for (const { tenantId, fingerprint } of known) {
+          try {
+            await this.receiptAuditService.reauditForFingerprint(tenantId, fingerprint);
+          } catch (err) {
+            this.logger.warn(
+              `key-revocation re-audit failed fingerprint=${fingerprint} tenant=${tenantId}: ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         }
       }
 

@@ -589,3 +589,132 @@
   fail-closed/pre-compromise verdict) and `compromise_boundary` are unaffected
   either way, and every contributing revocation stays visible via `sources`.
 - **Status:** UNCONFIRMED
+
+## Phase 15 re-audit scope: continuous re-tightening on a strictly earlier boundary (superseded the original "first amendment only" design)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the original Phase 15 implementation scoped re-audit to a row's FIRST
+  amendment only (`amendKeyRevocation`'s WHERE matched solely on
+  `key_revocation_status = 'none'`), reasoning that the plan's "not a cursor"
+  instruction meant eligibility-as-cursor should be the ONLY selection mechanism.
+  The gate verifier (round 1) correctly flagged this as under-argued against the
+  plan's edge case #2 text ("two revocations with different T for the same
+  fingerprint — must recompute the min() fold from the full fact set each time")
+  and identified a genuine fail-open scenario: a row already amended by a FIRST
+  revocation could never be re-tightened by a SECOND, earlier-dated revocation for
+  the same fingerprint discovered later.
+- **Chose:** widened BOTH SQL predicates to a two-branch OR, still with no cursor
+  table: (1) `amendKeyRevocation`'s WHERE now matches `key_revocation_status =
+  'none'` OR `compromise_boundary > amendment.boundary` (a row is updatable on its
+  first amendment, or whenever the new boundary is strictly earlier/more severe
+  than what's currently stored) — this is the exact, final, per-row monotonicity
+  guard. (2) `findRevocationAmendmentCandidates`'s WHERE gained a symmetric
+  `globalMinBoundaryIso` parameter — `key_revocation_status = 'none'` OR
+  `compromise_boundary > globalMinBoundaryIso`, where the caller computes
+  `globalMinBoundaryIso` as `min(compromisedSince)` across the FULL current fact
+  set for the fingerprint, deliberately ignoring per-row registry scope as a
+  safe, over-inclusive selection trigger — the real, scope-filtered tightening
+  decision is still made per row (`filterApplicableRevocations`) and enforced
+  again, exactly, by (1). Eligibility is still the only cursor: an amended row
+  simply stays a candidate as long as a strictly-tighter boundary exists for it.
+  `ORDER BY receiptAudits.eventId` was also dropped from the candidate query — see
+  the "steady-state fan-out query" entry below for why, found by the same
+  verification round via `EXPLAIN (ANALYZE, BUFFERS)`.
+- **Residual scope, still accepted:** `filterApplicableRevocations`'s per-row
+  `KEY_REVOCATION_ATTESTED_SCOPE` filter is applied identically before and after
+  this fix — a row whose registry authority makes a stricter registry-attested
+  revocation inapplicable under `same_registry` scope will correctly continue to
+  report its current (less severe) boundary rather than the global minimum. This
+  is policy-correct (§6: attested-scope governs consumption, not evidence), not a
+  gap introduced by this fix.
+- **Alternatives:** (1) Re-scan every already-amended row on every sweep
+  unconditionally — rejected: unbounded, ever-growing re-work with no natural
+  termination as revocation history accumulates. (2) A persisted per-(tenant,
+  fingerprint) "last-seen boundary" watermark table — rejected as strictly more
+  machinery (a new table, another idempotency argument to prove) for what the
+  chosen two-predicate-OR design already achieves with the existing columns and
+  no new state.
+- **Blast radius if wrong:** Low. The only way the fix under-tightens is the
+  documented, policy-intentional registry-scope interaction above; both branches
+  of the wider `WHERE` clauses are pinned by unit tests (`receipt-audit.service.spec.ts`),
+  a direct repository-level integration test (loosening rejected / tightening
+  accepted / idempotent at final state), and an end-to-end two-sweep integration
+  test through the real `RevocationAuditService.sweep()`.
+- **Status:** RESOLVED
+
+## Steady-state fan-out query cost without `ORDER BY` (Phase 15)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** an `ORDER BY receiptAudits.eventId` on `findRevocationAmendmentCandidates`
+  was harmless — needed only for a stable, if arbitrary, row order.
+- **Chose:** dropped it, after the gate verifier ran `EXPLAIN (ANALYZE, BUFFERS)`
+  against 200k seeded rows and found the sort forced a Merge Join across the full
+  tenant/fingerprint row set even in the steady state (every candidate row already
+  amended, zero rows returned) — ~190ms and ~505k buffer hits, every sweep pass,
+  forever, for any high-volume revoked fingerprint. Without the forced sort the
+  planner can drive off `ce_key_fingerprint_idx` (context_events) and probe
+  `receipt_audits` by its `event_id` primary key instead; a new partial index,
+  `ra_key_revocation_none_idx` on `receipt_audits (tenant_id, event_id) WHERE
+  key_revocation_status = 'none'`, keeps the common "no revocation yet, or fully
+  amended" case an index lookup rather than a scan (migration 0024).
+- **Alternatives:** keep the `ORDER BY` and accept the cost — rejected once
+  measured: a permanent per-sweep tax with no correctness benefit, since candidate
+  selection is self-advancing by eligibility regardless of row order.
+- **Blast radius if wrong:** Low. Purely a performance property; if the planner's
+  behavior differs on some future Postgres version, the fallback is to reintroduce
+  a bounded `ORDER BY` (e.g. on a covering index) — no correctness contract
+  depends on any particular row order here.
+- **Status:** RESOLVED
+
+## Candidate selection keys on the registry-claimed `key_fingerprint`, with no backfilled resolved-signer column (Phase 15)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** `findRevocationAmendmentCandidates` joining on
+  `context_events.key_fingerprint` (the REGISTRY-CLAIMED fingerprint at publish
+  time) rather than the independently-resolved signer the §7 verdict itself is
+  keyed on was a safe simplification, since a claim/resolved mismatch is already
+  flagged separately as `key_fingerprint_mismatch`.
+- **Chose:** to keep it that way rather than fix it this phase. The gate verifier
+  correctly noted the claim can only ever ADD an extra, harmless candidate — never
+  drop a real one that populated the column — but that an event whose
+  `key_fingerprint` was never populated at all (most historical, pre-ACDP-0.2.0
+  rows, or a registry that never advertised the field) IS permanently unreachable
+  by this fan-out no matter how the revocation fact set changes later. Closing
+  this fully would need a real schema change — a backfilled, independently-
+  resolved-signer column on `receipt_audits` or `context_events` — out of scope
+  for a re-audit phase whose contract is "amend the 4 revocation columns only."
+  Since this is the LAST phase of the plan, there is no later phase to defer the
+  fix to; it is recorded here and in `docs/ARCHITECTURE.md`/`CLAUDE.md` as a
+  permanent, accepted limitation instead.
+- **Alternatives:** backfill a resolved-signer column now — rejected as a real
+  schema/migration change well beyond this phase's scope, for a limitation that
+  only affects PRE-0.2.0 historical data (every event since ACDP 0.2.0 populates
+  `key_fingerprint`).
+- **Blast radius if wrong:** Low-medium, and shrinking over time. Affects only
+  publishes from before a registry adopted ACDP 0.2.0 receipts, or from a
+  registry that never advertises `key_fingerprint` — a fixed, non-growing
+  population as newer traffic always populates the column.
+- **Status:** UNCONFIRMED
+
+## Reusing RECEIPT_AUDIT_BATCH_SIZE as the Phase 15 fan-out cap
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the plan's edge case #1/#5 ("bound the fan-out per sweep — reuse
+  RECEIPT_AUDIT_BATCH_SIZE or add a dedicated cap") explicitly offers reuse as the
+  first option, and revocations are rare by construction (repeated throughout
+  Phases 11-14's own headers) — a dedicated `KEY_REVOCATION_REAUDIT_BATCH_SIZE`
+  knob would be one more env var to document and reason about for a fan-out that,
+  in the overwhelming common case, has fewer candidate rows than even a modest
+  batch size.
+- **Chose:** `ReceiptAuditService.reauditForFingerprint` passes
+  `this.config.receiptAuditBatchSize` (the existing knob) as the candidate limit.
+  The two workloads (auditing brand-new publishes vs. amending old verdicts) never
+  compete for it in the same query, so sharing the number carries no scheduling
+  risk — it is purely "how many rows does one fan-out step touch," reused rather
+  than duplicated.
+- **Alternatives:** A dedicated `KEY_REVOCATION_REAUDIT_BATCH_SIZE` env var —
+  rejected for now as unjustified surface area; can be added later (additive,
+  non-breaking) if operators ever need the two batch sizes to diverge (e.g. a
+  deployment with a very hot receipt-audit sweep but a rare, large revocation
+  fan-out that should be capped much lower).
+- **Blast radius if wrong:** Low. Purely a throughput/latency knob — worst case,
+  a very large fingerprint's fan-out converges over more (or fewer) sweep passes
+  than would be ideal; no correctness impact, and adding a dedicated env var later
+  is a pure addition, not a breaking change.
+- **Status:** UNCONFIRMED

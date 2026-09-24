@@ -114,6 +114,19 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['status'] as const,
   });
 
+  // RFC-ACDP-0014 §7 retroactive re-audit (Phase 15) — a DISTINCT metric
+  // from the one above, deliberately not folded into it: that counter is
+  // the LIVE classification of a freshly-audited event; this one is the
+  // FAN-OUT amendment of an ALREADY-sealed row, driven by a revocation
+  // fact recorded after the fact. Conflating them would hide the
+  // retroactive-correction signal inside ordinary sweep traffic — the
+  // progress metric the plan's Scale edge case calls for.
+  readonly receiptAuditRevocationReauditsTotal = new client.Counter({
+    name: 'acdp_receipt_audit_revocation_reaudits_total',
+    help: 'RFC-ACDP-0014 §7 retroactive amendments to already-sealed receipt_audits rows, by resulting status (including the pseudo-status "error" for a row that threw during re-classification)',
+    labelNames: ['status'] as const,
+  });
+
   onModuleInit(): void {
     client.collectDefaultMetrics();
   }

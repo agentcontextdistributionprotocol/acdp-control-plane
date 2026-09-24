@@ -104,6 +104,19 @@
  * apply HERE, at classification time** — never at persistence time (Phase
  * 12's `revocation-audit.service.ts` records every binding-verified fact
  * regardless of scope; see that file's own header note on this same split).
+ *
+ * ## Retroactive re-audit (Phase 15)
+ *
+ * Everything above classifies an event AT AUDIT TIME. {@link
+ * ReceiptAuditService#reauditForFingerprint} is the companion path for a
+ * revocation fact recorded AFTER an event was already sealed with a
+ * `verified` (or any other) verdict — `RevocationAuditService.sweep()`
+ * calls it for every fingerprint with a verified fact, every pass, so a
+ * `compromised_since` predating existing history amends the old verdicts
+ * in place instead of leaving them reporting `verified` forever. See that
+ * method's doc for the batching/idempotency/scope details, and
+ * `ReceiptAuditRepository.amendKeyRevocation` for the monotone,
+ * column-scoped guarantee the amendment itself relies on.
  */
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { AcdpDid, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
@@ -175,6 +188,19 @@ export type KeyRevocationClassification =
  * not distinguish the two (both are `authorization:"none"` + `boundary` +
  * `error`), because from the SDK's point of view they differ only in
  * whether the CALLER had a verified `created_at` to offer it at all.
+ *
+ * **`receiptCreatedAt`, when non-null, is normalized to strict RFC3339
+ * internally — callers may pass either form.** At live audit time it is
+ * always already RFC3339 (a freshly-fetched receipt's own `created_at`
+ * field, straight from JSON — never DB-sourced). At Phase 15 retroactive
+ * re-audit time it comes back out of `receipt_audits.receipt_created_at`,
+ * which round-trips through the exact same Postgres `timestamp with time
+ * zone` rendering `toRevocationJson`'s doc describes for
+ * `compromised_since` (`"2026-06-12 00:00:00+00"`, not the RFC3339 it was
+ * written with) — confirmed to make the SDK throw outright, the same way,
+ * by this phase's own integration test. Normalizing here, once, for every
+ * caller (rather than requiring each one to remember it) turns a
+ * SDK-throws-a-cryptic-error footgun into a non-issue by construction.
  */
 export function classifyKeyRevocation(
   revocations: KeyRevocation[],
@@ -193,10 +219,12 @@ export function classifyKeyRevocation(
     compromisedSince: new Date(r.compromisedSince).toISOString(),
   }));
   const revocationsJson = JSON.stringify(normalized.map(toRevocationJson));
+  const normalizedReceiptCreatedAt =
+    receiptCreatedAt === null ? null : new Date(receiptCreatedAt).toISOString();
   const raw = classifyVerifier.classifyUnderRevocation!(
     revocationsJson,
     signerFingerprint,
-    receiptCreatedAt,
+    normalizedReceiptCreatedAt,
   );
   const parsed = JSON.parse(raw) as { authorization: string; boundary?: string };
   if (typeof parsed.boundary !== 'string') return { status: 'none' };
@@ -513,7 +541,21 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     if (this.config.keyRevocationIgnoreFingerprints.includes(signerFingerprint)) {
       return { status: 'none' };
     }
-    const applicable = all.filter((r) => {
+    const applicable = this.filterApplicableRevocations(all, ev.registryAuthority);
+    return classifyKeyRevocation(applicable, signerFingerprint, receiptCreatedAt);
+  }
+
+  /**
+   * `KEY_REVOCATION_ATTESTED_SCOPE`'s reach (§6 policy) — shared between the
+   * live per-event classification above and the retroactive re-audit fan-out
+   * below, so the two paths can never drift on which revocations a given
+   * registry authority's events are allowed to be classified against.
+   */
+  private filterApplicableRevocations(
+    all: KeyRevocation[],
+    registryAuthority: string,
+  ): KeyRevocation[] {
+    return all.filter((r) => {
       if (r.trustClass === 'producer_signed') return true;
       switch (this.config.keyRevocationAttestedScope) {
         case 'off':
@@ -522,10 +564,111 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
           return true;
         case 'same_registry':
         default:
-          return r.originAuthority === ev.registryAuthority;
+          return r.originAuthority === registryAuthority;
       }
     });
-    return classifyKeyRevocation(applicable, signerFingerprint, receiptCreatedAt);
+  }
+
+  /**
+   * RFC-ACDP-0014 §7 retroactive re-audit (Phase 15). A revocation whose
+   * `compromised_since` predates already-audited history must revise those
+   * verdicts — `ReceiptAuditRepository.findUnauditedPublishes`'s `isNull`
+   * exclusion and its lookback window both mean a `verified` row from
+   * before the revocation was ever recorded would otherwise report
+   * `verified` FOREVER, exactly contrary to RFC-ACDP-0014 §4's own advice
+   * to producers to choose T conservatively (i.e. early — "the one
+   * non-recoverable mistake" is an optimistically LATE T).
+   *
+   * Called by `RevocationAuditService.sweep()` for every fingerprint it
+   * currently holds a verified fact for — not only ones with a fact
+   * freshly recorded THIS pass — so a fingerprint whose fan-out exceeds one
+   * batch (`RECEIPT_AUDIT_BATCH_SIZE`, reused rather than a dedicated knob:
+   * see ASSUMPTIONS.md) converges over the next periodic sweep instead of
+   * needing its own retry mechanism (AC5).
+   *
+   * Amends IN PLACE via `ReceiptAuditRepository.amendKeyRevocation` — see
+   * its doc for the monotone, column-scoped guarantee. Candidate selection
+   * (`findRevocationAmendmentCandidates`) and the amendment's own WHERE
+   * clause both widen on `globalMinBoundaryIso`/`amendment.boundary`, so a
+   * row already amended once IS revisited by a LATER, earlier-dated
+   * revocation on the same fingerprint that tightens it further — see that
+   * repository method's doc for the two-predicate design (candidate
+   * selection over-inclusive on scope, the amendment itself exact).
+   *
+   * Per-row try/catch: one row throwing (e.g. a malformed stored value) logs
+   * and counts an `error`, but must not abandon the rest of the batch — the
+   * caller (`RevocationAuditService.sweep()`) only wraps this call
+   * per-FINGERPRINT, so without a per-row boundary here a single bad row
+   * would have silently dropped every other candidate for this fingerprint,
+   * for this pass.
+   */
+  async reauditForFingerprint(tenantId: string, fingerprint: string): Promise<number> {
+    if (!this.config.keyRevocationCheckEnabled) return 0; // AC7
+    if (!sdkSupportsRevocationClassification()) return 0;
+    if (this.config.keyRevocationIgnoreFingerprints.includes(fingerprint)) return 0;
+
+    // The full current fact set for this fingerprint, fetched ONCE and
+    // reused across candidate selection AND classification — §4's fold is
+    // min(compromised_since) over the WHOLE set. `globalMinBoundaryIso`
+    // widens candidate selection to also catch rows a SECOND, earlier-dated
+    // revocation could tighten further; each `compromisedSince` is
+    // normalized the same way `classifyKeyRevocation` normalizes it
+    // internally, since raw comparison of Postgres-rendered timestamp text
+    // is not a safe substitute for comparing actual instants.
+    const all = await this.keyRevocationRepo.findByFingerprint(fingerprint, tenantId);
+    if (all.length === 0) return 0;
+    const globalMinBoundaryIso = all
+      .map((r) => new Date(r.compromisedSince).toISOString())
+      .reduce((min, iso) => (iso < min ? iso : min));
+
+    const candidates = await this.auditRepo.findRevocationAmendmentCandidates(
+      tenantId,
+      fingerprint,
+      globalMinBoundaryIso,
+      this.config.receiptAuditBatchSize,
+    );
+    if (candidates.length === 0) return 0;
+
+    let amended = 0;
+    for (const row of candidates) {
+      try {
+        // Same gate as `withRevocationClassification`: a `created_at` only
+        // ever reaches classification when the ORIGINAL verdict's status
+        // was itself fully verified — see the file header's P-256 note.
+        const receiptCreatedAt =
+          row.status === 'verified' || row.status === 'verified_historical'
+            ? row.receiptCreatedAt
+            : null;
+        const applicable = this.filterApplicableRevocations(all, row.registryAuthority);
+        const classification = classifyKeyRevocation(applicable, fingerprint, receiptCreatedAt);
+        if (classification.status === 'none') continue; // e.g. scope='off' filtered every row out
+        const amendedThisRow = await this.auditRepo.amendKeyRevocation(tenantId, row.eventId, {
+          status: classification.status,
+          trustClass: classification.trustClass,
+          boundary: classification.boundary,
+          sources: classification.sources,
+        });
+        if (amendedThisRow) {
+          amended++;
+          this.instrumentation.receiptAuditRevocationReauditsTotal.inc({
+            status: classification.status,
+          });
+        }
+      } catch (err) {
+        this.instrumentation.receiptAuditRevocationReauditsTotal.inc({ status: 'error' });
+        this.logger.warn(
+          `key-revocation re-audit failed event=${row.eventId} fingerprint=${fingerprint} ` +
+            `tenant=${tenantId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    if (amended > 0) {
+      this.logger.log(
+        `key-revocation re-audit: amended ${amended}/${candidates.length} receipt_audits ` +
+          `row(s) for fingerprint=${fingerprint} tenant=${tenantId}`,
+      );
+    }
+    return amended;
   }
 
   private async auditEventInner(ev: ContextEvent): Promise<Verdict> {

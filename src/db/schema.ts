@@ -59,6 +59,14 @@ export const contextEvents = pgTable(
     agentIdx: index('ce_agent_idx').on(t.agentId),
     lineageIdx: index('ce_lineage_idx').on(t.lineageId),
     typeIdx: index('ce_type_idx').on(t.eventType),
+    // RFC-ACDP-0014 §7 retroactive re-audit (migration 0024, Phase 15): the
+    // fan-out from a revoked fingerprint to every receipt_audits row whose
+    // event carries it joins here. Partial — most rows predate ACDP 0.2.0
+    // trust metadata or never resolved a producer key, so key_fingerprint is
+    // NULL far more often than not.
+    keyFingerprintIdx: index('ce_key_fingerprint_idx')
+      .on(t.tenantId, t.keyFingerprint)
+      .where(sql`${t.keyFingerprint} is not null`),
   }),
 );
 
@@ -427,6 +435,14 @@ export const receiptAudits = pgTable(
     keyRevocationStatusIdx: index('ra_key_revocation_status_idx')
       .on(t.keyRevocationStatus)
       .where(sql`${t.keyRevocationStatus} <> 'none'`),
+    // Phase 15 fan-out: `findRevocationAmendmentCandidates` filters on
+    // (tenant_id, event_id) restricted to still-eligible rows. Partial and
+    // inverse of the index above — most rows stay 'none' forever, but the
+    // candidate query for a NEVER-revoked fingerprint (the common case, every
+    // sweep) still needs to resolve quickly against this predicate alone.
+    keyRevocationNoneIdx: index('ra_key_revocation_none_idx')
+      .on(t.tenantId, t.eventId)
+      .where(sql`${t.keyRevocationStatus} = 'none'`),
   }),
 );
 

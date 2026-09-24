@@ -2669,3 +2669,126 @@ Next: Phase 15 (Retroactive re-audit when a revocation predates an existing
 verdict — depends on this phase; Files:
 `src/storage/receipt-audit.repository.ts`, `src/audit/revocation-audit.service.ts`,
 `src/audit/receipt-audit.service.ts`, `docs/ARCHITECTURE.md`, `CLAUDE.md`).
+
+### Phase 15 — Retroactive re-audit when a revocation predates an existing verdict
+- Delivers: a revocation whose `compromised_since` predates already-sealed
+  `receipt_audits` history no longer leaves those old verdicts reporting
+  `verified` forever. `ReceiptAuditService.reauditForFingerprint`, called by
+  `RevocationAuditService.sweep()` every pass for every fingerprint it holds a
+  verified fact for, amends the 4 §7 revocation columns on already-sealed rows
+  IN PLACE (`ReceiptAuditRepository.amendKeyRevocation` /
+  `.findRevocationAmendmentCandidates`) — monotone (only ever tightens),
+  column-scoped (never touches `status`/`discrepancies`/the receipt-timing
+  columns), and self-advancing with no cursor table. This is the LAST phase of
+  the 15-phase plan and of PR3 (Phases 10-15).
+- Verdict: **GAPS → PASS**, 2 rounds. Verifier: fresh Opus general-purpose
+  subagent both rounds (not Fable — consequential, not a one-way-door/trust-
+  boundary change). Round 1 verdict was "PASS with gaps (no blocker)" — treated
+  as GAPS per the skill's discipline (an itemized list, however phrased, gets a
+  closure pass). Round 1 confirmed all 7 ACs met and mutation-tested the core
+  SQL predicates, the `receiptCreatedAt` normalization, and the per-row scope
+  filter — every gap was a design/robustness/doc issue, not a wrong core
+  answer. Round 2, given the full round-1 gap list rather than reviewing cold,
+  independently re-derived and hand-checked the widened SQL predicates,
+  mutation-tested both branches of both WHERE clauses (reverting each `or(...)`
+  back to bare `eq('none')` and confirming specific tests fail), re-ran the
+  full local gate itself (including a fresh disposable Postgres on port 5436,
+  confirming both new indexes are actually created), and confirmed each of the
+  7 round-1 items CLOSED — verdict **PASS**, no blocking new issues.
+- Gap summary (round 1, closed before round 2):
+  (1) **Medium** — the original design amended a `receipt_audits` row AT MOST
+  ONCE (`WHERE key_revocation_status = 'none'` alone) — fail-open: a row
+  already amended by a FIRST revocation could never be re-tightened by a
+  SECOND, earlier-dated revocation on the same fingerprint discovered later,
+  contradicting the plan's own edge case #2 — **closed**, both
+  `amendKeyRevocation` and `findRevocationAmendmentCandidates` widened to a
+  two-branch `WHERE key_revocation_status = 'none' OR compromise_boundary >
+  <newBoundary>` (the candidate query takes a new `globalMinBoundaryIso`
+  parameter, the fact set's current minimum, computed and normalized by the
+  caller); pinned by 3 new unit tests, a rewritten repository-level
+  integration test (loosening rejected / tightening accepted / idempotent at
+  final state), and a new end-to-end two-sweep integration test through the
+  real `RevocationAuditService.sweep()`.
+  (2) **Medium** — `EXPLAIN (ANALYZE, BUFFERS)` against 200k seeded rows found
+  the candidate query's `ORDER BY receiptAudits.eventId` forcing an expensive
+  Merge Join (~190ms/~505k buffer hits to return zero rows) every sweep pass,
+  forever, once a high-volume revoked fingerprint's rows are all already
+  amended — **closed**, dropped the `ORDER BY` and added a new partial index
+  `ra_key_revocation_none_idx` on `receipt_audits (tenant_id, event_id) WHERE
+  key_revocation_status = 'none'` (migration 0024, mirrored in `schema.ts`);
+  round 2 independently confirmed both indexes are actually created against a
+  freshly migrated database.
+  (3) **Medium-low** — candidate selection joins on
+  `context_events.key_fingerprint`, the registry-CLAIMED value at publish
+  time, so a pre-ACDP-0.2.0 event that never populated the column is
+  permanently unreachable — **accepted as a permanent limitation, not code-
+  fixed** (would need a real schema change/backfill, out of scope for a phase
+  whose contract is "amend the 4 revocation columns only," and there is no
+  later phase to defer it to): the repository doc comment was corrected (it
+  previously, incorrectly, claimed this could only ever add a harmless extra
+  candidate, never drop a real one), and the limitation is documented in
+  `ASSUMPTIONS.md`, `docs/ARCHITECTURE.md`, and `CLAUDE.md`.
+  (4) **Low-medium** — undocumented interaction: `DataRetentionService` purges
+  `context_events` but never `receipt_audits` (`ReceiptAuditRepository
+  .deleteBefore` exists but has zero callers), so a purged event's
+  `receipt_audits` row becomes a permanent, un-amendable orphan once retention
+  is enabled — **closed** (documentation only — this is pre-existing
+  `DataRetentionService` behavior, not something this phase introduced or is
+  in scope to fix): documented in `docs/ARCHITECTURE.md` and `CLAUDE.md`.
+  (5) **Low** — `reauditForFingerprint`'s doc comment claimed "Never throws"
+  with no per-row try/catch — one throwing row would have aborted the rest of
+  that fingerprint's candidate batch for the pass (the caller only wraps the
+  call per-fingerprint) — **closed**, added a per-row `try/catch` (logs +
+  continues, increments the existing revocation-reaudit metric with a new
+  `status: 'error'` label value), corrected the doc comment; pinned by a new
+  unit test asserting the loop continues past a rejecting row.
+  (6) **Low**, two missing-branch tests: (a) a `receipt_audits` row whose
+  `checked_at`/`event_arrived_at` is far outside `RECEIPT_AUDIT_LOOKBACK_HOURS`
+  — **closed**, new integration test seeding an old `checked_at` and driving
+  the real sweep. (b) `sdkSupportsRevocationClassification() === false` inside
+  `reauditForFingerprint` — **deliberately not added**: round 2 independently
+  judged this acceptable rather than a gap, since the branch is unreachable
+  with the pinned `^0.14.1` SDK floor, no spec in the repo mocks the `acdp`
+  binding at all, and the structurally identical Phase-14 guard has the same
+  untested branch and was never flagged.
+  (7) **Housekeeping** — `drizzle/0024_revocation_reaudit.sql` was untracked
+  — **closed**, `git add`-ed.
+  Round 2 also raised 3 new Housekeeping-only notes, none requiring action:
+  `globalMinBoundaryIso: null` is dead code from the only real caller (the
+  early-return on an empty fact set means the caller's `reduce` always yields
+  a string) — harmless defensiveness, left as-is; `CLAUDE.md`/`plans/` are
+  gitignored so their Phase 15 edits correctly never show in `git status`; and
+  the fan-out's batch cap is per-fingerprint, not per-sweep (one pass can do
+  up to `distinctFingerprints × RECEIPT_AUDIT_BATCH_SIZE` rows), slightly
+  looser than the plan's "bound the fan-out per sweep" wording but justified
+  by revocations being rare and unchanged from round 1 — flagged only as a
+  conscious accept, not a new gap.
+- Gates (final, post-gap-fix state, confirmed independently by both the
+  executor and the round-2 verifier): `check:conventions` 6✓ · `lint` 0 ·
+  `tsc --noEmit` (both tsconfigs) 0 · `check:build` both builds 143 files,
+  agree · unit 78 suites/1110 passed/4 skipped (pre-existing, unrelated)/1114
+  total · integration 31 suites/210 passed, each run against a fresh
+  disposable Postgres container (executor: port 5435; verifier: port 5436,
+  independently; both torn down after; 5433/5434 untouched, occupied by
+  unrelated foreign sessions).
+- Files touched: `drizzle/0024_revocation_reaudit.sql` (new, two indexes),
+  `src/db/schema.ts`, `src/storage/receipt-audit.repository.ts`,
+  `src/storage/key-revocation.repository.ts`, `src/audit/receipt-audit.service.ts`,
+  `src/audit/receipt-audit.service.spec.ts`, `src/audit/revocation-audit.service.ts`,
+  `src/audit/revocation-audit.service.spec.ts`, `src/telemetry/instrumentation.service.ts`,
+  `test/integration/trust-hardening.integration.spec.ts`, `docs/ARCHITECTURE.md`
+  (new "Retroactive re-audit (Phase 15)" paragraph, generalized during gap-closure),
+  `CLAUDE.md` (local, gitignored — new "Retroactive re-audit (Phase 15)"
+  paragraph, generalized during gap-closure), `plans/rfc-0014-0015-upgrade.md`
+  (local, gitignored — Phase 15 → DONE, divergence notes covering the
+  gap-closure history), `ASSUMPTIONS.md` (4 entries: the amend-once →
+  continuous-re-tightening history, the dropped `ORDER BY`/new index, the
+  accepted claimed-fingerprint limitation, plus the pre-existing reused-
+  batch-size entry).
+Next: **all 15 phases of `plans/rfc-0014-0015-upgrade.md` are now `Status: DONE`.**
+Run the `/implement` §4 finalization pass (whole-feature test re-run, seam
+integration-test gap check, doc staleness sweep, one final Opus verify over
+the CUMULATIVE Phases 10-15 diff) before handing PR3 (Phases 10-15,
+branch `rfc-0014/pr3-key-revocation`) to `/ship`. At the very end of the whole
+plan (after PR3 merges), run `/reconcile` to close out every `ASSUMPTIONS.md`
+entry logged across all 15 phases, not just this one.

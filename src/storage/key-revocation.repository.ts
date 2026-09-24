@@ -80,6 +80,26 @@ export class KeyRevocationRepository {
   }
 
   /**
+   * Every distinct `(tenant_id, revoked_key_fingerprint)` pair with at least
+   * one verified fact — RFC-ACDP-0014 §7 retroactive re-audit (Phase 15)
+   * iterates this every `RevocationAuditService.sweep()` pass (not only
+   * when a fact is freshly recorded) so a fingerprint whose amendment
+   * fan-out exceeds one batch converges over subsequent sweeps. Covered by
+   * `kr_fingerprint_idx` (`(tenant_id, revoked_key_fingerprint)`) as an
+   * index-only scan. Revocations are rare by construction (see this file's
+   * header), so this list is expected to stay small.
+   */
+  async distinctFingerprints(): Promise<Array<{ tenantId: string; fingerprint: string }>> {
+    const rows = await this.database.db
+      .selectDistinct({
+        tenantId: keyRevocations.tenantId,
+        fingerprint: keyRevocations.revokedKeyFingerprint,
+      })
+      .from(keyRevocations);
+    return rows;
+  }
+
+  /**
    * How many verified facts we already hold for `lineageId` — used to decide
    * whether a lineage walk is REQUIRED regardless of cursor freshness (a
    * cached "walked" marker backed by zero facts is exactly the state that

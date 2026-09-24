@@ -119,6 +119,7 @@ describe('RevocationAuditService', () => {
   let federationClient: any;
   let didResolver: any;
   let instrumentation: any;
+  let receiptAuditService: any;
   let svc: RevocationAuditService;
 
   beforeEach(() => {
@@ -140,6 +141,7 @@ describe('RevocationAuditService', () => {
       countByLineage: jest.fn().mockResolvedValue(0),
       findFreshLineageCursor: jest.fn().mockResolvedValue(false),
       recordLineageWalk: jest.fn().mockResolvedValue(undefined),
+      distinctFingerprints: jest.fn().mockResolvedValue([]),
     };
     registryRepo = {
       findByAuthority: jest.fn().mockResolvedValue({ baseUrl: 'https://reg.example' }),
@@ -148,6 +150,7 @@ describe('RevocationAuditService', () => {
     federationClient = { get: jest.fn() };
     didResolver = { resolveKey: jest.fn() };
     instrumentation = { keyRevocationChecksTotal: { inc: jest.fn() } };
+    receiptAuditService = { reauditForFingerprint: jest.fn().mockResolvedValue(0) };
 
     mockVerifyCtxIdBinding.mockReturnValue({ ok: true });
     mockVerifyContentHash.mockReturnValue({ ok: true });
@@ -166,6 +169,7 @@ describe('RevocationAuditService', () => {
       federationClient,
       didResolver,
       instrumentation,
+      receiptAuditService,
     );
   });
 
@@ -582,6 +586,49 @@ describe('RevocationAuditService', () => {
         expect(revocationRepo.recordLineageWalk).not.toHaveBeenCalled();
         // The 101 triggering events' own facts are still recorded independently.
         expect(revocationRepo.record).toHaveBeenCalledTimes(101);
+      });
+    });
+
+    // ── RFC-ACDP-0014 §7 retroactive re-audit fan-out (Phase 15) ──────────
+    describe('retroactive re-audit fan-out', () => {
+      it('calls reauditForFingerprint for every distinct known fingerprint, every pass', async () => {
+        revocationRepo.distinctFingerprints.mockResolvedValue([
+          { tenantId: 'default', fingerprint: 'sha256:' + 'e'.repeat(64) },
+          { tenantId: 'tenant-b', fingerprint: 'sha256:' + 'f'.repeat(64) },
+        ]);
+        await svc.sweep();
+        expect(receiptAuditService.reauditForFingerprint).toHaveBeenCalledWith(
+          'default',
+          'sha256:' + 'e'.repeat(64),
+        );
+        expect(receiptAuditService.reauditForFingerprint).toHaveBeenCalledWith(
+          'tenant-b',
+          'sha256:' + 'f'.repeat(64),
+        );
+        expect(receiptAuditService.reauditForFingerprint).toHaveBeenCalledTimes(2);
+      });
+
+      it('never runs the fan-out when KEY_REVOCATION_CHECK_ENABLED is off', async () => {
+        config.keyRevocationCheckEnabled = false;
+        revocationRepo.distinctFingerprints.mockResolvedValue([
+          { tenantId: 'default', fingerprint: 'sha256:' + 'e'.repeat(64) },
+        ]);
+        await svc.sweep();
+        expect(revocationRepo.distinctFingerprints).not.toHaveBeenCalled();
+        expect(receiptAuditService.reauditForFingerprint).not.toHaveBeenCalled();
+      });
+
+      it('logs and continues past one fingerprint whose re-audit throws, rather than aborting the sweep', async () => {
+        revocationRepo.distinctFingerprints.mockResolvedValue([
+          { tenantId: 'default', fingerprint: 'sha256:' + 'e'.repeat(64) },
+          { tenantId: 'default', fingerprint: 'sha256:' + 'f'.repeat(64) },
+        ]);
+        receiptAuditService.reauditForFingerprint
+          .mockRejectedValueOnce(new Error('boom'))
+          .mockResolvedValueOnce(1);
+        await expect(svc.sweep()).resolves.toBeDefined();
+        expect(receiptAuditService.reauditForFingerprint).toHaveBeenCalledTimes(2);
+        expect(database.advisoryUnlock).toHaveBeenCalled();
       });
     });
   });

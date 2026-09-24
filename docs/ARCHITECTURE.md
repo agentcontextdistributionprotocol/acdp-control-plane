@@ -240,10 +240,10 @@ recording verdicts in its own table so the signals stay independent:
 
 | Sweep | Verifies | Evidence table | Surfaces |
 |-------|----------|----------------|----------|
-| `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs); when enabled, ALSO classifies the signer against verified revocations (RFC-ACDP-0014 §7, below) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; dashboard `receiptCoverage`, `keyRevocation` |
+| `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs); when enabled, ALSO classifies the signer against verified revocations (RFC-ACDP-0014 §7, below) and retroactively AMENDS already-sealed verdicts a later-discovered revocation predates (Phase 15, below) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; `acdp_receipt_audit_revocation_reaudits_total{status}`; dashboard `receiptCoverage`, `keyRevocation` |
 | `CheckpointWitnessPollerService` | Fetches each log-advertising registry's `GET /log/checkpoint` and runs the RFC-ACDP-0012 checkpoint + consistency checks against the head it retains | `log_witness_checkpoints` + `log_witness_cursors` | `GET /registries/:authority/log-witness`; `log_witness_alert` SSE/webhook on state transition; `acdp_log_witness_alerts_total{reason}` |
 | `LogInclusionAuditService` | Rebuilds the leaf from OUR stored receipt, fetches `/log/proof?ctx_id=`, runs the RFC-ACDP-0012 inclusion check, and cross-binds against witnessed heads | `log_inclusion_audits` | verdicts `included` \| `invalid_proof` \| `not_logged` \| `no_log` \| `error` |
-| `RevocationAuditService` | Discovers `key-revocation` contexts by `context_type`, recomputes `content_hash`, verifies the body signature, then `AcdpVerifier.parseKeyRevocation` for the RFC-ACDP-0014 §4/§5 shape + not-self-signed checks; a `registry_attested` result additionally requires the §6 registry-binding cross-check; then walks the revocation's full lineage (RFC-ACDP-0014 §7, below) | `key_revocations` (permanent, retention-exempt) + `key_revocation_lineage_cursors` (TTL freshness markers) | `acdp_key_revocation_checks_total{status, trust_class}` |
+| `RevocationAuditService` | Discovers `key-revocation` contexts by `context_type`, recomputes `content_hash`, verifies the body signature, then `AcdpVerifier.parseKeyRevocation` for the RFC-ACDP-0014 §4/§5 shape + not-self-signed checks; a `registry_attested` result additionally requires the §6 registry-binding cross-check; then walks the revocation's full lineage (RFC-ACDP-0014 §7, below); every pass, also triggers `ReceiptAuditService`'s retroactive re-audit fan-out (Phase 15, below) for every known-revoked fingerprint | `key_revocations` (permanent, retention-exempt) + `key_revocation_lineage_cursors` (TTL freshness markers) | `acdp_key_revocation_checks_total{status, trust_class}` |
 
 **The §7 lineage walk.** A single webhook-delivered revocation only proves
 one context exists; RFC-ACDP-0014 §4's earliest-`compromised_since` rule is
@@ -301,6 +301,51 @@ and a metric kept deliberately separate from `RevocationAuditService`'s own
 `acdp_key_revocation_checks_total{status, trust_class}`) — the two use
 disjoint status vocabularies (boundary classification vs. revocation-body
 verification outcome) that a shared metric name would make meaningless.
+
+**Retroactive re-audit (Phase 15).** §7 classification above only fires at
+AUDIT TIME. A revocation whose `compromised_since` predates already-sealed
+history — RFC-ACDP-0014 §4's own advice to producers to choose T
+conservatively, i.e. *early* — would otherwise leave those old verdicts
+reporting `verified` forever: `findUnauditedPublishes` excludes anything
+already audited, and its lookback window means old rows are never revisited.
+`ReceiptAuditService.reauditForFingerprint` closes that gap by AMENDING an
+already-sealed `receipt_audits` row IN PLACE, called by
+`RevocationAuditService.sweep()` for every fingerprint it currently holds a
+verified fact for, every pass — not only newly-recorded ones, so a
+fingerprint whose fan-out exceeds one batch (`RECEIPT_AUDIT_BATCH_SIZE`,
+reused rather than a dedicated knob) converges over subsequent sweeps.
+The amendment is deliberately in-place rather than a parallel table (unlike
+`log_inclusion_audits`'s independence from `receipt_audits` under
+RFC-ACDP-0012 §9.3): a §7 fail-closed changes the MEANING of the receipt
+verdict itself — the receipt stays cryptographically valid, that is exactly
+what places it inside the compromise window — so reporting `verified` in one
+table while a fail-closed sits unnoticed in a second table would be a worse
+trap than a documented in-place amendment. Three guarantees, all enforced at
+the SQL layer, not just in application code
+(`ReceiptAuditRepository.amendKeyRevocation`): **monotone** — the `UPDATE`'s
+own `WHERE key_revocation_status = 'none' OR compromise_boundary >
+:newBoundary` means the column can only ever move EARLIER (more severe),
+never later, and a row at its tightest known boundary can never be reached
+by this statement again — which is also what makes batching self-advancing
+with no separate cursor table (a row simply stays, or leaves, the candidate
+set based on whether a strictly tighter boundary currently exists for it);
+**column-scoped** — the `SET` clause touches only the four §7 columns, never
+`status`/`discrepancies`/`skew_ms`/`receipt_created_at`/`event_arrived_at`/
+`checked_at`; **auditable** — `key_revocation_sources` on the amended row
+names the revocation `ctx_id`(s) that drove it, same as at live audit time.
+A SECOND, earlier-dated revocation for a fingerprint already amended by a
+first correctly RE-TIGHTENS every affected row, not just the ones still at
+`'none'` — `findRevocationAmendmentCandidates` takes the fact set's current
+minimum boundary as a parameter and widens its own eligibility predicate to
+match; an earlier "amend-once" design that didn't do this was flagged as
+fail-open during Phase 15's verification gate and fixed (ASSUMPTIONS.md).
+Two accepted, permanent limitations remain (ASSUMPTIONS.md): candidate
+selection joins on `context_events.key_fingerprint`, the registry-CLAIMED
+value at publish time, so a pre-ACDP-0.2.0 event that never populated the
+column is permanently unreachable by this fan-out; and because
+`DataRetentionService` purges `context_events` but never `receipt_audits`,
+a `receipt_audits` row for a retention-purged event becomes a permanent
+orphan — invisible to this fan-out from then on, frozen at its last verdict.
 
 On top of witnessing, the CP can **cosign**: a checkpoint that passes the
 RFC-ACDP-0015 witness obligation is signed with a dedicated Ed25519 witness key

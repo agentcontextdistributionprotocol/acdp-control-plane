@@ -96,6 +96,8 @@ describe('ReceiptAuditService (structural checks, pre-receipt SDK)', () => {
     auditRepo = {
       findUnauditedPublishes: jest.fn().mockResolvedValue([]),
       record: jest.fn().mockResolvedValue({}),
+      findRevocationAmendmentCandidates: jest.fn().mockResolvedValue([]),
+      amendKeyRevocation: jest.fn().mockResolvedValue(true),
     };
     registryRepo = { findByAuthority: jest.fn().mockResolvedValue(null) };
     profiles = { advertisesReceipts: jest.fn().mockResolvedValue(null) };
@@ -104,6 +106,7 @@ describe('ReceiptAuditService (structural checks, pre-receipt SDK)', () => {
     instrumentation = {
       receiptAuditsTotal: { inc: jest.fn() },
       receiptAuditKeyRevocationsTotal: { inc: jest.fn() },
+      receiptAuditRevocationReauditsTotal: { inc: jest.fn() },
     };
     keyRevocationRepo = { findByFingerprint: jest.fn().mockResolvedValue([]) };
     svc = new ReceiptAuditService(
@@ -386,6 +389,204 @@ describe('ReceiptAuditService (structural checks, pre-receipt SDK)', () => {
       expect(auditRepo.findUnauditedPublishes).not.toHaveBeenCalled();
     });
   });
+
+  // ── RFC-ACDP-0014 §7 retroactive re-audit (Phase 15) ─────────────────────
+  describe('reauditForFingerprint', () => {
+    const T_EARLY = '2026-01-01T00:00:00.000Z';
+    const RECEIPT_AT = '2026-06-01T00:00:00.000Z'; // after T_EARLY → fails closed
+
+    function revocation(overrides: Partial<KeyRevocation> = {}): KeyRevocation {
+      return {
+        tenantId: 'default',
+        ctxId: 'acdp://reg.example/rev-1',
+        revokedKeyFingerprint: FP,
+        compromisedSince: T_EARLY,
+        revokedKeyController: 'did:web:agent.example',
+        publisher: 'did:web:agent.example',
+        trustClass: 'producer_signed',
+        revokedKeyId: null,
+        reason: null,
+        lineageId: 'lin-rev-1',
+        originAuthority: AUTHORITY,
+        contextType: 'key-revocation',
+        verifiedAt: '2026-01-01T00:00:00.000Z',
+        ...overrides,
+      } as KeyRevocation;
+    }
+
+    it('does nothing when KEY_REVOCATION_CHECK_ENABLED is off (AC7)', async () => {
+      config.keyRevocationCheckEnabled = false;
+      const n = await svc.reauditForFingerprint('default', FP);
+      expect(n).toBe(0);
+      expect(keyRevocationRepo.findByFingerprint).not.toHaveBeenCalled();
+      expect(auditRepo.findRevocationAmendmentCandidates).not.toHaveBeenCalled();
+    });
+
+    it('does nothing for an ignore-listed fingerprint', async () => {
+      config.keyRevocationCheckEnabled = true;
+      config.keyRevocationIgnoreFingerprints = [FP];
+      const n = await svc.reauditForFingerprint('default', FP);
+      expect(n).toBe(0);
+      expect(keyRevocationRepo.findByFingerprint).not.toHaveBeenCalled();
+      expect(auditRepo.findRevocationAmendmentCandidates).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when this fingerprint has no verified facts at all', async () => {
+      config.keyRevocationCheckEnabled = true;
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([]);
+      const n = await svc.reauditForFingerprint('default', FP);
+      expect(n).toBe(0);
+      expect(auditRepo.findRevocationAmendmentCandidates).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when there are no candidate rows', async () => {
+      config.keyRevocationCheckEnabled = true;
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([revocation()]);
+      auditRepo.findRevocationAmendmentCandidates.mockResolvedValue([]);
+      const n = await svc.reauditForFingerprint('default', FP);
+      expect(n).toBe(0);
+      expect(auditRepo.amendKeyRevocation).not.toHaveBeenCalled();
+    });
+
+    it('computes globalMinBoundaryIso as the min compromisedSince across the full fact set, normalized', async () => {
+      config.keyRevocationCheckEnabled = true;
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([
+        revocation({ ctxId: 'acdp://reg.example/rev-late', compromisedSince: '2026-03-01T00:00:00.000Z' }),
+        // Postgres-rendered form of an EARLIER instant — must still win the min()
+        // despite sorting later as a raw string (no leading zero-padding issue
+        // here, but this is what the normalize-before-compare fix protects).
+        revocation({ ctxId: 'acdp://reg.example/rev-early', compromisedSince: '2026-01-01 00:00:00+00' }),
+      ]);
+      auditRepo.findRevocationAmendmentCandidates.mockResolvedValue([]);
+
+      await svc.reauditForFingerprint('default', FP);
+
+      expect(auditRepo.findRevocationAmendmentCandidates).toHaveBeenCalledWith(
+        'default',
+        FP,
+        '2026-01-01T00:00:00.000Z',
+        config.receiptAuditBatchSize,
+      );
+    });
+
+    it('continues past a row that throws during re-classification, counting it as an error', async () => {
+      config.keyRevocationCheckEnabled = true;
+      auditRepo.findRevocationAmendmentCandidates.mockResolvedValue([
+        { eventId: 'evt-bad', status: 'verified', receiptCreatedAt: RECEIPT_AT, registryAuthority: AUTHORITY },
+        { eventId: 'evt-good', status: 'verified', receiptCreatedAt: RECEIPT_AT, registryAuthority: AUTHORITY },
+      ]);
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([revocation()]);
+      auditRepo.amendKeyRevocation
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValueOnce(true);
+
+      const n = await svc.reauditForFingerprint('default', FP);
+
+      expect(n).toBe(1); // evt-bad's throw didn't abort evt-good
+      expect(auditRepo.amendKeyRevocation).toHaveBeenCalledTimes(2);
+      expect(instrumentation.receiptAuditRevocationReauditsTotal.inc).toHaveBeenCalledWith({
+        status: 'error',
+      });
+      expect(instrumentation.receiptAuditRevocationReauditsTotal.inc).toHaveBeenCalledWith({
+        status: 'revoked_at_or_after',
+      });
+    });
+
+    it('amends a candidate row whose verified receipt lands at/after the boundary', async () => {
+      config.keyRevocationCheckEnabled = true;
+      auditRepo.findRevocationAmendmentCandidates.mockResolvedValue([
+        { eventId: 'evt-1', status: 'verified', receiptCreatedAt: RECEIPT_AT, registryAuthority: AUTHORITY },
+      ]);
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([revocation()]);
+
+      const n = await svc.reauditForFingerprint('default', FP);
+
+      expect(n).toBe(1);
+      expect(auditRepo.amendKeyRevocation).toHaveBeenCalledWith(
+        'default',
+        'evt-1',
+        expect.objectContaining({ status: 'revoked_at_or_after', trustClass: 'producer_signed' }),
+      );
+      expect(instrumentation.receiptAuditRevocationReauditsTotal.inc).toHaveBeenCalledWith({
+        status: 'revoked_at_or_after',
+      });
+    });
+
+    it(
+      'survives a candidate row.receiptCreatedAt in the Postgres rendering, not just strict RFC3339 ' +
+        '(the SDK throws outright on the un-normalized form — caught by this phase\'s own integration test)',
+      async () => {
+        config.keyRevocationCheckEnabled = true;
+        auditRepo.findRevocationAmendmentCandidates.mockResolvedValue([
+          {
+            eventId: 'evt-1',
+            status: 'verified',
+            receiptCreatedAt: '2026-06-01 00:00:00+00', // space + '+00', not '.000Z'
+            registryAuthority: AUTHORITY,
+          },
+        ]);
+        keyRevocationRepo.findByFingerprint.mockResolvedValue([revocation()]);
+
+        const n = await svc.reauditForFingerprint('default', FP);
+
+        expect(n).toBe(1);
+        expect(auditRepo.amendKeyRevocation).toHaveBeenCalledWith(
+          'default',
+          'evt-1',
+          expect.objectContaining({ status: 'revoked_at_or_after' }),
+        );
+      },
+    );
+
+    it('never counts a row the repository reports as already amended by a racing sweep', async () => {
+      config.keyRevocationCheckEnabled = true;
+      auditRepo.findRevocationAmendmentCandidates.mockResolvedValue([
+        { eventId: 'evt-1', status: 'verified', receiptCreatedAt: RECEIPT_AT, registryAuthority: AUTHORITY },
+      ]);
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([revocation()]);
+      auditRepo.amendKeyRevocation.mockResolvedValue(false); // WHERE clause matched 0 rows
+
+      const n = await svc.reauditForFingerprint('default', FP);
+
+      expect(n).toBe(0);
+      expect(instrumentation.receiptAuditRevocationReauditsTotal.inc).not.toHaveBeenCalled();
+    });
+
+    it('applies KEY_REVOCATION_ATTESTED_SCOPE per row, not fingerprint-wide', async () => {
+      config.keyRevocationCheckEnabled = true;
+      config.keyRevocationAttestedScope = 'same_registry';
+      auditRepo.findRevocationAmendmentCandidates.mockResolvedValue([
+        { eventId: 'evt-foreign', status: 'verified', receiptCreatedAt: RECEIPT_AT, registryAuthority: 'other.example' },
+      ]);
+      // registry_attested, originAuthority = AUTHORITY — does not cover a row
+      // whose OWN event came from 'other.example' under same_registry scope.
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([
+        revocation({ trustClass: 'registry_attested', originAuthority: AUTHORITY }),
+      ]);
+
+      const n = await svc.reauditForFingerprint('default', FP);
+
+      expect(n).toBe(0);
+      expect(auditRepo.amendKeyRevocation).not.toHaveBeenCalled();
+    });
+
+    it('never derives receiptCreatedAt from a row whose original status was not verified/verified_historical', async () => {
+      config.keyRevocationCheckEnabled = true;
+      auditRepo.findRevocationAmendmentCandidates.mockResolvedValue([
+        { eventId: 'evt-1', status: 'no_receipt', receiptCreatedAt: null, registryAuthority: AUTHORITY },
+      ]);
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([revocation()]);
+
+      const n = await svc.reauditForFingerprint('default', FP);
+
+      expect(n).toBe(1);
+      expect(auditRepo.amendKeyRevocation).toHaveBeenCalledWith(
+        'default',
+        'evt-1',
+        expect.objectContaining({ status: 'revoked_time_unverifiable' }),
+      );
+    });
+  });
 });
 
 // ── RFC-ACDP-0014 §7: classifyKeyRevocation (pure, real SDK) ───────────────
@@ -549,4 +750,20 @@ describe('classifyKeyRevocation (RFC-ACDP-0014 §7 boundary matrix)', () => {
       expect(result.trustClass).toBe('registry_attested');
     }
   });
+
+  it(
+    'receiptCreatedAt survives the Postgres timestamp rendering too — not only the revocations array ' +
+      '(Phase 15: this argument is DB-sourced at retroactive re-audit time, unlike the live-audit path)',
+    () => {
+      const rev = revocation({ compromisedSince: BEFORE }); // 2026-04-16T10:30:15.123Z
+      // The exact rendering `receipt_audits.receipt_created_at` comes back
+      // as after a round trip through Postgres — the SDK's strict RFC3339
+      // parser throws outright on this form (confirmed against the pinned
+      // binding); classifyKeyRevocation must normalize it before the call,
+      // the same way it already normalizes `compromised_since`. April 20 is
+      // after the April 16 boundary, so this must fail closed, not throw.
+      const result = classifyKeyRevocation([rev], FP2, '2026-04-20 00:00:00+00');
+      expect(result.status).toBe('revoked_at_or_after');
+    },
+  );
 });
