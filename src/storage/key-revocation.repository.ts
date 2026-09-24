@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { REVOCATION_CONTEXT_TYPES } from '../contracts/revocation';
 import { DatabaseService } from '../db/database.service';
 import {
@@ -41,7 +41,7 @@ export class KeyRevocationRepository {
 
   /**
    * `context_events` rows newer than `sinceIso`, of either RFC-ACDP-0014
-   * context-type spelling, that have no verified fact yet — oldest-first,
+   * context-type spelling, that have no verified fact yet — NEWEST-first,
    * across all tenants (the sweep is a background process like receipt
    * audit; each fact row carries the event's own tenant).
    *
@@ -49,7 +49,17 @@ export class KeyRevocationRepository {
    * written here, so it naturally keeps being re-selected as a candidate on
    * every sweep until it either verifies or ages out of `sinceIso` — an
    * accepted cost given revocations are rare by construction (see the
-   * plan's Edge cases & failure modes / Scale note).
+   * plan's Edge cases & failure modes / Scale note). That non-draining
+   * candidate set is exactly why this is newest-first rather than
+   * oldest-first (`/reconcile`, 2026-09-23 — see ASSUMPTIONS.md): unlike
+   * `ReceiptAuditRepository.findUnauditedPublishes` (which drains because a
+   * verdict row, including `status='error'`, is always written), a
+   * permanently-invalid backlog here never shrinks, so oldest-first let a
+   * one-time backlog bigger than `limit` permanently block a genuinely new
+   * revocation from ever being selected — a fail-open risk, since the
+   * blocked fact would age out of `sinceIso` unrecorded. Newest-first means
+   * a fresh candidate is always tried before an old, presumably-still-bad
+   * one.
    */
   async findCandidates(sinceIso: string, limit: number): Promise<ContextEvent[]> {
     const rows = await this.database.db
@@ -66,7 +76,7 @@ export class KeyRevocationRepository {
           isNull(keyRevocations.ctxId),
         ),
       )
-      .orderBy(contextEvents.createdAt)
+      .orderBy(desc(contextEvents.createdAt))
       .limit(limit);
     return rows.map((r) => r.event);
   }

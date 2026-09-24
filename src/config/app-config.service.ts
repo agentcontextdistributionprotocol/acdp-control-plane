@@ -369,6 +369,21 @@ export class AppConfigService implements OnModuleInit {
   // spanning more than a day must not silently and permanently lose a
   // revocation from the sweep's window. 720h = 30 days.
   readonly keyRevocationLookbackHours = readNumber('KEY_REVOCATION_LOOKBACK_HOURS', 720);
+  // Freshness window for the §7 lineage walk's "this lineage was fully
+  // walked" marker (`key_revocation_lineage_cursors`). Default 1h matches
+  // `DidWebResolverService`'s own DID-document cache duration — re-walking a
+  // lineage more often than that cache refreshes mostly re-verifies against
+  // an already-cached DID document. This is a re-walk CADENCE knob, never a
+  // correctness gate: a cursor alone never suppresses a walk, because a
+  // lineage with zero recorded facts is walked every pass regardless of
+  // cursor freshness (see `revocation-audit.service.ts`'s header). `0` is
+  // legal and means "ignore cursors entirely, always re-walk"; negatives are
+  // rejected in validate() because they'd make every cursor look fresh
+  // forever — the one direction that suppresses re-discovery indefinitely.
+  readonly keyRevocationLineageCursorTtlHours = readNumber(
+    'KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS',
+    1,
+  );
 
   // Data retention
   readonly dataRetentionEnabled = readBoolean('DATA_RETENTION_ENABLED', false);
@@ -575,6 +590,15 @@ export class AppConfigService implements OnModuleInit {
       if (this.keyRevocationLookbackHours < 1) {
         throw new Error(
           'KEY_REVOCATION_LOOKBACK_HOURS must be >= 1 when key-revocation checking is enabled',
+        );
+      }
+      // 0 is legal (always re-walk). A NEGATIVE TTL would make every stored
+      // cursor test as "fresh" forever, permanently suppressing re-walks of
+      // every fact-bearing lineage — the only direction with a real cost.
+      if (this.keyRevocationLineageCursorTtlHours < 0) {
+        throw new Error(
+          'KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS must be >= 0 (0 disables cursor-based ' +
+            'walk suppression; a negative value would suppress re-walks forever)',
         );
       }
     }

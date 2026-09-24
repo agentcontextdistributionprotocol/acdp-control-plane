@@ -267,6 +267,7 @@ as its fan-out cap. See `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section.
 | `KEY_REVOCATION_ATTESTED_SCOPE` | `same_registry`\|`global`\|`off` | `same_registry` | How far a registry-attested (not producer-signed) revocation reaches: only events from the attesting registry, every registry, or ignored entirely. |
 | `KEY_REVOCATION_IGNORE_FINGERPRINTS` | list | `''` | §13 operator override: fingerprints listed here never disarm producer trust, even if named by a revocation. |
 | `KEY_REVOCATION_LOOKBACK_HOURS` | number | `720` | How far back the revocation-discovery sweep looks. **Not** the same default as `RECEIPT_AUDIT_LOOKBACK_HOURS` (24h) — revocations are irreversible (§4), so a longer window avoids a registry outage silently and permanently losing one. **≥1** when enabled. |
+| `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS` | number | `1` | Freshness window for the §7 lineage walk's "this lineage was fully walked" marker. A re-walk **cadence** knob, not a correctness gate: a lineage with zero recorded facts is re-walked every pass regardless of cursor freshness, so a wide window can only delay re-discovery of a *superseding* member of an already-fact-bearing lineage. The `1` default matches the DID resolver's own document-cache duration. `0` ignores cursors entirely (always re-walk); **≥0** when enabled (a negative value would mark every cursor fresh forever). |
 
 ## Data retention
 
@@ -329,7 +330,9 @@ as its fan-out cap. See `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section.
   unset) is unaffected by this check.
 - `KEY_REVOCATION_CHECK_ENABLED=true` without `RECEIPT_AUDIT_ENABLED=true`; with
   `KEY_REVOCATION_ATTESTED_SCOPE` not in {`same_registry`,`global`,`off`}; or with
-  `KEY_REVOCATION_LOOKBACK_HOURS < 1`.
+  `KEY_REVOCATION_LOOKBACK_HOURS < 1`; or with
+  `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS < 0` (`0` itself is legal — it opts out
+  of cursor-based walk suppression).
 
 **Warns** (starts, but flags a risk) on, in production:
 
