@@ -30,7 +30,9 @@ import {
 } from '@agentcontextdistributionprotocol/acdp';
 import { DidWebResolverService } from '../../src/auth/did-web/did-web-resolver.service';
 import { ReceiptAuditService } from '../../src/audit/receipt-audit.service';
+import { AppConfigService } from '../../src/config/app-config.service';
 import { SafeFederationClient } from '../../src/contexts/safe-federation-client';
+import { KeyRevocationRepository } from '../../src/storage/key-revocation.repository';
 import { createTestApp, TestAppContext } from '../helpers/test-app';
 
 const SECRET = 'integration-test-secret';
@@ -434,5 +436,135 @@ describe('ACDP 0.2.0 trust hardening (integration)', () => {
     expect(run.trust!.errors).toBe(1);
     expect(run.trust!.verified).toBe(0);
     expect(run.trust!.flagged).toEqual([]);
+  });
+
+  // ── RFC-ACDP-0014 §7 (Phase 14): consumer classification end-to-end ────
+  //
+  // publish event (genuinely minted receipt) -> a verified revocation fact
+  // naming the producer's fingerprint -> sweep -> GET /runs/:runId surfaces
+  // the boundary verdict on `trust`. The revocation FACT itself is seeded
+  // directly via KeyRevocationRepository — Phase 12/13's own sweep already
+  // covers discovering + verifying a `key-revocation` context end-to-end;
+  // this test is about the CONSUMER side §7 adds on top.
+  it('classifies a publish signed by an independently-revoked key and surfaces it on the run', async () => {
+    const runId = 'run-audit-6';
+    const ctxId = `acdp://${AUTHORITY}/${U('51')}`;
+    const producer = AcdpProducer.generate(
+      'did:web:agent-1.example',
+      'did:web:agent-1.example#key-1',
+    );
+    const registryKey = AcdpProducer.generate(
+      `did:web:${AUTHORITY}`,
+      `did:web:${AUTHORITY}#receipt-key-1`,
+    );
+    const producerFp = AcdpVerifier.fingerprintEd25519B64(producer.publicKeyB64);
+    const body = mintBody(ctxId, producer);
+
+    await ctx.client.ingest(
+      makeEvent({
+        ctx_id: ctxId,
+        lineage_id: LINEAGE_ID,
+        event_id: 'evt-audit-6',
+        key_fingerprint: producerFp,
+        registry_receipt: mintReceiptFor(ctxId, body, producerFp, registryKey),
+      }),
+      { runId, secret: SECRET },
+    );
+
+    // T strictly BEFORE the receipt's verified created_at (RECEIPT_AT) —
+    // the publish lands at/after the boundary, so §7 must fail closed.
+    const T = '2026-06-01T00:00:00.000Z';
+    // An EARLIER, registry-attested revocation over the same fingerprint —
+    // §4's earliest-compromised_since fold must pick THIS boundary, and the
+    // reported trustClass must be ITS class (registry_attested), not
+    // default to producer_signed just because a producer_signed row also
+    // exists. Both rows round-trip through the REAL database (Postgres's
+    // own timestamptz text rendering, not the RFC3339 they were written
+    // with), pinning `classifyKeyRevocation`'s normalization end-to-end —
+    // the pure-function unit tests in receipt-audit.service.spec.ts cover
+    // the same property with a hand-typed Postgres-format string; this is
+    // the real round-trip proof.
+    const EARLIER_T = '2026-05-20T00:00:00.000Z';
+    const revocationRepo = ctx.module.get(KeyRevocationRepository);
+    await revocationRepo.record({
+      tenantId: 'default',
+      ctxId: `acdp://${AUTHORITY}/${U('49')}`,
+      revokedKeyFingerprint: producerFp,
+      compromisedSince: EARLIER_T,
+      revokedKeyController: producer.agentDid,
+      publisher: `did:web:${AUTHORITY}`,
+      trustClass: 'registry_attested',
+      lineageId: 'lin:sha256:' + 'e'.repeat(64),
+      originAuthority: AUTHORITY,
+      contextType: 'key-revocation',
+    });
+    await revocationRepo.record({
+      tenantId: 'default',
+      ctxId: `acdp://${AUTHORITY}/${U('50')}`,
+      revokedKeyFingerprint: producerFp,
+      compromisedSince: T,
+      revokedKeyController: producer.agentDid,
+      publisher: producer.agentDid,
+      trustClass: 'producer_signed',
+      lineageId: 'lin:sha256:' + 'd'.repeat(64),
+      originAuthority: AUTHORITY,
+      contextType: 'key-revocation',
+    });
+
+    // `KEY_REVOCATION_CHECK_ENABLED` is a boot-time-validated config (it
+    // requires RECEIPT_AUDIT_ENABLED, which the harness deliberately leaves
+    // off — see test-app.ts — so the sweep is driven directly, not on a
+    // timer). Flip the already-booted singleton for this one sweep, the same
+    // way the rest of this suite drives ReceiptAuditService.sweep() directly
+    // rather than via env + reboot.
+    const config = ctx.module.get(AppConfigService) as unknown as {
+      keyRevocationCheckEnabled: boolean;
+    };
+    config.keyRevocationCheckEnabled = true;
+    try {
+      const { audited } = await sweepWithStubbedNetwork(body, { producer, registryKey });
+      expect(audited).toBe(1);
+    } finally {
+      config.keyRevocationCheckEnabled = false;
+    }
+
+    const run = (await ctx.client.getRun(runId)) as {
+      trust: {
+        verified: number;
+        keyRevocationRevokedAtOrAfter: number;
+        revoked: Array<{
+          eventId: string;
+          ctxId: string;
+          status: string;
+          boundary: string;
+          trustClass: string;
+          sources: Array<{ ctxId: string; publisher: string }>;
+        }>;
+      } | null;
+    };
+    expect(run.trust!.verified).toBe(1); // the receipt itself is honest
+    expect(run.trust!.keyRevocationRevokedAtOrAfter).toBe(1);
+    expect(run.trust!.revoked).toHaveLength(1);
+    const revoked = run.trust!.revoked[0]!;
+    expect(revoked.ctxId).toBe(ctxId);
+    expect(revoked.status).toBe('revoked_at_or_after');
+    // `compromise_boundary` is itself a `timestamp` column (migration 0023),
+    // so what comes back is Postgres's own rendering
+    // ("2026-05-20 00:00:00+00"), not the RFC3339 EARLIER_T seeded above —
+    // compare by parsed instant, matching how every other DB-sourced
+    // timestamp field in this API already has to be consumed.
+    expect(new Date(revoked.boundary).toISOString()).toBe(EARLIER_T);
+    // The EARLIER (registry_attested) row set the boundary — reporting
+    // producer_signed here would mean the boundary-equality match silently
+    // fell back to "any producer_signed row in the fed set" instead of the
+    // row that actually established this boundary.
+    expect(revoked.trustClass).toBe('registry_attested');
+    expect(revoked.sources).toEqual(
+      expect.arrayContaining([
+        { ctxId: `acdp://${AUTHORITY}/${U('49')}`, publisher: `did:web:${AUTHORITY}` },
+        { ctxId: `acdp://${AUTHORITY}/${U('50')}`, publisher: producer.agentDid },
+      ]),
+    );
+    expect(revoked.sources).toHaveLength(2);
   });
 });

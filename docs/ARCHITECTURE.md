@@ -240,7 +240,7 @@ recording verdicts in its own table so the signals stay independent:
 
 | Sweep | Verifies | Evidence table | Surfaces |
 |-------|----------|----------------|----------|
-| `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; dashboard `receiptCoverage` |
+| `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs); when enabled, ALSO classifies the signer against verified revocations (RFC-ACDP-0014 §7, below) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; dashboard `receiptCoverage`, `keyRevocation` |
 | `CheckpointWitnessPollerService` | Fetches each log-advertising registry's `GET /log/checkpoint` and runs the RFC-ACDP-0012 checkpoint + consistency checks against the head it retains | `log_witness_checkpoints` + `log_witness_cursors` | `GET /registries/:authority/log-witness`; `log_witness_alert` SSE/webhook on state transition; `acdp_log_witness_alerts_total{reason}` |
 | `LogInclusionAuditService` | Rebuilds the leaf from OUR stored receipt, fetches `/log/proof?ctx_id=`, runs the RFC-ACDP-0012 inclusion check, and cross-binds against witnessed heads | `log_inclusion_audits` | verdicts `included` \| `invalid_proof` \| `not_logged` \| `no_log` \| `error` |
 | `RevocationAuditService` | Discovers `key-revocation` contexts by `context_type`, recomputes `content_hash`, verifies the body signature, then `AcdpVerifier.parseKeyRevocation` for the RFC-ACDP-0014 §4/§5 shape + not-self-signed checks; a `registry_attested` result additionally requires the §6 registry-binding cross-check; then walks the revocation's full lineage (RFC-ACDP-0014 §7, below) | `key_revocations` (permanent, retention-exempt) + `key_revocation_lineage_cursors` (TTL freshness markers) | `acdp_key_revocation_checks_total{status, trust_class}` |
@@ -277,6 +277,30 @@ retries — and its presence alone is never sufficient to skip a walk: if
 `key_revocations` currently holds zero facts for a lineage, the walk runs
 regardless of cursor freshness, because a cached "walked, found nothing"
 marker suppressing a walk is precisely how a revocation gets missed.
+
+**§7 consumer classification (Phase 14).** The revocation FACTS above are
+inert until something CONSUMES them against actual receipt-audited traffic —
+that's `ReceiptAuditService`'s job when `KEY_REVOCATION_CHECK_ENABLED`.
+`classifyKeyRevocation` (`src/audit/receipt-audit.service.ts`) wraps the
+SDK's `AcdpVerifier.classifyUnderRevocation`, and is a separate verification
+verdict from the receipt audit's own `status` — a registry can be perfectly
+honest about a receipt whose signer has since had their key revoked. The one
+thing worth knowing about the SDK's response shape: a fail-closed verdict
+(§7 steps 3-4 — the publish landed at/after the compromise boundary, or no
+receipt-verified time exists to compare at all) reports
+`authorization:"none"`, the SAME value the "no revocation applies at all"
+case reports — so this code disambiguates on the PRESENCE of the response's
+`boundary` field, never on `authorization` alone. `KEY_REVOCATION_ATTESTED_SCOPE`
+/ `KEY_REVOCATION_IGNORE_FINGERPRINTS` (§6/§13 policy) are enforced HERE, at
+classification time — `RevocationAuditService` above always records every
+binding-verified fact regardless of scope; only the consumer decides whether
+to act on it. Verdicts land in four new `receipt_audits` columns and surface
+on `trust.revoked` (`GET /runs/:runId`), the dashboard `keyRevocation` tile,
+and a metric kept deliberately separate from `RevocationAuditService`'s own
+(`acdp_receipt_audit_key_revocation_total{status}` vs.
+`acdp_key_revocation_checks_total{status, trust_class}`) — the two use
+disjoint status vocabularies (boundary classification vs. revocation-body
+verification outcome) that a shared metric name would make meaningless.
 
 On top of witnessing, the CP can **cosign**: a checkpoint that passes the
 RFC-ACDP-0015 witness obligation is signed with a dedicated Ed25519 witness key

@@ -538,3 +538,54 @@
   just re-walks more often, costing extra federation/DID calls. Trivially adjustable
   by editing the one constant; no schema or data migration involved either way.
 - **Status:** UNCONFIRMED
+
+## A separate metric for §7 classification, not a reuse of Phase 12's (Phase 14)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the plan's prose ("Metric: `acdp_key_revocation_checks_total{status,
+  trust_class}` (created in Phase 12) is incremented here on every classification")
+  was a suggestion of convenience, not a hard requirement — its own §7 spec is
+  explicit that this phase's classification is "a separate VERIFICATION VERDICT,"
+  so its metric should be separably queryable too.
+- **Chose:** a NEW counter, `acdp_receipt_audit_key_revocation_total{status}`
+  (`InstrumentationService`), incremented in `ReceiptAuditService.sweep()` gated on
+  `KEY_REVOCATION_CHECK_ENABLED`. Phase 12's `acdp_key_revocation_checks_total`'s
+  `status` label (`verified`/`invalid`/`unavailable`) describes whether a
+  `key-revocation` CONTEXT itself verified — a totally different question from this
+  phase's `status` (`none`/`pre_compromise`/`revoked_at_or_after`/
+  `revoked_time_unverifiable`), which describes a boundary classification. Reusing
+  one label name for both would silently conflate two axes an operator's alert rule
+  or dashboard panel needs to tell apart.
+- **Alternatives:** Reuse `acdp_key_revocation_checks_total` with an added label
+  dimension — rejected: adding a `stage` label to disambiguate two unrelated status
+  vocabularies under one metric name is more confusing than two clearly-named
+  metrics, and Prometheus best practice discourages heterogeneous label domains on
+  one metric family.
+- **Blast radius if wrong:** Low. A metric name is trivially renamed/aliased in a
+  recording rule without touching application code or requiring a migration; no
+  data-correctness impact either way, only an observability-ergonomics one.
+- **Status:** UNCONFIRMED
+
+## Trust-class tie-break on a shared compromise boundary (Phase 14)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the plan does not address what happens when two revocation rows over
+  the same signer fingerprint — one `producer_signed`, one `registry_attested` —
+  land on the EXACT same effective boundary instant (an edge case: normally the
+  earliest-`compromised_since` fold picks a unique winner). RFC-ACDP-0014 §6 forbids
+  collapsing the two trust classes into one value, but says nothing about which to
+  REPORT when they're tied on timestamp.
+- **Chose:** prefer `producer_signed` — the stronger of the two classes — as the
+  single `key_revocation_trust_class` reported for a tied boundary
+  (`classifyKeyRevocation`'s `winners.find(r => r.trustClass === 'producer_signed')
+  ?? winners[0]`). A defensible tie-break (never silently downgrades a genuine
+  producer-signed revocation to registry-attested), not a collapse of the two —
+  `key_revocation_sources` still lists every row that fed the classification
+  regardless of which one's class is reported.
+- **Alternatives:** Report both trust classes as an array when tied — rejected as
+  disproportionate complexity for an edge case the SDK's own single-`boundary`
+  return value doesn't distinguish either, and `key_revocation_sources` already
+  carries the full provenance for an operator who needs to know both existed.
+- **Blast radius if wrong:** Low. Affects only the reported `trust_class` label on
+  the rare tied-boundary case — the `key_revocation_status` (the actionable
+  fail-closed/pre-compromise verdict) and `compromise_boundary` are unaffected
+  either way, and every contributing revocation stays visible via `sources`.
+- **Status:** UNCONFIRMED

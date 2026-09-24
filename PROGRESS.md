@@ -2582,3 +2582,90 @@ depends on Phase 12).
   notes), `ASSUMPTIONS.md` (1 new entry, `LINEAGE_CURSOR_TTL_MS`, `UNCONFIRMED`).
 Next: Phase 14 (§7 consumer semantics in the receipt-audit pipeline — depends on
 Phase 2, Phase 12, Phase 13, all now complete).
+
+### Phase 14 — §7 consumer semantics in the receipt-audit pipeline
+- Delivers: every receipt-audited event is classified against RFC-ACDP-0014 §7's
+  compromise-boundary rule using the revocations Phase 12/13 verified, via
+  `AcdpVerifier.classifyUnderRevocation` — `pre_compromise` / `revoked_at_or_after` /
+  `revoked_time_unverifiable` / `none`, landing in 4 new `receipt_audits` columns
+  (migration 0023) and surfacing on `trust.revoked`
+  (`GET /runs/:runId`) and a new dashboard `keyRevocation` tile.
+  `KEY_REVOCATION_ATTESTED_SCOPE` / `KEY_REVOCATION_IGNORE_FINGERPRINTS` (declared
+  since Phase 11, never consumed before this phase) are enforced here, at
+  classification time.
+- Verdict: **GAPS → PASS**, 2 rounds. Verifier: fresh Opus general-purpose subagent
+  both rounds (not Fable — consequential but not a one-way-door/trust-boundary
+  change per the Autonomy ladder). Round 1 verdict was GAPS (3 substantive, 3
+  minor) despite confirming all 11 ACs met and the two subtlest design points
+  (the `boundary`-presence disambiguation, and the Postgres-round-trip
+  normalization fix) correct — every gap was a missing guard or missing test
+  around otherwise-correct logic, not a wrong answer. Round 2, resumed with the
+  full gap-closure summary rather than re-spawned cold, independently RE-APPLIED
+  its own round-1 mutations (`producerFp ?? ev.keyFingerprint ?? null` →
+  `producerFp ?? null`; `normalized.filter` → `revocations.filter`) against the
+  fixed code and confirmed the new tests actually catch them (not just that
+  tests with matching names exist), then verdict **PASS**.
+- Gap summary (round 1, closed before round 2):
+  (1) **substantive** — `onModuleInit` silently fails open to `key_revocation_status
+  'none'` on every event when `KEY_REVOCATION_CHECK_ENABLED=true` but the installed
+  SDK lacks `classifyUnderRevocation` (mis-resolved native optionalDependency), with
+  no boot warning — unlike the two directly analogous cases
+  (`sdkSupportsReceipts()`, and Phase 12's `RevocationAuditService.onModuleInit`) —
+  **closed**, added a matching warning.
+  (2) **substantive** — the AC5 `producerFp ?? ev.keyFingerprint` fallback (the
+  entire mechanism by which `no_receipt`/`discrepancy`/`structural` events reach a
+  revocation verdict) had zero test coverage; the verifier mutation-proved it by
+  deleting the fallback and getting 328/328 still green — **closed**, 3 new tests
+  in `receipt-audit.service.spec.ts` plus 1 bonus test in `.crypto.spec.ts` for the
+  weaker "producerFp survives a late crypto failure, not the registry's own
+  claimed fingerprint" case.
+  (3) **substantive** — `classifyKeyRevocation`'s boundary-equality trust-class
+  match (`atBoundary = normalized.filter(...)`) was fixed to use the normalized
+  array for the SDK payload but this specific line wasn't independently pinned —
+  a half-fix (normalize the payload, filter the raw array) would silently always
+  prefer `producer_signed` on any DB-sourced multi-revocation classification,
+  regardless of which row actually set the boundary — **closed**, a pure unit test
+  hand-typing Postgres-rendering `compromisedSince` strings plus a real end-to-end
+  integration-test extension (two DB-round-tripped revocation rows, earlier
+  `registry_attested` vs. later `producer_signed`), both mutation-verified by the
+  round-2 re-verify.
+  (4) minor — `docs/API.md`'s `boundary`/`startedAt` example values showed strict
+  RFC3339, not the Postgres `timestamp with time zone` text rendering these fields
+  actually return — **closed**, examples + a new explanatory sentence corrected.
+  (5) minor — two comments stated false things: `toRevocationJson`'s doc claimed a
+  missing `reason`/`revoked_key_id` key fails SDK deserialization (empirically
+  false — serde's `Option<T>` accepts an absent key same as explicit `null`), and
+  `key_revocation_sources`'s shape was documented as `{ctx_id, publisher}`
+  (snake_case) when the actual stored JSON is `{ctxId, publisher}` — **closed**,
+  both comments corrected in `schema.ts`/migration 0023/the service file.
+  (6) minor, residual, deliberately left open per the verifier's own
+  recommendation — an unrecognised `trust_class` value would make the SDK throw
+  (no DB CHECK constraint backs the invariant), caught by `auditEvent`'s outer
+  try/catch and producing `status:'error'` + `keyRevocationStatus:'none'` —
+  fail-open on the one axis that matters, but unreachable today since Phase 12
+  fail-closed-validates `trust_class` before every write and there is no other
+  writer. Documented at the cast site; flagged for Phase 15 rather than fixed here.
+- Gates (final, post-gap-fix state): `check:conventions` 6✓ · `lint` 0 ·
+  `tsc --noEmit` (both tsconfigs) 0 · `check:build` both builds 143 files, agree ·
+  unit 78 suites/1095 passed/4 skipped (pre-existing, unrelated)/1099 total ·
+  the two new/touched spec files individually 58 passed (was 53 before gap
+  fixes) · integration 31 suites/205 passed, run against 2 fresh disposable
+  Postgres containers (port 5435, torn down after each; 5433/5434 untouched,
+  occupied by unrelated foreign sessions) — once pre-gap-fix, once post.
+- Files touched: `drizzle/0023_receipt_audit_revocation.sql` (new),
+  `src/db/schema.ts`, `src/audit/receipt-audit.service.ts`,
+  `src/audit/receipt-audit.service.spec.ts`,
+  `src/audit/receipt-audit.service.crypto.spec.ts`,
+  `src/storage/receipt-audit.repository.ts`, `src/dashboard/dashboard.service.ts`,
+  `src/telemetry/instrumentation.service.ts`,
+  `test/integration/trust-hardening.integration.spec.ts`, `docs/API.md`,
+  `docs/ARCHITECTURE.md` (new "§7 consumer classification (Phase 14)" paragraph +
+  sweeps-table row update), `CLAUDE.md` (local, gitignored — new §7 paragraph
+  inside the receipt-audit bullet), `plans/rfc-0014-0015-upgrade.md` (local,
+  gitignored — Phase 14 → DONE, 5 divergence notes), `ASSUMPTIONS.md` (2 new
+  entries: the separate-metric decision, the trust-class tie-break rule, both
+  `UNCONFIRMED`).
+Next: Phase 15 (Retroactive re-audit when a revocation predates an existing
+verdict — depends on this phase; Files:
+`src/storage/receipt-audit.repository.ts`, `src/audit/revocation-audit.service.ts`,
+`src/audit/receipt-audit.service.ts`, `docs/ARCHITECTURE.md`, `CLAUDE.md`).

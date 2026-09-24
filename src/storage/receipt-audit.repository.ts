@@ -30,6 +30,26 @@ export interface RunTrustSummary {
     status: string;
     discrepancies: string[];
   }>;
+  /**
+   * RFC-ACDP-0014 §7 (Phase 14): counts of audited events whose signer key
+   * is independently known-revoked, broken out by classification —
+   * `historically_authorized_pre_compromise` (§7 step 2) vs. the two
+   * fail-closed reasons (§7 steps 3-4). Deliberately NOT folded into
+   * `flagged` — a §7 verdict is not registry dishonesty (see
+   * receipt-audit.service.ts's file header).
+   */
+  keyRevocationPreCompromise: number;
+  keyRevocationRevokedAtOrAfter: number;
+  keyRevocationRevokedTimeUnverifiable: number;
+  /** One entry per audit row whose key_revocation_status <> 'none'. */
+  revoked: Array<{
+    eventId: string;
+    ctxId: string | null;
+    status: string;
+    boundary: string | null;
+    trustClass: string | null;
+    sources: Array<{ ctxId: string; publisher: string }>;
+  }>;
 }
 
 @Injectable()
@@ -93,6 +113,8 @@ export class ReceiptAuditRepository {
     if (rows.length === 0) return null;
 
     const byStatus = (s: string) => rows.filter((r) => r.status === s).length;
+    const byRevocationStatus = (s: string) =>
+      rows.filter((r) => r.keyRevocationStatus === s).length;
     return {
       audited: rows.length,
       verified: byStatus('verified'),
@@ -109,6 +131,19 @@ export class ReceiptAuditRepository {
           ctxId: r.ctxId,
           status: r.status,
           discrepancies: r.discrepancies,
+        })),
+      keyRevocationPreCompromise: byRevocationStatus('pre_compromise'),
+      keyRevocationRevokedAtOrAfter: byRevocationStatus('revoked_at_or_after'),
+      keyRevocationRevokedTimeUnverifiable: byRevocationStatus('revoked_time_unverifiable'),
+      revoked: rows
+        .filter((r) => r.keyRevocationStatus !== 'none')
+        .map((r) => ({
+          eventId: r.eventId,
+          ctxId: r.ctxId,
+          status: r.keyRevocationStatus,
+          boundary: r.compromiseBoundary,
+          trustClass: r.keyRevocationTrustClass,
+          sources: r.keyRevocationSources,
         })),
     };
   }

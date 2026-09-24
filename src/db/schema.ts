@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
@@ -391,12 +392,41 @@ export const receiptAudits = pgTable(
     checkedAt: timestamp('checked_at', { withTimezone: true, mode: 'string' })
       .notNull()
       .defaultNow(),
+    // RFC-ACDP-0014 §7 consumer classification (migration 0023, Phase 14).
+    // A verification VERDICT, deliberately never folded into `discrepancies`
+    // (which means registry dishonesty — this is a producer-key-lifecycle
+    // fact about an otherwise-honest receipt). 'none' | 'pre_compromise' |
+    // 'revoked_at_or_after' | 'revoked_time_unverifiable' — enumerated in a
+    // comment, not a DB enum, per house style.
+    keyRevocationStatus: varchar('key_revocation_status', { length: 32 })
+      .notNull()
+      .default('none'),
+    // 'producer_signed' | 'registry_attested' of the revocation(s) that
+    // established the boundary below. Never NULL when status <> 'none' —
+    // §6 is explicit the two trust classes must never be collapsed.
+    keyRevocationTrustClass: varchar('key_revocation_trust_class', { length: 32 }),
+    compromiseBoundary: timestamp('compromise_boundary', {
+      withTimezone: true,
+      mode: 'string',
+    }),
+    // §13 provenance: {ctxId, publisher} per revocation row that fed this
+    // classification — "surfacing which DID issued each acted-upon
+    // revocation," not just the boundary number.
+    keyRevocationSources: jsonb('key_revocation_sources')
+      .$type<Array<{ ctxId: string; publisher: string }>>()
+      .notNull()
+      .default([]),
   },
   (t) => ({
     runIdx: index('ra_run_idx').on(t.runId),
     statusIdx: index('ra_status_idx').on(t.status),
     tenantIdx: index('ra_tenant_idx').on(t.tenantId),
     registryIdx: index('ra_registry_idx').on(t.registryAuthority),
+    // Partial: the overwhelming majority of rows are 'none' (RFC-ACDP-0014
+    // revocations are rare by construction).
+    keyRevocationStatusIdx: index('ra_key_revocation_status_idx')
+      .on(t.keyRevocationStatus)
+      .where(sql`${t.keyRevocationStatus} <> 'none'`),
   }),
 );
 

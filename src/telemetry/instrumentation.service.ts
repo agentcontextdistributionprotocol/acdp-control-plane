@@ -99,6 +99,21 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['status', 'trust_class'] as const,
   });
 
+  // RFC-ACDP-0014 §7 consumer classification (Phase 14) — a DISTINCT metric
+  // from the one above, deliberately not folded into it: that counter is
+  // the revocation-AUDIT sweep's own body-verification outcomes ('verified'
+  // | 'invalid' | 'unavailable' over a revocation CONTEXT'S signature), this
+  // one is the receipt-audit sweep's §7 boundary classification of an
+  // ORDINARY audited event ('none' | 'pre_compromise' |
+  // 'revoked_at_or_after' | 'revoked_time_unverifiable'). Sharing one
+  // counter across both would silently conflate two unrelated status
+  // vocabularies under the same label values.
+  readonly receiptAuditKeyRevocationsTotal = new client.Counter({
+    name: 'acdp_receipt_audit_key_revocation_total',
+    help: 'RFC-ACDP-0014 §7 compromise-boundary classification outcomes for audited receipts, by status',
+    labelNames: ['status'] as const,
+  });
+
   onModuleInit(): void {
     client.collectDefaultMetrics();
   }
