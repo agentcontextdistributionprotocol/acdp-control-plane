@@ -2325,3 +2325,10 @@ PR2, then start PR3 (Phases 10-15, RFC-ACDP-0014 producer key-revocation, branch
   to this plan (nothing to `/reconcile` before merge).
 - `pushed rfc-0014/pr2-witness-fixes 3b04ed1`.
 - `PR #167 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/167`
+- All required CI checks green (`docker build (no push)`, `jest integration (Postgres)`,
+  `lint + tsc + jest (unit, coverage-gated)`). `merged #167` (squash, branch deleted).
+  No deploy config in this repo (no `railway.json`/`vercel.json`) — nothing to watch
+  post-merge.
+- Next: Phase 10 (RFC-ACDP-0014 producer key-revocation, PR3, branch
+  `rfc-0014/pr3-key-revocation`, cut fresh from updated `main`; depends on PR1 only,
+  already merged — does not depend on PR2).
