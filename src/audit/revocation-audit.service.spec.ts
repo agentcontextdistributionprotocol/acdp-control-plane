@@ -128,6 +128,7 @@ describe('RevocationAuditService', () => {
       keyRevocationCheckEnabled: true,
       keyRevocationAttestedScope: 'same_registry',
       keyRevocationLookbackHours: 720,
+      keyRevocationLineageCursorTtlHours: 1,
       receiptAuditIntervalSeconds: 300,
       receiptAuditBatchSize: 50,
     };
@@ -524,6 +525,42 @@ describe('RevocationAuditService', () => {
 
         expect(federationClient.get).not.toHaveBeenCalledWith(expect.stringContaining('/lineages/'));
         expect(revocationRepo.recordLineageWalk).not.toHaveBeenCalled();
+      });
+
+      it('passes KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS to the cursor freshness check, in ms', async () => {
+        config.keyRevocationLineageCursorTtlHours = 6;
+        revocationRepo.findCandidates.mockResolvedValue([makeEvent()]);
+        revocationRepo.countByLineage.mockResolvedValue(1);
+        mockFetch(makeBody({ lineage_id: LINEAGE }), [makeBody({ lineage_id: LINEAGE })]);
+
+        await svc.sweep();
+
+        expect(revocationRepo.findFreshLineageCursor).toHaveBeenCalledWith(
+          'default',
+          LINEAGE,
+          AUTHORITY,
+          6 * 60 * 60 * 1000,
+        );
+      });
+
+      it('treats every cursor as stale when the TTL is 0 (always re-walk opt-out)', async () => {
+        config.keyRevocationLineageCursorTtlHours = 0;
+        revocationRepo.findCandidates.mockResolvedValue([makeEvent()]);
+        revocationRepo.countByLineage.mockResolvedValue(1);
+        // A TTL of 0 makes `Date.now() - walkedAt < 0` false for any stored
+        // row, so the repository reports "not fresh" and the walk runs.
+        revocationRepo.findFreshLineageCursor.mockResolvedValue(false);
+        mockFetch(makeBody({ lineage_id: LINEAGE }), [makeBody({ lineage_id: LINEAGE })]);
+
+        await svc.sweep();
+
+        expect(revocationRepo.findFreshLineageCursor).toHaveBeenCalledWith(
+          'default',
+          LINEAGE,
+          AUTHORITY,
+          0,
+        );
+        expect(revocationRepo.recordLineageWalk).toHaveBeenCalledWith('default', LINEAGE, AUTHORITY);
       });
 
       it('walks anyway when facts exist but the cursor is stale — cursor freshness alone never suffices', async () => {

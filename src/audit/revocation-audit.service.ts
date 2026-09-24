@@ -109,8 +109,8 @@
  * to a webhook-discovered one.
  *
  * **When a lineage gets walked.** Gated by `KeyRevocationLineageCursor`, a
- * TTL-bounded freshness marker (`LINEAGE_CURSOR_TTL_MS`, chosen to match the
- * DID resolver's own default cache duration — see ASSUMPTIONS.md) — but a
+ * TTL-bounded freshness marker (`KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS`,
+ * default 1h to match the DID resolver's own cache duration) — but a
  * cursor ALONE is never sufficient to skip a walk: if `key_revocations`
  * currently holds zero facts for that lineage, the walk runs regardless of
  * cursor freshness, every pass, forever. A cached "walked, found nothing"
@@ -199,18 +199,20 @@ const ADVISORY_LOCK_KEY = 'acdp-cp-key-revocation-audit';
 
 /**
  * Freshness window for a lineage's "fully walked" marker — see the file
- * header. Chosen to match the DID resolver's own default cache duration
+ * header. `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS`, default 1h, chosen to
+ * match the DID resolver's own default cache duration
  * (`did-web-resolver.service.ts`'s 1h cache — Phase 13's plan text notes it
  * "absorbs most of the resolution cost"), so a repeat walk within the window
- * would mostly be re-verifying against a DID document already cached
- * locally anyway. Not `AppConfigService`-exposed: Phase 13's own `Files`
- * list does not touch `app-config.service.ts`, and this table's own
- * freshness-vs-zero-facts rule above already bounds the real risk (a wide
- * window cannot suppress discovery of a lineage's first fact, only how
- * often an already-confirmed-nonempty lineage gets re-checked) — logged to
- * ASSUMPTIONS.md as a judgment call, not a plan requirement.
+ * would mostly be re-verifying against a DID document already cached locally
+ * anyway. A re-walk CADENCE knob, not a correctness gate: the
+ * freshness-vs-zero-facts rule above means a wide window cannot suppress
+ * discovery of a lineage's FIRST fact, only how often an
+ * already-confirmed-nonempty lineage gets re-checked. `0` opts out of cursor
+ * suppression entirely (always re-walk); negatives are rejected at boot.
  */
-const LINEAGE_CURSOR_TTL_MS = 60 * 60 * 1000;
+function lineageCursorTtlMs(config: AppConfigService): number {
+  return config.keyRevocationLineageCursorTtlHours * 60 * 60 * 1000;
+}
 
 type Status = 'verified' | 'invalid' | 'unavailable';
 
@@ -364,7 +366,7 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
             ev.tenantId,
             lineageId,
             ev.registryAuthority,
-            LINEAGE_CURSOR_TTL_MS,
+            lineageCursorTtlMs(this.config),
           );
           if (fresh) continue;
         }
@@ -607,6 +609,11 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
       if (!offline.ok) {
         return { status: 'invalid', trustClass: 'unknown', reason: `body_signature_invalid: ${offline.reason}` };
       }
+      // A P-256 did:key body reaches here with `offline.ok === true` (the
+      // signature genuinely verifies) and is rejected below for an
+      // unrelated reason — the multicodec prefix, not the signature. See
+      // ASSUMPTIONS.md §"ecdsa-p256 revocation signers" before "fixing" this
+      // by widening the algorithm check; the naive fix regresses Ed25519.
       const decoded = decodeEd25519Multibase(agentId);
       if (!decoded.ok) {
         return { status: 'invalid', trustClass: 'unknown', reason: `undecodable did:key agent_id: ${decoded.reason}` };

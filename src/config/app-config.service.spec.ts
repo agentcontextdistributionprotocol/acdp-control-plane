@@ -224,6 +224,14 @@ describe('AppConfigService', () => {
       expect(cfg.keyRevocationAttestedScope).toBe('same_registry');
       expect(cfg.keyRevocationIgnoreFingerprints).toEqual([]);
       expect(cfg.keyRevocationLookbackHours).toBe(720);
+      expect(cfg.keyRevocationLineageCursorTtlHours).toBe(1);
+    });
+
+    it('parses KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS, allowing 0 (always re-walk)', () => {
+      process.env.KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS = '6';
+      expect(freshConfig().keyRevocationLineageCursorTtlHours).toBe(6);
+      process.env.KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS = '0';
+      expect(freshConfig().keyRevocationLineageCursorTtlHours).toBe(0);
     });
 
     it('parses KEY_REVOCATION_IGNORE_FINGERPRINTS as a comma-separated, trimmed list', () => {
@@ -264,11 +272,24 @@ describe('AppConfigService', () => {
         expect(() => cfg.onModuleInit()).toThrow(/KEY_REVOCATION_LOOKBACK_HOURS/);
       });
 
+      it('throws on a NEGATIVE KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS but accepts 0', () => {
+        process.env.KEY_REVOCATION_CHECK_ENABLED = 'true';
+        process.env.RECEIPT_AUDIT_ENABLED = 'true';
+        process.env.KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS = '-1';
+        expect(() => freshConfig().onModuleInit()).toThrow(
+          /KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS/,
+        );
+        // 0 is a legitimate opt-out ("never let a cursor suppress a walk").
+        process.env.KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS = '0';
+        expect(() => freshConfig().onModuleInit()).not.toThrow();
+      });
+
       it('passes validation when enabled with valid prerequisites', () => {
         process.env.KEY_REVOCATION_CHECK_ENABLED = 'true';
         process.env.RECEIPT_AUDIT_ENABLED = 'true';
         process.env.KEY_REVOCATION_ATTESTED_SCOPE = 'global';
         process.env.KEY_REVOCATION_LOOKBACK_HOURS = '48';
+        process.env.KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS = '12';
         const cfg = freshConfig();
         expect(() => cfg.onModuleInit()).not.toThrow();
       });
