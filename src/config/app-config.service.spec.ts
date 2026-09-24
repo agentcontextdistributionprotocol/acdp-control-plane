@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { AppConfigService } from './app-config.service';
 
 describe('AppConfigService', () => {
@@ -145,6 +146,72 @@ describe('AppConfigService', () => {
       process.env.WITNESS_QUORUM_TRUSTED = 'did:web:other-witness.example,,';
       const cfg = freshConfig();
       expect(() => cfg.onModuleInit()).not.toThrow();
+    });
+  });
+
+  describe('witness cosigning / retention interaction warning (B1)', () => {
+    beforeEach(() => {
+      process.env.NODE_ENV = 'production';
+      process.env.AUTH_API_KEYS = 'k';
+      process.env.WEBHOOK_SECRET = 'shh';
+      process.env.LOG_WITNESS_ENABLED = 'true';
+      process.env.WITNESS_COSIGNING_ENABLED = 'true';
+      process.env.WITNESS_ID = 'did:web:cp.example';
+      process.env.WITNESS_SIGNING_PRIVATE_KEY_PEM = '-----BEGIN PRIVATE KEY-----';
+    });
+
+    it('warns (does not throw) naming both variables when retention is off', () => {
+      process.env.DATA_RETENTION_ENABLED = 'false';
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).not.toThrow();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/WITNESS_COSIGNING_ENABLED.*DATA_RETENTION_ENABLED/),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn when retention is enabled', () => {
+      process.env.DATA_RETENTION_ENABLED = 'true';
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      const cfg = freshConfig();
+      cfg.onModuleInit();
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringMatching(/WITNESS_COSIGNING_ENABLED.*DATA_RETENTION_ENABLED/),
+      );
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe('witness quorum freshness-split config (§8.1)', () => {
+    it('defaults WITNESS_QUORUM_MAX_AGE_SECONDS to 300', () => {
+      delete process.env.WITNESS_QUORUM_MAX_AGE_SECONDS;
+      expect(freshConfig().witnessQuorumMaxAgeSeconds).toBe(300);
+    });
+
+    it('parses a configured WITNESS_QUORUM_MAX_AGE_SECONDS', () => {
+      process.env.WITNESS_QUORUM_MAX_AGE_SECONDS = '60';
+      expect(freshConfig().witnessQuorumMaxAgeSeconds).toBe(60);
+    });
+
+    it('treats an empty string as an explicit "disable the split" (null)', () => {
+      process.env.WITNESS_QUORUM_MAX_AGE_SECONDS = '';
+      expect(freshConfig().witnessQuorumMaxAgeSeconds).toBeNull();
+    });
+
+    it('treats literal "0" as an explicit "disable the split" (null), not zero staleness', () => {
+      process.env.WITNESS_QUORUM_MAX_AGE_SECONDS = '0';
+      expect(freshConfig().witnessQuorumMaxAgeSeconds).toBeNull();
+    });
+
+    it('defaults WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS to 120', () => {
+      delete process.env.WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS;
+      expect(freshConfig().witnessQuorumMaxClockSkewSeconds).toBe(120);
+    });
+
+    it('defaults WITNESS_COSIGNATURE_KEEP_PER_HEAD to 10', () => {
+      delete process.env.WITNESS_COSIGNATURE_KEEP_PER_HEAD;
+      expect(freshConfig().witnessCosignatureKeepPerHead).toBe(10);
     });
   });
 

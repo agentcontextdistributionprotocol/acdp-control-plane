@@ -45,12 +45,31 @@ export class LogCosignatureRepository {
   /**
    * This witness's cosignatures, most-recent first (RFC-ACDP-0015 §6.2),
    * OPTIONALLY filtered by `logId` and/or exact `treeSize`.
+   *
+   * Since re-minting on every observation (B1) makes this table carry one row
+   * per SWEEP rather than one row per HEAD, the default view (`all` unset or
+   * false) collapses to the LATEST cosignature per distinct
+   * `(log_id, tree_size, root_hash)` tuple — the freshest attestation per
+   * head, which is what a §8 consumer actually needs; the liveness
+   * re-observations behind it would otherwise crowd out older heads within a
+   * fixed-size page (B11). Pass `all: true` for the full per-tuple series
+   * (the anti-backdating use — §8.1: an OLDER surviving cosignature for a
+   * head is STRONGER evidence that the head existed early).
+   *
+   * Implementation note: PostgreSQL requires `DISTINCT ON`'s expressions to
+   * be the LEADING `ORDER BY` expressions, so the inner query orders by the
+   * tuple first and `witnessed_at DESC` last (one row per tuple: the
+   * newest); the outer query re-sorts by `witnessed_at DESC` for the
+   * "most-recent first" contract, and `limit` is applied OUT HERE so it
+   * bounds the DEDUPLICATED set — applying it inside the `DISTINCT ON` would
+   * silently truncate before dedup and reintroduce B11 in a subtler form.
    */
   async list(filter: {
     witnessId: string;
     logId?: string;
     treeSize?: number;
     limit?: number;
+    all?: boolean;
   }): Promise<LogCosignature[]> {
     const conditions = [eq(logCosignatures.witnessId, filter.witnessId)];
     if (filter.logId !== undefined) {
@@ -59,12 +78,74 @@ export class LogCosignatureRepository {
     if (filter.treeSize !== undefined) {
       conditions.push(eq(logCosignatures.treeSize, filter.treeSize));
     }
-    return this.database.db
-      .select()
+
+    if (filter.all) {
+      return this.database.db
+        .select()
+        .from(logCosignatures)
+        .where(and(...conditions))
+        .orderBy(desc(logCosignatures.witnessedAt), desc(logCosignatures.treeSize))
+        .limit(filter.limit ?? 200);
+    }
+
+    const deduped = this.database.db
+      .selectDistinctOn([logCosignatures.logId, logCosignatures.treeSize, logCosignatures.rootHash])
       .from(logCosignatures)
       .where(and(...conditions))
-      .orderBy(desc(logCosignatures.witnessedAt), desc(logCosignatures.treeSize))
+      .orderBy(
+        logCosignatures.logId,
+        logCosignatures.treeSize,
+        logCosignatures.rootHash,
+        desc(logCosignatures.witnessedAt),
+      )
+      .as('deduped');
+
+    return this.database.db
+      .select()
+      .from(deduped)
+      .orderBy(desc(deduped.witnessedAt), desc(deduped.treeSize))
       .limit(filter.limit ?? 50);
+  }
+
+  /**
+   * Purge cosignatures beyond `keepPerHead`, per distinct
+   * `(tenant_id, witness_id, log_id, tree_size, root_hash)` tuple, restricted
+   * to rows older than `cutoffIso` — the retention sweep's mirror of
+   * {@link record}'s unbounded-growth concern (B1 makes this a genuinely
+   * append-EVERY-observation table). Keeps the newest `keepPerHead - 1` rows
+   * AND the single OLDEST row per tuple unconditionally (§8.1: the oldest
+   * surviving cosignature for a head is the strongest anti-backdating
+   * evidence — never purge from the ends, only the middle). A row is deleted
+   * only when it is BOTH past the TTL cutoff AND outside that kept set, so a
+   * tuple with fewer than `keepPerHead` rows, or whose extra rows haven't
+   * aged past the TTL yet, is left untouched.
+   */
+  async purgeOldPerTuple(cutoffIso: string, keepPerHead: number): Promise<number> {
+    const result = await this.database.db.execute(sql`
+      WITH ranked AS (
+        SELECT
+          id,
+          ROW_NUMBER() OVER (
+            PARTITION BY tenant_id, witness_id, log_id, tree_size, root_hash
+            ORDER BY witnessed_at DESC
+          ) AS rn_desc,
+          ROW_NUMBER() OVER (
+            PARTITION BY tenant_id, witness_id, log_id, tree_size, root_hash
+            ORDER BY witnessed_at ASC
+          ) AS rn_asc
+        FROM log_cosignatures
+      )
+      DELETE FROM log_cosignatures
+      WHERE id IN (
+        SELECT ranked.id FROM ranked
+        JOIN log_cosignatures lc ON lc.id = ranked.id
+        WHERE ranked.rn_desc > ${Math.max(keepPerHead - 1, 0)}
+          AND ranked.rn_asc > 1
+          AND lc.witnessed_at < ${cutoffIso}
+      )
+      RETURNING id
+    `);
+    return result.rows.length;
   }
 
   /**

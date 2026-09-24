@@ -57,10 +57,12 @@ export class LogWitnessRepository {
     rootHash: string,
     witnessedCount: number,
     meetsQuorum: boolean,
+    freshWitnessedCount: number,
+    meetsFreshQuorum: boolean,
   ): Promise<void> {
     await this.database.db
       .update(logWitnessCheckpoints)
-      .set({ witnessedCount, meetsQuorum })
+      .set({ witnessedCount, meetsQuorum, freshWitnessedCount, meetsFreshQuorum })
       .where(
         and(
           eq(logWitnessCheckpoints.tenantId, tenantId),

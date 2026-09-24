@@ -133,6 +133,14 @@ exception — they back the `GET /log/witness` public feed for this CP's single
 witness identity (`WITNESS_ID`), not a tenant view; see the class doc comment
 in `src/storage/log-cosignature.repository.ts`.
 
+`log_cosignatures`' unique constraint was widened again in migration
+`0020_cosignature_freshness.sql` (RFC-ACDP-0015 §4/§8.1/§15, B1): a witness
+re-mints a fresh cosignature on every observation, including an unchanged head
+(a liveness signal — "a witness that silently stops cosigning is
+indistinguishable from one that is merely offline"), so the key now includes
+`witnessed_at` — one row per (tenant, witness, log, head) *observation*, not
+per head. Same per-tenant scoping as above; only the granularity changed.
+
 ## Testing
 
 `test/integration/tenancy-isolation.integration.spec.ts` exercises cross-tenant

@@ -657,8 +657,49 @@ describe('CheckpointWitnessPollerService — witness cosigning (RFC-ACDP-0015)',
     expect(record).not.toHaveBeenCalled();
   });
 
-  it('re-cosigning the same head is idempotent (repo dedups; no crash)', async () => {
-    // repo.record returns null on the (witness, log, size, root) conflict.
+  it('re-observing an unchanged head mints a FRESH cosignature each time (B1 liveness re-mint, not a dedup)', async () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      let n = 0;
+      const record = jest.fn().mockImplementation(async () => ({ id: `cosig-${++n}` }));
+      const h = makeHarness({
+        witnessSigning: enabledSigning(),
+        cosignatureRepo: { record },
+      });
+      const leaves = makeLeafHashes(5);
+      const cp = signCheckpoint(privateKey, { tree_size: 5, root_hash: wire(mth(leaves)) });
+      routeFetch(h, { [`${BASE}/log/checkpoint`]: { status: 200, body: JSON.stringify(cp) } });
+
+      const first = await h.svc.sweep();
+      expect(first[0]!.status).toBe('witnessed');
+
+      // A later sweep observing the identical (still-current) head — the
+      // witnessed_at unique-key widening (migration 0020) means this is a
+      // genuinely new row, not a conflict.
+      jest.setSystemTime(new Date('2026-01-01T00:05:00.000Z'));
+      const second = await h.svc.sweep();
+      expect(second[0]!.status).toBe('witnessed');
+
+      expect(record).toHaveBeenCalledTimes(2);
+      const [firstWitnessedAt, secondWitnessedAt] = record.mock.calls.map(
+        (c) => (c[0] as { witnessedAt: string }).witnessedAt,
+      );
+      expect(firstWitnessedAt).not.toBe(secondWitnessedAt);
+      // Both count as 'minted' — B1 makes a stale-cosignature 'duplicate'
+      // result vanishingly rare (only a genuine same-millisecond collision).
+      expect(h.instrumentation.logCosignaturesTotal.inc).toHaveBeenCalledWith({ result: 'minted' });
+      expect(h.instrumentation.logCosignaturesTotal.inc).not.toHaveBeenCalledWith({
+        result: 'duplicate',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('an exact-millisecond re-mint collision still dedupes at the DB layer (defense in depth)', async () => {
+    // repo.record returns null on the (tenant, witness, log, size, root, witnessed_at)
+    // conflict — the residual case the widened unique key still guards.
     const record = jest.fn().mockResolvedValue(null);
     const h = makeHarness({
       witnessSigning: enabledSigning(),
@@ -671,7 +712,7 @@ describe('CheckpointWitnessPollerService — witness cosigning (RFC-ACDP-0015)',
     const outcomes = await h.svc.sweep();
     expect(outcomes[0]!.status).toBe('witnessed');
     expect(record).toHaveBeenCalledTimes(1);
-    // A duplicate is counted, not an error, and never crashes the sweep.
+    // A conflict is counted, not an error, and never crashes the sweep.
     expect(h.instrumentation.logCosignaturesTotal.inc).toHaveBeenCalledWith({ result: 'duplicate' });
   });
 
@@ -880,6 +921,8 @@ describe('CheckpointWitnessPollerService — witness quorum consumption (RFC-ACD
       cp.log_id,
       cp.tree_size,
       cp.root_hash,
+      1,
+      true,
       1,
       true,
     );

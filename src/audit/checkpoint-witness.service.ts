@@ -120,6 +120,15 @@ export interface QuorumResult {
   witnessedCount: number | null;
   /** Whether `witnessedCount` meets the configured N-witnessed policy. */
   meetsQuorum: boolean | null;
+  /**
+   * §8.1 freshness split: the subset of `witnessedCount` whose cosignature is
+   * also within WITNESS_QUORUM_MAX_AGE_SECONDS. A stale-but-valid cosignature
+   * still counts toward `witnessedCount`/`meetsQuorum` above — this is a
+   * SOFT liveness signal, never a failure.
+   */
+  freshWitnessedCount: number | null;
+  /** Whether `freshWitnessedCount` meets the configured N-witnessed policy. */
+  meetsFreshQuorum: boolean | null;
 }
 
 @Injectable()
@@ -415,9 +424,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         });
       }
       // Unchanged head re-signed with a fresh timestamp — a liveness signal
-      // (§6). Nothing new to prove; touch the cursor's success clock. The tuple
-      // is unchanged, so the cosignature is idempotent (RFC-ACDP-0015 §4/§7 —
-      // we retain the first per tuple rather than re-mint a liveness copy).
+      // (§6). Nothing new to prove; touch the cursor's success clock. The
+      // tuple is unchanged, but B1 re-mints a FRESH cosignature anyway (§4/
+      // §8.1/§15: a witness that silently stops cosigning is
+      // indistinguishable from one that is merely offline — the unique key
+      // now includes witnessed_at, so this is a genuinely new row, not a
+      // dedup no-op).
       // Quorum, however, DOES evolve: the registry may have aggregated more
       // cosignatures for this same tuple since we first saw it, so refresh the
       // recorded count (recordCheckpoint coalesces it onto the existing row).
@@ -678,7 +690,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     checkpoint: LogCheckpoint,
     signatureValid: boolean,
     consistencyOk: boolean | null,
-    quorum: QuorumResult = { witnessedCount: null, meetsQuorum: null },
+    quorum: QuorumResult = {
+      witnessedCount: null,
+      meetsQuorum: null,
+      freshWitnessedCount: null,
+      meetsFreshQuorum: null,
+    },
   ): Promise<void> {
     try {
       const inserted = await this.witnessRepo.recordCheckpoint({
@@ -693,6 +710,8 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         consistencyOk,
         witnessedCount: quorum.witnessedCount,
         meetsQuorum: quorum.meetsQuorum,
+        freshWitnessedCount: quorum.freshWitnessedCount,
+        meetsFreshQuorum: quorum.meetsFreshQuorum,
       });
       // The evidence row is append-once (null = a re-observation of an existing
       // head). The §8 quorum, however, evolves as the registry aggregates more
@@ -700,7 +719,9 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       if (
         inserted === null &&
         quorum.witnessedCount !== null &&
-        quorum.meetsQuorum !== null
+        quorum.meetsQuorum !== null &&
+        quorum.freshWitnessedCount !== null &&
+        quorum.meetsFreshQuorum !== null
       ) {
         await this.witnessRepo.updateQuorum(
           tenantId,
@@ -709,6 +730,8 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
           checkpoint.root_hash,
           quorum.witnessedCount,
           quorum.meetsQuorum,
+          quorum.freshWitnessedCount,
+          quorum.meetsFreshQuorum,
         );
       }
     } catch (err) {
@@ -734,7 +757,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     witnessSignatures: unknown[],
   ): Promise<QuorumResult> {
     if (!this.config.witnessQuorumEnabled) {
-      return { witnessedCount: null, meetsQuorum: null };
+      return {
+        witnessedCount: null,
+        meetsQuorum: null,
+        freshWitnessedCount: null,
+        meetsFreshQuorum: null,
+      };
     }
     try {
       const trusted = this.config.witnessQuorumTrusted;
@@ -763,6 +791,8 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         trustedWitnessIds: trusted,
         witnessKeysB64,
         minWitnesses: this.config.witnessQuorumMinWitnesses,
+        maxAgeSecs: this.config.witnessQuorumMaxAgeSeconds,
+        maxClockSkewSecs: this.config.witnessQuorumMaxClockSkewSeconds,
       });
       this.instrumentation.logWitnessQuorumTotal.inc({
         meets: report.meetsQuorum ? 'true' : 'false',
@@ -772,10 +802,20 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
           `quorum for '${authority}' had ${report.failures.length} non-counting cosignature(s): ${report.failures.join('; ')}`,
         );
       }
-      return { witnessedCount: report.witnessedCount, meetsQuorum: report.meetsQuorum };
+      return {
+        witnessedCount: report.witnessedCount,
+        meetsQuorum: report.meetsQuorum,
+        freshWitnessedCount: report.freshWitnessedCount,
+        meetsFreshQuorum: report.meetsFreshQuorum,
+      };
     } catch (err) {
       this.logger.warn(`witness quorum evaluation failed for '${authority}': ${msgOf(err)}`);
-      return { witnessedCount: null, meetsQuorum: null };
+      return {
+        witnessedCount: null,
+        meetsQuorum: null,
+        freshWitnessedCount: null,
+        meetsFreshQuorum: null,
+      };
     }
   }
 

@@ -2091,4 +2091,69 @@ fundamentally about what a real database does).
   `test/integration/tenancy-isolation.integration.spec.ts`,
   `test/integration/log-witness.integration.spec.ts`,
   `plans/rfc-0014-0015-upgrade.md` (Phase 6 → DONE). No `ASSUMPTIONS.md` entries.
-Next: Phase 7 (cosignature freshness — re-mint on every observation, §8.1 split; B1, B6, B11).
+
+**Phase 7 — Cosignature freshness: re-mint on every observation, consume the §8.1 split
+(B1, B6, B11).** PASS r1 (fresh Opus verifier; carries a second irreversible DB migration
+— same reasoning as Phase 6 applies again: the plan's own Approach section already did
+the one-way-door analysis in full, so the verifier's mandate was to independently
+reproduce the migration against the real test Postgres rather than redo that analysis —
+it did, twice, confirming a clean no-op on retry).
+- B1 fix: `log_cosignatures`' unique key widened again (`drizzle/0020_cosignature_freshness.sql`,
+  dropping 0019's exact constraint name) to `(tenant_id, witness_id, log_id, tree_size,
+  root_hash, witnessed_at)` — a witness now mints a fresh cosignature on every observation,
+  including an unchanged head, per §4/§8.1/§15's liveness requirement. Only a genuine
+  same-millisecond re-mint still dedups.
+- B11 fix: `LogCosignatureRepository.list()` rewritten around a `selectDistinctOn` +
+  subquery (inner query orders `logId, treeSize, rootHash, witnessedAt DESC` to satisfy
+  Postgres's DISTINCT-ON-must-lead-ORDER-BY rule; outer query re-sorts `witnessedAt DESC`
+  and applies `LIMIT` post-dedup) — default view is the latest cosignature per distinct
+  head; new `all: true` / `GET /log/witness?all=true` serves the full per-observation
+  series for the §8.1 anti-backdating use.
+- B6 fix: `cosign.ts`'s `nativeEvaluateQuorum`/`hostEvaluateQuorum` both now thread
+  `max_age_secs`/`max_clock_skew_secs` into the policy and compute
+  `freshWitnessedCount`/`meetsFreshQuorum` (a stale-but-valid cosignature still counts
+  toward the base `witnessedCount` — never a failure — just excluded from the fresh
+  count); persisted via two new nullable columns on `log_witness_checkpoints`
+  (`fresh_witnessed_count`, `meets_fresh_quorum`, same migration 0020).
+- Retention: new `LogCosignatureRepository.purgeOldPerTuple` (raw SQL, two `ROW_NUMBER()`
+  windows) keeps the newest N-1 plus the single oldest row per tuple unconditionally
+  (§8.1 anti-backdating — never purge from the ends), wired into
+  `DataRetentionService.purge()` behind new `WITNESS_COSIGNATURE_KEEP_PER_HEAD` (default
+  10); `AppConfigService` now warns (not throws) when `WITNESS_COSIGNING_ENABLED=true`
+  and `DATA_RETENTION_ENABLED=false`.
+- Config: new `readNullableNumber` helper backs `WITNESS_QUORUM_MAX_AGE_SECONDS`
+  (`''`/`'0'` → `null`, explicitly disabling the freshness split) alongside plain
+  `WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS` (default 120, the hard §8 step 5 gate).
+- Two pre-existing tests updated because this phase's fix deliberately falsifies their
+  prior assumptions (not new gaps): `checkpoint-witness.service.spec.ts`'s idempotence
+  test (replaced with a fresh-re-mint test + a narrower exact-millisecond-collision
+  case) and `tenancy-isolation.integration.spec.ts`'s Phase-6 constraint-name assertion
+  (0019 name → 0020 name).
+- Empirical DB verification (both executor and verifier, independently, same discipline
+  as Phase 6): applied migration 0020 to the real test Postgres, confirmed via direct
+  `pg_constraint`/`\d` inspection that the widened constraint and both new columns exist
+  under the exact expected names, then re-ran the raw SQL file a second time and
+  reconfirmed a clean no-op (NOTICE-level skips only, constraint count still exactly 1).
+- Verifier nits (non-blocking, no action required against the acceptance criteria):
+  `purgeOldPerTuple`'s CTE scans the whole table per sweep rather than pre-filtering
+  candidate tuples (matches the rest of the retention sweep's existing unbatched style);
+  `WITNESS_COSIGNATURE_KEEP_PER_HEAD` has no lower-bound clamp (a negative value degrades
+  gracefully rather than crashing). Added a lock-note/rollback paragraph to
+  `drizzle/0020_cosignature_freshness.sql` (mirroring 0019's) in response to the one
+  documentation nit raised; re-verified idempotent after the comment-only edit.
+- Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 136 files · unit 72 suites/915 passed/3 skipped/918 total
+  (+15 new since Phase 6) · integration 30 suites/193 passed (+4 new).
+- Files touched: `drizzle/0020_cosignature_freshness.sql` (new), `src/db/schema.ts`,
+  `src/storage/log-cosignature.repository.ts`, `src/storage/log-witness.repository.ts`,
+  `src/audit/cosign.ts`, `src/audit/checkpoint-witness.service.ts`,
+  `src/config/app-config.service.ts`, `src/retention/data-retention.service.ts`,
+  `src/witness/witness.controller.ts`, `CLAUDE.md`, `docs/API.md`,
+  `docs/CONFIGURATION.md`, `docs/TENANCY.md`, `.env.example`,
+  `src/audit/cosign.spec.ts`, `src/audit/checkpoint-witness.service.spec.ts`,
+  `src/config/app-config.service.spec.ts`, `src/retention/data-retention.service.spec.ts`,
+  `test/integration/witness-cosigning.integration.spec.ts`,
+  `test/integration/tenancy-isolation.integration.spec.ts`,
+  `test/integration/log-witness.integration.spec.ts`,
+  `plans/rfc-0014-0015-upgrade.md` (Phase 7 → DONE). No `ASSUMPTIONS.md` entries.
+Next: Phase 8 (witness key resolution — did:key witnesses and retired witness keys; B2, B3).

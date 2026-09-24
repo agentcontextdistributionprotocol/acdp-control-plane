@@ -27,10 +27,16 @@ const ROOT_5 = 'sha256:0b5978172c671ca050b44790a749b18fc29d58a7a17495fbb4e0f86eb
 const ROOT_3 = 'sha256:' + '3'.repeat(64);
 const WITNESS_PEM = generateEd25519Pem().privatePem;
 
-function makeCosignRow(signing: WitnessSigningService, logId: string, treeSize: number, root: string) {
+function makeCosignRow(
+  signing: WitnessSigningService,
+  logId: string,
+  treeSize: number,
+  root: string,
+  witnessedAt: string = new Date().toISOString(),
+) {
   const minted = mintCosignature(
     { log_id: logId, tree_size: treeSize, root_hash: root, timestamp: '2026-07-04T12:00:00.000Z' },
-    new Date().toISOString(),
+    witnessedAt,
     signing.signer!,
   );
   if (!minted.ok) throw new Error(minted.reason);
@@ -76,16 +82,24 @@ describe('transparency-log witness cosigning (integration)', () => {
     delete process.env.WITNESS_SIGNING_PRIVATE_KEY_PEM;
   });
 
-  it('persists cosignatures idempotently and lists them (repo round-trip)', async () => {
-    const first = await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5));
+  it('persists cosignatures (fresh re-mint on re-observation, B1) and lists them (repo round-trip)', async () => {
+    const first = await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, '2026-07-04T12:00:00.000Z'));
     expect(first).not.toBeNull();
-    // Re-observing the same (witness, log, size, root) is a no-op.
-    const dup = await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5));
+    // B1: re-observing the same head with a FRESH witnessed_at mints a new
+    // row — migration 0020 widened the unique key to include witnessed_at
+    // precisely so this is no longer a dedup no-op.
+    const remint = await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, '2026-07-04T12:05:00.000Z'));
+    expect(remint).not.toBeNull();
+    // An EXACT witnessed_at collision is still the genuine duplicate case
+    // the unique key guards against.
+    const dup = await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, '2026-07-04T12:05:00.000Z'));
     expect(dup).toBeNull();
 
     await repo.record(makeCosignRow(signing, LOG_ID, 3, ROOT_3));
     await repo.record(makeCosignRow(signing, OTHER_LOG, 5, ROOT_5));
 
+    // list() defaults to the collapsed "latest per distinct head" view — the
+    // two log/5/ROOT_5 observations above collapse to one.
     const all = await repo.list({ witnessId: WITNESS_ID });
     expect(all).toHaveLength(3);
 
@@ -97,7 +111,9 @@ describe('transparency-log witness cosigning (integration)', () => {
     expect(atSize[0]!.rootHash).toBe(ROOT_5);
 
     expect(await repo.coveredLogs(WITNESS_ID)).toEqual([LOG_ID, OTHER_LOG].sort());
-    expect(await repo.countForTenant('default')).toBe(3);
+    // Raw row count, NOT the collapsed-per-head view: 2 observations of
+    // (LOG_ID, 5, ROOT_5) + 1 of (LOG_ID, 3, ROOT_3) + 1 of (OTHER_LOG, 5, ROOT_5).
+    expect(await repo.countForTenant('default')).toBe(4);
   });
 
   it('GET /log/witness serves the cosignatures, filtered by log_id/tree_size', async () => {
@@ -166,5 +182,87 @@ describe('transparency-log witness cosigning (integration)', () => {
     const parsed = AcdpDidDocument.parse(JSON.stringify(doc), WITNESS_ID);
     const key = parsed.keyForAlgorithm(KEY_ID, 'ed25519');
     expect(key.publicKeyB64).toBe(signing.publicKeyB64);
+  });
+
+  it('B1: re-observing an unchanged head mints distinct rows (migration 0020 widened key)', async () => {
+    const t1 = '2026-07-04T12:00:00.000Z';
+    const t2 = '2026-07-04T12:05:00.000Z';
+    const first = await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, t1));
+    const second = await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, t2));
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(first!.witnessedAt).not.toBe(second!.witnessedAt);
+
+    // The exact-millisecond collision is still guarded (defense in depth):
+    // re-observing at the SAME witnessed_at is a true no-op.
+    const dup = await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, t2));
+    expect(dup).toBeNull();
+  });
+
+  it('B11: list() default view collapses to the latest cosignature per distinct head; all=true serves the full series', async () => {
+    const t1 = '2026-07-04T12:00:00.000Z';
+    const t2 = '2026-07-04T12:05:00.000Z';
+    const t3 = '2026-07-04T12:10:00.000Z';
+    await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, t1));
+    await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, t2));
+    await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, t3));
+    await repo.record(makeCosignRow(signing, LOG_ID, 3, ROOT_3, t1));
+
+    const collapsed = await repo.list({ witnessId: WITNESS_ID });
+    // One row per distinct (log_id, tree_size, root_hash) — the newest.
+    expect(collapsed).toHaveLength(2);
+    const head5 = collapsed.find((c) => c.treeSize === 5);
+    expect(Date.parse(head5!.witnessedAt)).toBe(Date.parse(t3));
+
+    const full = await repo.list({ witnessId: WITNESS_ID, all: true });
+    expect(full).toHaveLength(4);
+
+    const filtered = await repo.list({ witnessId: WITNESS_ID, logId: LOG_ID, treeSize: 5, all: true });
+    expect(filtered.map((c) => Date.parse(c.witnessedAt)).sort()).toEqual(
+      [t1, t2, t3].map((t) => Date.parse(t)).sort(),
+    );
+  });
+
+  it('GET /log/witness?all=true serves the full per-observation series', async () => {
+    const t1 = '2026-07-04T12:00:00.000Z';
+    const t2 = '2026-07-04T12:05:00.000Z';
+    await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, t1));
+    await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, t2));
+
+    const collapsed = (await ctx.client.requestJson('GET', '/log/witness')) as {
+      witness_signatures: Array<Record<string, any>>;
+    };
+    expect(collapsed.witness_signatures).toHaveLength(1);
+
+    const full = (await ctx.client.requestJson('GET', '/log/witness', {
+      query: { all: 'true' },
+    })) as { witness_signatures: Array<Record<string, any>> };
+    expect(full.witness_signatures).toHaveLength(2);
+  });
+
+  it('purgeOldPerTuple keeps the newest N-1 plus the oldest row unconditionally, purging only aged middle rows', async () => {
+    const times = [
+      '2020-01-01T00:00:00.000Z', // oldest — kept unconditionally (anti-backdating)
+      '2020-01-02T00:00:00.000Z', // aged middle — purged
+      '2020-01-03T00:00:00.000Z', // aged middle — purged
+      '2026-07-04T11:58:00.000Z', // recent — kept (newest N-1)
+      '2026-07-04T12:00:00.000Z', // newest — kept
+    ];
+    for (const t of times) {
+      const row = await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5, t));
+      expect(row).not.toBeNull();
+    }
+    const cutoff = '2026-01-01T00:00:00.000Z';
+    const purged = await repo.purgeOldPerTuple(cutoff, 3); // keep newest 2 + oldest 1
+    expect(purged).toBe(2);
+
+    const remaining = (await repo.list({ witnessId: WITNESS_ID, all: true })).map((c) =>
+      Date.parse(c.witnessedAt),
+    );
+    expect(remaining.sort()).toEqual(
+      ['2020-01-01T00:00:00.000Z', '2026-07-04T11:58:00.000Z', '2026-07-04T12:00:00.000Z']
+        .map((t) => Date.parse(t))
+        .sort(),
+    );
   });
 });

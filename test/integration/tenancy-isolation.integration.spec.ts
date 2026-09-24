@@ -290,7 +290,7 @@ describe('Cross-tenant isolation (integration)', () => {
       expect(aAgain).toBeNull();
     });
 
-    it('exactly one UNIQUE constraint remains on each table after migration 0019 — the old narrow constraint is gone, not merely shadowed by a new wide one', async () => {
+    it('exactly one UNIQUE constraint remains on each table after migrations 0019/0020 — the old narrow constraint is gone, not merely shadowed by a new wide one', async () => {
       const db = ctx.module.get(DatabaseService);
       const checkpointConstraints = await db.db.execute(sql`
         SELECT conname FROM pg_constraint
@@ -304,9 +304,12 @@ describe('Cross-tenant isolation (integration)', () => {
       expect(checkpointConstraints.rows[0]).toMatchObject({
         conname: 'log_witness_checkpoints_tenant_head_key',
       });
+      // 0020 (B1) widened this further to include witnessed_at — one row per
+      // OBSERVATION, not per head — so the 0019 name is gone too, replaced
+      // (not shadowed) by the 0020 name.
       expect(cosignatureConstraints.rows).toHaveLength(1);
       expect(cosignatureConstraints.rows[0]).toMatchObject({
-        conname: 'log_cosignatures_tenant_witness_head_key',
+        conname: 'log_cosignatures_tenant_witness_head_ts_key',
       });
     });
   });

@@ -432,6 +432,12 @@ export const logWitnessCheckpoints = pgTable(
     // detect/cosign layers work without it).
     witnessedCount: integer('witnessed_count'),
     meetsQuorum: boolean('meets_quorum'),
+    // RFC-ACDP-0015 §8.1 freshness split (migration 0020): DISTINCT trusted
+    // witnesses whose cosignature ALSO passes the max_age_secs staleness
+    // check, and whether that meets the same N-witnessed policy. NULL when
+    // quorum consumption is disabled, same as witnessedCount/meetsQuorum.
+    freshWitnessedCount: integer('fresh_witnessed_count'),
+    meetsFreshQuorum: boolean('meets_fresh_quorum'),
   },
   (t) => ({
     // Dedupes re-fetches of the same head, PER TENANT (migration 0019 — two
@@ -557,15 +563,31 @@ export const logCosignatures = pgTable(
       .defaultNow(),
   },
   (t) => ({
-    // Idempotent per observed tuple for a given witness, PER TENANT (migration
-    // 0019 — same B7 fix as log_witness_checkpoints above): re-observing the
-    // same head keeps the first cosignature (RFC-ACDP-0015 §4/§7).
-    uniqueCosig: uniqueIndex('log_cosignatures_tenant_witness_head_key').on(
+    // WIDENED to include witnessedAt (migration 0020, B1 fix): §4 requires a
+    // FRESH cosignature on every re-observation, including at an unchanged
+    // tree_size (a liveness signal) — the narrower (pre-0020) key kept only
+    // the first cosignature per head, silently defeating that requirement.
+    // Widening rather than dropping preserves genuine idempotence (a sweep
+    // retried within the same millisecond still cannot double-insert) while
+    // allowing one row per observation. Still PER TENANT (migration 0019,
+    // B7 fix).
+    uniqueCosig: uniqueIndex('log_cosignatures_tenant_witness_head_ts_key').on(
       t.tenantId,
       t.witnessId,
       t.logId,
       t.treeSize,
       t.rootHash,
+      t.witnessedAt,
+    ),
+    // Serves "latest per tuple" (LogCosignatureRepository.list's DISTINCT ON)
+    // and the retention purge's per-tuple ranking (migration 0020).
+    tupleWitnessedIdx: index('lcs_tuple_witnessed_idx').on(
+      t.tenantId,
+      t.witnessId,
+      t.logId,
+      t.treeSize,
+      t.rootHash,
+      t.witnessedAt.desc(),
     ),
     logSizeIdx: index('lcs_log_size_idx').on(t.logId, t.treeSize),
     tenantIdx: index('lcs_tenant_idx').on(t.tenantId),

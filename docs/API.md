@@ -359,6 +359,11 @@ signal when quorum consumption is enabled:
   this exact `(logId, treeSize, rootHash)` tuple the CP independently verified
   (`null` when `WITNESS_QUORUM_ENABLED=false`).
 - `meetsQuorum` — whether `witnessedCount ≥ WITNESS_QUORUM_MIN_WITNESSES`.
+- `freshWitnessedCount` — the §8.1 freshness-split SUBSET of `witnessedCount` whose
+  cosignature is also within `WITNESS_QUORUM_MAX_AGE_SECONDS` (`null` under the same
+  condition as `witnessedCount`). A stale cosignature still counts toward
+  `witnessedCount`/`meetsQuorum` above — this is never a failure, just excluded here.
+- `meetsFreshQuorum` — whether `freshWitnessedCount ≥ WITNESS_QUORUM_MIN_WITNESSES`.
 
 ### `GET /registries/log-witness/alerts?includeAcknowledged=true`
 
@@ -573,13 +578,26 @@ checkpoint's exact tuple are counted — external attestations only, never the C
 mint. The `witnessedCount` / `meetsQuorum` land on the witnessed head (see
 `GET /registries/:authority/log-witness`). A did:web `WITNESS_ID`'s host is asserted to
 match `PUBLIC_HOST` at boot (§9) so the witness's own DID document is actually resolvable.
+§8.1 layers a **freshness split** (`freshWitnessedCount` / `meetsFreshQuorum`,
+`WITNESS_QUORUM_MAX_AGE_SECONDS`) on top: a stale-but-otherwise-valid cosignature still
+counts toward the base `witnessedCount` — never a failure — but not the fresh count. Both
+the native (`AcdpVerifier.evaluateWitnessQuorum`) and host-TS fallback quorum paths
+compute this split identically (parity-tested).
+
+**B1 re-mint (§4/§8.1/§15).** A witness MUST cosign on **every** observation, including
+at an unchanged `tree_size` — a silent stop is indistinguishable from merely being
+offline. So `log_cosignatures` carries one row per *observation*, not per head; only a
+genuine same-millisecond re-mint is a true duplicate.
 
 ### `GET /log/witness` (Public)
 
 This witness's cosignatures, most-recent first (RFC-ACDP-0015 §6.2). Optional query
 params `log_id` (a `did:web:…/log/<instance>` id) and `tree_size` (a non-negative
-integer) filter the result; a malformed value returns `400` (`schema_violation`).
-`Content-Type: application/acdp+json`.
+integer) filter the result; a malformed value returns `400` (`schema_violation`). The
+default view collapses B1's per-observation series to the **latest cosignature per
+distinct head** — pass `all=true` for the full per-observation series (the §8.1
+anti-backdating use: an older surviving cosignature for a head is *stronger* evidence it
+existed early). `Content-Type: application/acdp+json`.
 
 ```json
 {

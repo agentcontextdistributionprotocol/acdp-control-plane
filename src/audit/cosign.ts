@@ -536,19 +536,44 @@ export function tsVerifyCosignature(
   return valid ? { ok: true } : { ok: false, reason: 'witness cosignature signature invalid' };
 }
 
-/** §8 step 5: `witnessed_at` must not be in the future beyond the skew allowance. */
+/**
+ * §8 step 5: `witnessed_at` must not be in the future beyond the skew
+ * allowance — a HARD gate (a cosignature failing this never counts at all,
+ * same category as an invalid signature). `maxFutureSkewMs` defaults to the
+ * constant below when the caller (e.g. a standalone verify with no quorum
+ * policy in scope) has no configured value to pass.
+ */
 export function cosignatureFreshnessOk(
   cosignature: LogCosignature,
   nowMs: number = Date.now(),
+  maxFutureSkewMs: number = COSIGNATURE_MAX_FUTURE_SKEW_MS,
 ): CosignOutcome {
   const ts = Date.parse(cosignature.witnessed_at);
-  if (ts - nowMs > COSIGNATURE_MAX_FUTURE_SKEW_MS) {
+  if (ts - nowMs > maxFutureSkewMs) {
     return {
       ok: false,
-      reason: `witnessed_at '${cosignature.witnessed_at}' is in the future beyond the 120s skew allowance`,
+      reason: `witnessed_at '${cosignature.witnessed_at}' is in the future beyond the ${Math.round(maxFutureSkewMs / 1000)}s skew allowance`,
     };
   }
   return { ok: true };
+}
+
+/**
+ * §8.1 freshness SPLIT (soft, applied only to already-verified cosignatures):
+ * true when `witnessed_at` is within `maxAgeSecs` of now. `maxAgeSecs ===
+ * null` disables the split entirely — every verified cosignature also counts
+ * as fresh, matching the native binding's documented null semantics. A
+ * cosignature failing this still counts toward `witnessedCount` — it is
+ * excluded from `freshWitnessedCount` only, never treated as invalid.
+ */
+export function cosignatureAgeOk(
+  cosignature: LogCosignature,
+  nowMs: number,
+  maxAgeSecs: number | null,
+): boolean {
+  if (maxAgeSecs === null) return true;
+  const ts = Date.parse(cosignature.witnessed_at);
+  return nowMs - ts <= maxAgeSecs * 1000;
 }
 
 // ── §8 N-witnessed quorum CONSUMPTION ─────────────────────────────────────
@@ -575,6 +600,16 @@ export interface QuorumReport {
   verifiedWitnessIds: string[];
   /** Human-readable per-cosignature rejects (untrusted witnesses are silent). */
   failures: string[];
+  /**
+   * §8.1 freshness split: the SUBSET of `witnessedCount` whose `witnessed_at`
+   * is also within `maxAgeSecs` — a stale-but-otherwise-valid cosignature
+   * still counts toward `witnessedCount`, just not this. Equals
+   * `witnessedCount` when the freshness split is disabled (`maxAgeSecs ===
+   * null`).
+   */
+  freshWitnessedCount: number;
+  /** `freshWitnessedCount >= minWitnesses`. */
+  meetsFreshQuorum: boolean;
 }
 
 export interface QuorumInputs {
@@ -588,6 +623,16 @@ export interface QuorumInputs {
   witnessKeysB64: Record<string, string>;
   /** The N in N-witnessed. */
   minWitnesses: number;
+  /**
+   * §8.1 freshness window in seconds; `null` explicitly disables the
+   * freshness split (every verified cosignature also counts as fresh).
+   * `undefined` lets each branch apply its own RFC-recommended default
+   * (native: the binding's own default of 300; host: 300 here too, for
+   * native/host parity).
+   */
+  maxAgeSecs?: number | null;
+  /** §8 step 5 future-dating tolerance in seconds. Default 120 when omitted. */
+  maxClockSkewSecs?: number;
   /** Consumer clock override (ms); defaults to now. */
   nowMs?: number;
 }
@@ -622,6 +667,17 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
     if (key === undefined || didDocs[c.witness_id] !== undefined) continue;
     didDocs[c.witness_id] = witnessDidDocFromPubkey(c.witness_id, c.signature.key_id, key);
   }
+  // Policy field names are the SDK's wire keys (max_age_secs, NOT
+  // max_age_seconds — the JSON key differs from the Rust field behind it).
+  // `undefined` fields are dropped by JSON.stringify, letting the binding
+  // apply its own default; an explicit `null` for maxAgeSecs passes through
+  // as JSON null, which the binding documents as "disable the freshness
+  // split" — never send `0` for that (0 means "everything is stale").
+  const policy: { min_witnesses: number; max_age_secs?: number | null; max_clock_skew_secs?: number } = {
+    min_witnesses: inp.minWitnesses,
+  };
+  if (inp.maxAgeSecs !== undefined) policy.max_age_secs = inp.maxAgeSecs;
+  if (inp.maxClockSkewSecs !== undefined) policy.max_clock_skew_secs = inp.maxClockSkewSecs;
   let json: string;
   try {
     json = surface.evaluateWitnessQuorum(
@@ -629,7 +685,7 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
       JSON.stringify(inp.checkpoint),
       JSON.stringify(inp.trustedWitnessIds),
       JSON.stringify(didDocs),
-      JSON.stringify({ min_witnesses: inp.minWitnesses }),
+      JSON.stringify(policy),
       new Date(inp.nowMs ?? Date.now()).toISOString(),
     );
   } catch {
@@ -640,6 +696,8 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
     meets_quorum?: unknown;
     witnesses?: unknown;
     failures?: unknown;
+    fresh_witnessed_count?: unknown;
+    meets_fresh_quorum?: unknown;
   };
   try {
     report = JSON.parse(json) as typeof report;
@@ -647,6 +705,11 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
     return null;
   }
   const count = typeof report.witnessed_count === 'number' ? report.witnessed_count : 0;
+  // Defensive fallback to `count`/`meetsQuorum`, not 0/false: an older
+  // binding response missing the freshness fields should behave as if the
+  // split were disabled (fresh == verified), not as if nothing were fresh.
+  const freshCount =
+    typeof report.fresh_witnessed_count === 'number' ? report.fresh_witnessed_count : count;
   return {
     witnessedCount: count,
     meetsQuorum: report.meets_quorum === true,
@@ -654,6 +717,9 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
       ? report.witnesses.filter((w): w is string => typeof w === 'string')
       : [],
     failures: Array.isArray(report.failures) ? report.failures.map((f) => String(f)) : [],
+    freshWitnessedCount: freshCount,
+    meetsFreshQuorum:
+      report.meets_fresh_quorum === undefined ? report.meets_quorum === true : report.meets_fresh_quorum === true,
   };
 }
 
@@ -661,12 +727,18 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
  * The host-arithmetic branch (exported for the parity cross-check): the §8 loop
  * over SDK JCS + Ed25519. Counts DISTINCT trusted witnesses whose cosignature
  * parses, binds to the checkpoint tuple, is not future-dated, and verifies
- * under the witness's own resolved key.
+ * under the witness's own resolved key — plus the §8.1 freshness split over
+ * that same verified set, for native/host parity.
  */
 export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
   const nowMs = inp.nowMs ?? Date.now();
+  // RFC §8.1 defaults, mirroring the native binding's own defaults so the
+  // two branches agree when the caller (e.g. a bare unit test) omits them.
+  const maxAgeSecs = inp.maxAgeSecs === undefined ? 300 : inp.maxAgeSecs;
+  const maxClockSkewMs = (inp.maxClockSkewSecs ?? 120) * 1000;
   const trusted = new Set(inp.trustedWitnessIds);
   const verified = new Set<string>();
+  const freshVerified = new Set<string>();
   const failures: string[] = [];
   for (const raw of inp.cosignatures) {
     const parsed = parseCosignature(raw);
@@ -694,9 +766,9 @@ export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
       );
       continue;
     }
-    const fresh = cosignatureFreshnessOk(cosig, nowMs);
-    if (!fresh.ok) {
-      failures.push(`witness '${cosig.witness_id}': ${fresh.reason}`);
+    const skewOk = cosignatureFreshnessOk(cosig, nowMs, maxClockSkewMs);
+    if (!skewOk.ok) {
+      failures.push(`witness '${cosig.witness_id}': ${skewOk.reason}`);
       continue;
     }
     const verdict = verifyCosignature(cosig, key, inp.checkpoint);
@@ -705,12 +777,20 @@ export function hostEvaluateQuorum(inp: QuorumInputs): QuorumReport {
       continue;
     }
     verified.add(cosig.witness_id);
+    // §8.1 freshness split: a STALE-but-otherwise-valid cosignature still
+    // counts toward witnessedCount above — it is excluded from the fresh
+    // count only, never treated as a failure.
+    if (cosignatureAgeOk(cosig, nowMs, maxAgeSecs)) {
+      freshVerified.add(cosig.witness_id);
+    }
   }
   return {
     witnessedCount: verified.size,
     meetsQuorum: verified.size >= inp.minWitnesses,
     verifiedWitnessIds: [...verified],
     failures,
+    freshWitnessedCount: freshVerified.size,
+    meetsFreshQuorum: freshVerified.size >= inp.minWitnesses,
   };
 }
 
