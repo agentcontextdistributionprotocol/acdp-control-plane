@@ -2884,3 +2884,43 @@ PASS, hand PR3 (Phases 10-15, branch `rfc-0014/pr3-key-revocation`) to
 ### Ship (PR3)
 pushed rfc-0014/pr3-key-revocation dec5933fb892286a2a7bb91cc8ba40bf627dbacd
 PR #168 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/168
+
+CI gate (first run, `35960699892`): docker build + integration passed,
+`lint + tsc + jest (unit, coverage-gated)` failed — 4 tests in
+`src/audit/revocation-lineage.spec.ts` (rev-002 scenarios E-H, Phase 13)
+threw `TypeError: Cannot read properties of undefined (reading 'L1'/'L2'/'L3')`.
+Root cause: `.github/workflows/ci.yml` pins the sibling `agentcontextdistributionprotocol`
+spec checkout to a fixed commit for reproducibility (its own comment: "bump
+deliberately when adopting new fixtures"), and Phase 13 added a conformance
+test against `schemas/conformance/rev-002-before-after-boundary.json`'s
+`revocation_lineage.L1/L2/L3` shape without noticing that shape postdates
+the pinned commit (`bff3cf3`, 2026-08-28) — it was added upstream by the
+spec repo's "lineage-fold hardening" commit `9deb7e7` (2026-09-21). Invisible
+locally because the dev machine's sibling checkout was already at spec HEAD,
+so `ACDP_SPEC_DIR`'s fallback path silently used the newer fixture.
+Fixed by bumping the pin to `9deb7e7` in `dec5933`'s follow-up commit
+`42181db` (`ci: bump pinned ACDP spec checkout for Phase 13's rev-002 E-H
+fixtures`). Verified before pushing: ran the full unit suite locally with
+`ACDP_REQUIRE_CONFORMANCE=1` and `ACDP_SPEC_DIR` unset (so it resolves the
+same sibling checkout, at the same commit CI now pins) — 78/78 suites,
+1111 passed/4 skipped/0 failed, including all 26 conformance/golden/parity
+tests (rev-002 E-H, wit-001..003, log-001, log-003 — the other golden
+fixtures also changed between the two pinned commits, so these were
+checked too, not just rev-002). Lint/tsc/conventions clean. Pushed; CI
+re-run (`35961170728`) all green (docker build 32s, integration 1m34s,
+unit 1m32s).
+
+merged #168 (squash, cc758a6af6c03da6e057322b273fc53c7b933706).
+Local branch `rfc-0014/pr3-key-revocation` deleted by `gh pr merge --delete-branch`.
+Post-merge deploy: this repo's only deploy path (`release.yml`) is
+tag-gated (`on: push: tags: ['v*']`) — builds/pushes a GHCR image and
+triggers a Railway redeploy only when a `v*` tag is cut, not on every
+merge to `main`. No tag was pushed as part of this ship, so this merge
+did **not** trigger a production deploy — nothing is in flight to watch.
+`vercel.json`/`railway.json` absent (Railway is configured on Railway's
+side, tracking the GHCR image tag).
+
+PR3 was the last PR of the whole 15-phase `plans/rfc-0014-0015-upgrade.md`
+plan (PR1 #165, PR2 #167, PR3 #168, all merged). Next: run `/reconcile`
+across the full plan to close out every `ASSUMPTIONS.md` entry logged
+across all three PRs, not just PR3's.
