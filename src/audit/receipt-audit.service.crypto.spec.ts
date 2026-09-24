@@ -98,6 +98,8 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
   let registryRepo: any;
   let federationClient: any;
   let didResolver: any;
+  let config: any;
+  let keyRevocationRepo: any;
   let svc: ReceiptAuditService;
 
   beforeEach(() => {
@@ -135,20 +137,29 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
         historical: false,
       }),
     };
+    config = {
+      receiptAuditEnabled: true,
+      receiptAuditIntervalSeconds: 300,
+      receiptAuditBatchSize: 50,
+      receiptAuditLookbackHours: 24,
+      keyRevocationCheckEnabled: false,
+      keyRevocationIgnoreFingerprints: [],
+      keyRevocationAttestedScope: 'same_registry',
+    };
+    keyRevocationRepo = { findByFingerprint: jest.fn().mockResolvedValue([]) };
     svc = new ReceiptAuditService(
-      {
-        receiptAuditEnabled: true,
-        receiptAuditIntervalSeconds: 300,
-        receiptAuditBatchSize: 50,
-        receiptAuditLookbackHours: 24,
-      } as any,
+      config,
       { tryAdvisoryLock: jest.fn(), advisoryUnlock: jest.fn() } as any,
       { findUnauditedPublishes: jest.fn(), record: jest.fn() } as any,
       registryRepo,
       { advertisesReceipts: jest.fn().mockResolvedValue(true) } as any,
       federationClient,
       didResolver,
-      { receiptAuditsTotal: { inc: jest.fn() } } as any,
+      {
+        receiptAuditsTotal: { inc: jest.fn() },
+        receiptAuditKeyRevocationsTotal: { inc: jest.fn() },
+      } as any,
+      keyRevocationRepo,
     );
   });
 
@@ -529,5 +540,216 @@ describe('ReceiptAuditService (cryptographic path, receipt-capable SDK)', () => 
     expect(verdict.discrepancies.join('\n')).toContain(
       'unverified: registry receipt key resolution failed',
     );
+  });
+
+  // ── RFC-ACDP-0014 §7 compromise-boundary classification (Phase 14) ──────
+
+  const REVOKED_FP = FP; // this file's default producer fingerprint
+  const T = '2026-05-01T00:00:00.000Z';
+
+  function makeRevocationRow(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      tenantId: 'default',
+      ctxId: 'acdp://reg.example/aaaaaaaa-1111-4111-8111-111111111111',
+      revokedKeyFingerprint: REVOKED_FP,
+      compromisedSince: T,
+      revokedKeyController: 'did:web:agent.example',
+      publisher: 'did:web:agent.example',
+      trustClass: 'producer_signed',
+      revokedKeyId: null,
+      reason: null,
+      lineageId: 'lin-rev-1',
+      originAuthority: AUTHORITY,
+      contextType: 'key-revocation',
+      verifiedAt: '2026-05-01T00:00:01.000Z',
+      ...overrides,
+    };
+  }
+
+  describe('§7 compromise-boundary classification', () => {
+    beforeEach(() => {
+      config.keyRevocationCheckEnabled = true;
+    });
+
+    it('AC2: a verified receipt-attested created_at strictly BEFORE T classifies pre_compromise', async () => {
+      // Default event/receipt created_at is 2026-01-01, strictly before T.
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([makeRevocationRow()]);
+      const verdict = await svc.auditEvent(makeEvent());
+      expect(verdict.status).toBe('verified');
+      expect(verdict.keyRevocationStatus).toBe('pre_compromise');
+      expect(verdict.compromiseBoundary).toBe(T);
+      expect(verdict.keyRevocationTrustClass).toBe('producer_signed');
+      expect(verdict.keyRevocationSources).toEqual([
+        { ctxId: makeRevocationRow().ctxId, publisher: 'did:web:agent.example' },
+      ]);
+      expect(keyRevocationRepo.findByFingerprint).toHaveBeenCalledWith(REVOKED_FP, 'default');
+    });
+
+    it('AC3/AC4: a verified receipt-attested created_at AT-OR-AFTER T classifies revoked_at_or_after, never none (the disambiguation guard)', async () => {
+      // T before the receipt's created_at (2026-01-01) — the receipt lands
+      // at/after the boundary. This is the test the plan calls the single
+      // highest-value one to get right: the SDK's own JSON shape for this
+      // case is {"authorization":"none",...}, identical in that one field to
+      // "no revocation applies" — asserting status !== 'none' here is the
+      // guard against silently disabling the whole feature.
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([
+        makeRevocationRow({ compromisedSince: '2025-12-01T00:00:00.000Z' }),
+      ]);
+      const verdict = await svc.auditEvent(makeEvent());
+      expect(verdict.status).toBe('verified');
+      expect(verdict.keyRevocationStatus).not.toBe('none');
+      expect(verdict.keyRevocationStatus).toBe('revoked_at_or_after');
+      expect(verdict.compromiseBoundary).toBe('2025-12-01T00:00:00.000Z');
+    });
+
+    it('AC3: boundary equality (created_at === T) fails closed — strict, not "strictly before or equal"', async () => {
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([
+        // created_at (2026-01-01) as T means the receipt lands exactly at T.
+        makeRevocationRow({ compromisedSince: '2026-01-01T00:00:00.000Z' }),
+      ]);
+      const verdict = await svc.auditEvent(makeEvent());
+      expect(verdict.keyRevocationStatus).toBe('revoked_at_or_after');
+    });
+
+    it('AC6: no revocation names the signer key classifies none, boundary null', async () => {
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([]);
+      const verdict = await svc.auditEvent(makeEvent());
+      expect(verdict.status).toBe('verified');
+      expect(verdict.keyRevocationStatus).toBe('none');
+      expect(verdict.compromiseBoundary).toBeNull();
+      expect(verdict.keyRevocationTrustClass).toBeNull();
+      expect(verdict.keyRevocationSources).toEqual([]);
+    });
+
+    it('AC7: a P-256 (non-ed25519) producer with a revocation naming the claimed fingerprint fails closed — revoked_time_unverifiable, never none/pre_compromise', async () => {
+      const body = makeBody({
+        signature: { algorithm: 'ecdsa-p256', key_id: 'did:web:agent.example#key-1', value: 'x' },
+      });
+      federationClient.get.mockResolvedValue({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ body }),
+      });
+      // The revocation names the RECEIPT's claimed fingerprint (FP) — the
+      // exact value resolveProducerFingerprint passes through, unverified,
+      // for a non-ed25519 producer.
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([makeRevocationRow()]);
+      const verdict = await svc.auditEvent(makeEvent());
+      // The unverified-algorithm note forces the overall verdict to 'error'
+      // even though crypto.ran can still be true — see the file header.
+      expect(verdict.status).toBe('error');
+      expect(verdict.keyRevocationStatus).toBe('revoked_time_unverifiable');
+      expect(verdict.keyRevocationStatus).not.toBe('none');
+      expect(verdict.keyRevocationStatus).not.toBe('pre_compromise');
+    });
+
+    it('AC9: a fingerprint in KEY_REVOCATION_IGNORE_FINGERPRINTS classifies none even though the revocation row exists', async () => {
+      config.keyRevocationIgnoreFingerprints = [REVOKED_FP];
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([makeRevocationRow()]);
+      const verdict = await svc.auditEvent(makeEvent());
+      expect(verdict.status).toBe('verified');
+      expect(verdict.keyRevocationStatus).toBe('none');
+    });
+
+    it(
+      'KEY_REVOCATION_ATTESTED_SCOPE=same_registry (default) applies a registry-attested ' +
+        'revocation from the SAME serving registry, regardless of its unauthenticated ' +
+        "origin_registry claim (publisher, not originAuthority, is what's authenticated)",
+      async () => {
+        keyRevocationRepo.findByFingerprint.mockResolvedValue([
+          makeRevocationRow({
+            trustClass: 'registry_attested',
+            publisher: `did:web:${AUTHORITY}`,
+            // Deliberately a DIFFERENT claimed origin than AUTHORITY — proves
+            // originAuthority plays no role in the scope decision.
+            originAuthority: 'other-registry.example',
+          }),
+        ]);
+        const verdict = await svc.auditEvent(makeEvent());
+        expect(verdict.keyRevocationStatus).not.toBe('none');
+        expect(verdict.keyRevocationStatus).toBe('pre_compromise');
+        expect(verdict.keyRevocationTrustClass).toBe('registry_attested');
+      },
+    );
+
+    it(
+      'KEY_REVOCATION_ATTESTED_SCOPE=same_registry (default) excludes a registry-attested ' +
+        'revocation attested by a DIFFERENT registry, even when its unauthenticated ' +
+        'origin_registry claim names OUR registry',
+      async () => {
+        keyRevocationRepo.findByFingerprint.mockResolvedValue([
+          makeRevocationRow({
+            trustClass: 'registry_attested',
+            publisher: 'did:web:other-registry.example',
+            // Deliberately claims OUR authority as the origin — proves this
+            // claim cannot forge same-registry scope for a revocation a
+            // DIFFERENT registry actually attested.
+            originAuthority: AUTHORITY,
+          }),
+        ]);
+        const verdict = await svc.auditEvent(makeEvent());
+        expect(verdict.keyRevocationStatus).toBe('none');
+      },
+    );
+
+    it('KEY_REVOCATION_ATTESTED_SCOPE=global applies a registry-attested revocation from a different registry', async () => {
+      config.keyRevocationAttestedScope = 'global';
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([
+        makeRevocationRow({
+          trustClass: 'registry_attested',
+          publisher: 'did:web:other-registry.example',
+        }),
+      ]);
+      const verdict = await svc.auditEvent(makeEvent());
+      // Default boundary T (2026-05-01) is after the receipt's created_at
+      // (2026-01-01) — what this test proves is that the scope filter let a
+      // cross-registry attested revocation through at all (never 'none'),
+      // not any particular boundary outcome.
+      expect(verdict.keyRevocationStatus).not.toBe('none');
+      expect(verdict.keyRevocationStatus).toBe('pre_compromise');
+      expect(verdict.keyRevocationTrustClass).toBe('registry_attested');
+    });
+
+    it('KEY_REVOCATION_ATTESTED_SCOPE=off excludes every registry-attested revocation, even same-registry', async () => {
+      config.keyRevocationAttestedScope = 'off';
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([
+        makeRevocationRow({ trustClass: 'registry_attested', publisher: `did:web:${AUTHORITY}` }),
+      ]);
+      const verdict = await svc.auditEvent(makeEvent());
+      expect(verdict.keyRevocationStatus).toBe('none');
+    });
+
+    it('AC11: KEY_REVOCATION_CHECK_ENABLED=false never queries key_revocations and leaves the verdict byte-identical to pre-phase behaviour', async () => {
+      config.keyRevocationCheckEnabled = false;
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([makeRevocationRow()]);
+      const verdict = await svc.auditEvent(makeEvent());
+      expect(verdict.status).toBe('verified');
+      expect(verdict.keyRevocationStatus).toBe('none');
+      expect(verdict.compromiseBoundary).toBeNull();
+      expect(verdict.keyRevocationTrustClass).toBeNull();
+      expect(verdict.keyRevocationSources).toEqual([]);
+      expect(keyRevocationRepo.findByFingerprint).not.toHaveBeenCalled();
+    });
+
+    it('a producerFp resolved BEFORE a LATER crypto failure still drives classification, not the registry-supplied ev.keyFingerprint', async () => {
+      // The producer's body signature independently resolves to TRUE_FP —
+      // deliberately DIFFERENT from FP (the event's registry-supplied
+      // key_fingerprint / the receipt's own claim), simulating a registry
+      // that misreports key_fingerprint in the envelope. Crypto then fails
+      // LATE (registry receipt key resolution), so `verifyCryptographically`
+      // returns via `notRun(producerFp)` — CryptoOutcome.producerFp must
+      // still be TRUE_FP, carried forward past the failure.
+      const TRUE_FP = 'sha256:' + 'd'.repeat(64);
+      (fingerprintEd25519B64 as jest.Mock).mockReturnValue(TRUE_FP);
+      didResolver.resolveReceiptKey.mockRejectedValue(new Error('registry did.json 404'));
+      keyRevocationRepo.findByFingerprint.mockResolvedValue([
+        makeRevocationRow({ revokedKeyFingerprint: TRUE_FP }),
+      ]);
+      const verdict = await svc.auditEvent(makeEvent());
+      expect(verdict.status).toBe('error'); // the late crypto failure, unrelated to revocation
+      expect(verdict.keyRevocationStatus).toBe('revoked_time_unverifiable');
+      expect(keyRevocationRepo.findByFingerprint).toHaveBeenCalledWith(TRUE_FP, 'default');
+      expect(keyRevocationRepo.findByFingerprint).not.toHaveBeenCalledWith(FP, 'default');
+    });
   });
 });

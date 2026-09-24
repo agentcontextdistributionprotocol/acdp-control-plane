@@ -326,3 +326,395 @@
   `MODULE_NOT_FOUND` before any config is built and the action exits 1. The CLI now
   also prints a deprecation notice steering users to rspack, so the capability
   supposedly held in reserve is going away upstream regardless.
+
+## `KEY_REVOCATION_ATTESTED_SCOPE` does not gate persistence, only future consumption (Phase 12, RFC-ACDP-0014)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the plan's Phase 12 Approach step 5 literally says to "apply the §6
+  policy: run `crossCheckRegistryBinding` … and honour `KEY_REVOCATION_ATTESTED_SCOPE`"
+  as part of the persistence-gating step — read narrowly, this could mean the scope
+  value itself (`same_registry` | `global` | `off`) should decide whether a
+  `registry_attested` revocation gets written to `key_revocations` at all (e.g.
+  `off` suppressing persistence entirely).
+- **Chose:** persistence is gated **only** by the `crossCheckRegistryBinding` outcome
+  (does `publisher` match both the serving authority's did:web form and the
+  registry's advertised `capabilities.registry_did`?) — `KEY_REVOCATION_ATTESTED_SCOPE`
+  has no effect on whether a fact is written, and is deferred entirely to Phase 14's
+  consumption-time classification (`classifyUnderRevocation` / the §7 disarm check),
+  where it governs whether a *recorded* registry-attested revocation's effect is
+  applied for a producer outside the serving registry (`global`) or suppressed
+  (`same_registry`/`off`). Three things point the same way: (1) the acceptance
+  criteria are literal on this — AC6 tests a binding **failure** not persisting under
+  `same_registry`, AC7 tests a binding **pass** persisting under `global` and states a
+  binding failure is never persisted "under any scope" — neither criterion actually
+  requires scope to gate a *passing* binding check; (2) RFC-ACDP-0014 §6 frames scope
+  as governing when a revocation's effect is *applied* during consumption, not whether
+  the underlying fact is recorded as evidence — collapsing the two would mean a
+  deployment running `KEY_REVOCATION_ATTESTED_SCOPE=off` has literally no record that
+  a registry ever attested a revocation, which is worse for later forensics/incident
+  response than recording it inertly; (3) it matches this repo's existing pattern for
+  §13 cross-producer revocations (Phase 12's own Edge-cases section: record the
+  evidence regardless, apply `KEY_REVOCATION_IGNORE_FINGERPRINTS` only at
+  classification time) — scope-gating persistence would be the one place evidence
+  collection and enforcement got conflated.
+- **Alternatives:** (a) Gate persistence directly on scope (e.g. skip the write
+  entirely when `scope==='off'`) — rejected: makes `off` destroy evidence rather than
+  merely decline to act on it, and would need Phase 14 to re-derive facts it can no
+  longer see if the scope config later changes. (b) Store scope-at-verification-time
+  on the row and let Phase 14 re-filter — rejected: redundant, since
+  `KEY_REVOCATION_ATTESTED_SCOPE` is a live deployment-wide config Phase 14 reads
+  directly at classification time; snapshotting it per-row buys nothing and adds a
+  column with no reader.
+- **Blast radius if wrong:** Medium. If scope was meant to gate persistence, a
+  deployment running `same_registry` (the strictest setting) would have
+  `key_revocations` rows for registry-attested revocations Phase 14 should never have
+  acted on in the first place — but Phase 14's own classification step re-applies the
+  cross-check via the stored `publisher`/`trust_class` columns (never collapsed, per
+  §6), so an over-broad *fact* store does not by itself cause an over-broad
+  *enforcement* outcome; the exposure is a forensic-visibility one (evidence exists
+  that a stricter reading would have discarded), not a false-authorization one.
+  Reversible by adding a scope filter to the persistence step in a follow-up phase; no
+  migration required since the columns already needed to make that decision
+  (`trust_class`, `publisher`) are already stored on every row.
+- **Status:** UNCONFIRMED
+
+## Adding a manual `signature.key_id` DID-binding check for did:web revocation signers (Phase 12, RFC-ACDP-0014)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** Phase 12's Approach step 3 is silent on whether the resolved signing
+  key's DID must be checked against the revocation body's own `agent_id` — it only
+  says to resolve `signature.key_id` through `DidWebResolverService.resolveKey` and
+  verify with `verifySignatureB64`, which on its own proves the signature is valid
+  for *some* key that DID document currently authorizes, not that the key belongs to
+  the agent the body claims to be from.
+- **Chose:** added an explicit check in `revocation-audit.service.ts` that the
+  DID portion of `signature.key_id` (stripped of its `#fragment`) equals
+  `body.agent_id`, rejecting on mismatch, mirroring the Rust reference
+  implementation's signature-envelope binding step. Without it, a `did:web`
+  producer with a validly-resolvable key could sign a revocation body whose
+  `agent_id` names a *different* did:web producer, and the pipeline as spec'd would
+  still resolve+verify the signature successfully (DID resolution only depends on
+  `key_id`, never cross-checks it against `agent_id`) — a forged-attribution gap for
+  exactly the same class of "who really said this" confusion §13's stored `publisher`
+  column exists to defend against.
+- **Alternatives:** (a) Omit the check, matching the plan's literal step 3 word for
+  word — rejected: it's a real signature-forgery-adjacent gap the Rust reference
+  implementation explicitly guards against, not a stylistic omission. (b) Rely on
+  `AcdpVerifier.parseKeyRevocation`'s own checks to catch it — rejected: confirmed by
+  reading `acdp-types/src/revocation.rs` that `parseKeyRevocation` only checks
+  §4 shape and §5 step 2 (not-self-signed), never the signer-vs-agent_id binding; that
+  check exists in the Rust client reference path, not inside the parse function this
+  binding exposes.
+- **Blast radius if wrong:** Low. If this check is somehow too strict (e.g. a future
+  legitimate multi-agent delegation pattern where one did:web identity signs on
+  behalf of another), it would reject at verification time with a clear, logged
+  reason (always `status="invalid"` — this check has no transient outcome, unlike
+  the fetch/DID-resolution failures elsewhere in the pipeline) rather than silently
+  misattributing a revocation — a false negative, not a false positive, and one
+  visible immediately in `acdp_key_revocation_checks_total{status="invalid"}` plus
+  the per-event warn log. Reversible by deleting the one comparison.
+- **Status:** UNCONFIRMED
+
+## A single shared lookback window for both permanent and transient revocation-verification failures (Phase 12, RFC-ACDP-0014)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** a literal reading of Phase 12's revised Edge-cases text ("permanent
+  failures... let the event age out of the [ordinary, 24h] window... transient
+  failures... give the revocation sweep its own [720h]
+  `KEY_REVOCATION_LOOKBACK_HOURS`") describes two DIFFERENT candidate-selection
+  windows, one per failure class.
+- **Chose:** implemented one shared window — `KeyRevocationRepository.findCandidates`
+  takes a single `since` cutoff, `Date.now() - KEY_REVOCATION_LOOKBACK_HOURS` (720h),
+  applied uniformly to every not-yet-persisted candidate. Reason: nothing about a
+  failed verification is persisted anywhere (no `key_revocations` row, no marker
+  table), so a later sweep has no way to distinguish "this ctx_id was checked last
+  week and permanently rejected" from "this ctx_id was checked last week and
+  transiently failed" from "this ctx_id has never been checked" — they are the exact
+  same row in `context_events`, indistinguishable without first building the very
+  processed-marker mechanism the plan's own revision explicitly moved away from (see
+  the plan's Phase 12 Edge-cases section: "The original decision here... is revised"
+  away from a processed-marker design). Applying the wide 720h window to every
+  candidate is strictly SAFER than the two-window reading, never less safe: every
+  transient failure gets the full 30 days the plan requires, and a permanently-bad
+  revocation is merely re-verified to the same conclusion a few extra times before it
+  ages out, at the cost of wasted federation GETs and log noise — never a false
+  positive or a lost revocation.
+- **Alternatives:** (a) Build a lightweight persisted marker (a bare
+  `(tenant_id, ctx_id, verdict, checked_at)` row per outcome, success or failure) so
+  a narrower window can apply to `invalid` specifically — the literally-correct
+  reading of the revised text, but it reintroduces exactly the processed-marker
+  design the plan explicitly reconsidered and moved away from, and does so for a
+  pure efficiency win (bounded, and cheap to defer) rather than a correctness one.
+  Better done once, deliberately, in a phase that owns the sweep's candidate-query
+  shape more broadly (Phase 13 touches the sibling lineage-walk query) than added as
+  a late addition here. (b) Leave the 24h `RECEIPT_AUDIT_LOOKBACK_HOURS` governing
+  permanent failures and only widen the window for transient ones by re-querying with
+  two different cutoffs and merging — rejected as needless complexity for the same
+  reason: it requires knowing a candidate's classification BEFORE selecting it, which
+  requires the marker table alternative (a) already covers.
+- **Blast radius if wrong:** Low, and purely an efficiency one. At meaningful scale —
+  many permanently-invalid revocation events older than a legitimate newer one, all
+  within one `RECEIPT_AUDIT_BATCH_SIZE`-sized page (default 50) — the oldest-first,
+  no-marker candidate query can let known-bad events crowd out a genuinely new
+  candidate further back in the same batch for multiple sweep passes; bounded by the
+  batch size and the sweep interval, and self-correcting once the bad events age past
+  30 days. No data-integrity or security exposure either way. Reversible by adding
+  the marker table from alternative (a) without a breaking schema change (an
+  additive table, not a modification to `key_revocations`).
+- **Status:** UNCONFIRMED
+
+## ecdsa-p256 revocation signers are inconsistently, and only partially, handled (Phase 12, RFC-ACDP-0014)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** RFC-ACDP-0014's golden conformance vectors and this phase's own
+  Acceptance Criteria are Ed25519-only, so full P-256 support was out of this phase's
+  scope — but the pipeline still needed to decide what happens when a P-256 signer
+  IS encountered, rather than silently mishandling it.
+- **What is actually implemented, and why it is inconsistent.** A `did:web`
+  P-256 signer's algorithm check
+  (`revocation-audit.service.ts`, the `algorithm !== 'ed25519'` branch) fails closed
+  as `status="unavailable"` — reasoned at the time as "a capability gap, not a
+  rejection" (no SDK P-256 fingerprint helper exists for a revocation body, the same
+  gap `receipt-audit.service.ts` already documents for receipts). But a `did:key`
+  P-256 signer never reaches that branch at all: `decodeEd25519Multibase` (the ONLY
+  did:key decoder in this repo, `src/common/multibase.ts`) refuses any multicodec
+  prefix other than Ed25519's `0xed01`, so a P-256 did:key body is rejected as
+  `status="invalid"` at the multibase-decode step, well before an algorithm gets a
+  chance to be checked explicitly. The result: a `did:web` P-256 revocation is
+  retried harmlessly for 30 days and then silently lost (logged at `debug`, the
+  "we never saw it" bucket) — the wrong side of the very "we rejected it vs we never
+  saw it" distinction Phase 12's Edge-cases section says operators need — while a
+  `did:key` P-256 revocation is actively, permanently REJECTED as though it failed
+  verification, which is also wrong: a validly-signed P-256 revocation is real
+  evidence of a compromise, not an invalid body.
+- **Chose:** leave both paths as implemented rather than block Phase 12 on full P-256
+  support (a materially bigger change: a P-256 multibase multicodec, a P-256
+  fingerprint helper matching `fingerprintEd25519B64`'s shape, and a did:web P-256
+  resolution+verification path) — but log the gap honestly here instead of letting
+  the code comment's "capability gap, not a rejection... logged to ASSUMPTIONS.md"
+  claim be false, which it was until this entry was added during the Phase 12
+  verification-gate gap closure.
+- **Alternatives:** (a) Add full P-256 revocation support now — rejected as scope
+  creep beyond what Phase 12's Acceptance Criteria or the golden conformance vector
+  require; ecdsa-p256 producers are a minority path across this whole codebase
+  (receipt audit has the identical unresolved gap). (b) Make BOTH paths fail the same
+  way (`unavailable`, treating a P-256 did:key body identically to a P-256 did:web
+  one) by teaching `decodeEd25519Multibase`'s caller to recognise a P-256 multicodec
+  prefix specifically and short-circuit to `unavailable` before the generic
+  "unsupported key algorithm" rejection — the more consistent fix, and cheap (one
+  early multicodec-prefix check), but still leaves P-256 revocations fully
+  unverifiable either way, so deferred alongside (a) rather than half-fixed here.
+- **Blast radius if wrong:** Medium for a P-256-only deployment specifically. A
+  did:key-based P-256 producer's genuine revocation is misreported as `invalid`
+  (wrong reason, but the practical effect — the revocation does not get acted on
+  automatically — is arguably still the safer failure than silently losing it) while
+  a did:web-based P-256 producer's genuine revocation is silently lost after 30 days
+  with only a debug-level log line (the more dangerous of the two, since nothing
+  operator-visible fires when a real compromise signal ages out unacted-on). No
+  exposure for the (currently exclusively Ed25519) golden conformance path or any
+  did:key/did:web Ed25519 producer. Reversible/fixable by either alternative above,
+  neither of which touches `key_revocations`' schema.
+- **Status:** UNCONFIRMED
+
+## Lineage cursor TTL hardcoded rather than config-exposed (Phase 13)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the lineage-walk cursor freshness window is a re-walk-cadence tuning
+  knob, not a correctness-affecting value — the "zero facts forces a walk" rule
+  (Phase 12's migration 0022 comment, transcribed into Phase 13) already guarantees
+  a stale-or-absent cursor is never trusted when it matters, so the TTL only governs
+  how often an already-fully-walked, already-fact-bearing lineage gets re-walked for
+  no new information.
+- **Chose:** a hardcoded `LINEAGE_CURSOR_TTL_MS = 60 * 60 * 1000` (1 hour) constant
+  in `src/audit/revocation-audit.service.ts`, matching `DidWebResolverService`'s own
+  default DID-document cache duration (re-walking more often than the DID resolver's
+  own cache refreshes buys nothing — the resolution cost dominates). Phase 13's
+  `Files` list does not include `app-config.service.ts`, so adding a new env var was
+  out of scope for this phase specifically.
+- **Alternatives:** Expose it as `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS` via
+  `AppConfigService`, mirroring `KEY_REVOCATION_LOOKBACK_HOURS` — rejected only for
+  scope reasons (not in this phase's `Files`), not because it's the wrong shape long
+  term; a future phase or a follow-up can promote it without changing any behavior.
+- **Blast radius if wrong:** Low. Too long a TTL delays re-discovery of a lineage
+  member that appeared *after* a prior full walk (e.g., a newly published superseding
+  revocation) until the next sweep past the TTL boundary — a availability/latency
+  concern, not a correctness one, since the per-event verification path (this
+  revocation's own fact) is unaffected and still records immediately. Too short a TTL
+  just re-walks more often, costing extra federation/DID calls. Trivially adjustable
+  by editing the one constant; no schema or data migration involved either way.
+- **Status:** UNCONFIRMED
+
+## A separate metric for §7 classification, not a reuse of Phase 12's (Phase 14)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the plan's prose ("Metric: `acdp_key_revocation_checks_total{status,
+  trust_class}` (created in Phase 12) is incremented here on every classification")
+  was a suggestion of convenience, not a hard requirement — its own §7 spec is
+  explicit that this phase's classification is "a separate VERIFICATION VERDICT,"
+  so its metric should be separably queryable too.
+- **Chose:** a NEW counter, `acdp_receipt_audit_key_revocation_total{status}`
+  (`InstrumentationService`), incremented in `ReceiptAuditService.sweep()` gated on
+  `KEY_REVOCATION_CHECK_ENABLED`. Phase 12's `acdp_key_revocation_checks_total`'s
+  `status` label (`verified`/`invalid`/`unavailable`) describes whether a
+  `key-revocation` CONTEXT itself verified — a totally different question from this
+  phase's `status` (`none`/`pre_compromise`/`revoked_at_or_after`/
+  `revoked_time_unverifiable`), which describes a boundary classification. Reusing
+  one label name for both would silently conflate two axes an operator's alert rule
+  or dashboard panel needs to tell apart.
+- **Alternatives:** Reuse `acdp_key_revocation_checks_total` with an added label
+  dimension — rejected: adding a `stage` label to disambiguate two unrelated status
+  vocabularies under one metric name is more confusing than two clearly-named
+  metrics, and Prometheus best practice discourages heterogeneous label domains on
+  one metric family.
+- **Blast radius if wrong:** Low. A metric name is trivially renamed/aliased in a
+  recording rule without touching application code or requiring a migration; no
+  data-correctness impact either way, only an observability-ergonomics one.
+- **Status:** UNCONFIRMED
+
+## Trust-class tie-break on a shared compromise boundary (Phase 14)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the plan does not address what happens when two revocation rows over
+  the same signer fingerprint — one `producer_signed`, one `registry_attested` —
+  land on the EXACT same effective boundary instant (an edge case: normally the
+  earliest-`compromised_since` fold picks a unique winner). RFC-ACDP-0014 §6 forbids
+  collapsing the two trust classes into one value, but says nothing about which to
+  REPORT when they're tied on timestamp.
+- **Chose:** prefer `producer_signed` — the stronger of the two classes — as the
+  single `key_revocation_trust_class` reported for a tied boundary
+  (`classifyKeyRevocation`'s `winners.find(r => r.trustClass === 'producer_signed')
+  ?? winners[0]`). A defensible tie-break (never silently downgrades a genuine
+  producer-signed revocation to registry-attested), not a collapse of the two —
+  `key_revocation_sources` still lists every row that fed the classification
+  regardless of which one's class is reported.
+- **Alternatives:** Report both trust classes as an array when tied — rejected as
+  disproportionate complexity for an edge case the SDK's own single-`boundary`
+  return value doesn't distinguish either, and `key_revocation_sources` already
+  carries the full provenance for an operator who needs to know both existed.
+- **Blast radius if wrong:** Low. Affects only the reported `trust_class` label on
+  the rare tied-boundary case — the `key_revocation_status` (the actionable
+  fail-closed/pre-compromise verdict) and `compromise_boundary` are unaffected
+  either way, and every contributing revocation stays visible via `sources`.
+- **Status:** UNCONFIRMED
+
+## Phase 15 re-audit scope: continuous re-tightening on a strictly earlier boundary (superseded the original "first amendment only" design)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the original Phase 15 implementation scoped re-audit to a row's FIRST
+  amendment only (`amendKeyRevocation`'s WHERE matched solely on
+  `key_revocation_status = 'none'`), reasoning that the plan's "not a cursor"
+  instruction meant eligibility-as-cursor should be the ONLY selection mechanism.
+  The gate verifier (round 1) correctly flagged this as under-argued against the
+  plan's edge case #2 text ("two revocations with different T for the same
+  fingerprint — must recompute the min() fold from the full fact set each time")
+  and identified a genuine fail-open scenario: a row already amended by a FIRST
+  revocation could never be re-tightened by a SECOND, earlier-dated revocation for
+  the same fingerprint discovered later.
+- **Chose:** widened BOTH SQL predicates to a two-branch OR, still with no cursor
+  table: (1) `amendKeyRevocation`'s WHERE now matches `key_revocation_status =
+  'none'` OR `compromise_boundary > amendment.boundary` (a row is updatable on its
+  first amendment, or whenever the new boundary is strictly earlier/more severe
+  than what's currently stored) — this is the exact, final, per-row monotonicity
+  guard. (2) `findRevocationAmendmentCandidates`'s WHERE gained a symmetric
+  `globalMinBoundaryIso` parameter — `key_revocation_status = 'none'` OR
+  `compromise_boundary > globalMinBoundaryIso`, where the caller computes
+  `globalMinBoundaryIso` as `min(compromisedSince)` across the FULL current fact
+  set for the fingerprint, deliberately ignoring per-row registry scope as a
+  safe, over-inclusive selection trigger — the real, scope-filtered tightening
+  decision is still made per row (`filterApplicableRevocations`) and enforced
+  again, exactly, by (1). Eligibility is still the only cursor: an amended row
+  simply stays a candidate as long as a strictly-tighter boundary exists for it.
+  `ORDER BY receiptAudits.eventId` was also dropped from the candidate query — see
+  the "steady-state fan-out query" entry below for why, found by the same
+  verification round via `EXPLAIN (ANALYZE, BUFFERS)`.
+- **Residual scope, still accepted:** `filterApplicableRevocations`'s per-row
+  `KEY_REVOCATION_ATTESTED_SCOPE` filter is applied identically before and after
+  this fix — a row whose registry authority makes a stricter registry-attested
+  revocation inapplicable under `same_registry` scope will correctly continue to
+  report its current (less severe) boundary rather than the global minimum. This
+  is policy-correct (§6: attested-scope governs consumption, not evidence), not a
+  gap introduced by this fix.
+- **Alternatives:** (1) Re-scan every already-amended row on every sweep
+  unconditionally — rejected: unbounded, ever-growing re-work with no natural
+  termination as revocation history accumulates. (2) A persisted per-(tenant,
+  fingerprint) "last-seen boundary" watermark table — rejected as strictly more
+  machinery (a new table, another idempotency argument to prove) for what the
+  chosen two-predicate-OR design already achieves with the existing columns and
+  no new state.
+- **Blast radius if wrong:** Low. The only way the fix under-tightens is the
+  documented, policy-intentional registry-scope interaction above; both branches
+  of the wider `WHERE` clauses are pinned by unit tests (`receipt-audit.service.spec.ts`),
+  a direct repository-level integration test (loosening rejected / tightening
+  accepted / idempotent at final state), and an end-to-end two-sweep integration
+  test through the real `RevocationAuditService.sweep()`.
+- **Status:** RESOLVED
+
+## Steady-state fan-out query cost without `ORDER BY` (Phase 15)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** an `ORDER BY receiptAudits.eventId` on `findRevocationAmendmentCandidates`
+  was harmless — needed only for a stable, if arbitrary, row order.
+- **Chose:** dropped it, after the gate verifier ran `EXPLAIN (ANALYZE, BUFFERS)`
+  against 200k seeded rows and found the sort forced a Merge Join across the full
+  tenant/fingerprint row set even in the steady state (every candidate row already
+  amended, zero rows returned) — ~190ms and ~505k buffer hits, every sweep pass,
+  forever, for any high-volume revoked fingerprint. Without the forced sort the
+  planner can drive off `ce_key_fingerprint_idx` (context_events) and probe
+  `receipt_audits` by its `event_id` primary key instead; a new partial index,
+  `ra_key_revocation_none_idx` on `receipt_audits (tenant_id, event_id) WHERE
+  key_revocation_status = 'none'`, keeps the common "no revocation yet, or fully
+  amended" case an index lookup rather than a scan (migration 0024).
+- **Alternatives:** keep the `ORDER BY` and accept the cost — rejected once
+  measured: a permanent per-sweep tax with no correctness benefit, since candidate
+  selection is self-advancing by eligibility regardless of row order.
+- **Blast radius if wrong:** Low. Purely a performance property; if the planner's
+  behavior differs on some future Postgres version, the fallback is to reintroduce
+  a bounded `ORDER BY` (e.g. on a covering index) — no correctness contract
+  depends on any particular row order here.
+- **Status:** RESOLVED
+
+## Candidate selection keys on the registry-claimed `key_fingerprint`, with no backfilled resolved-signer column (Phase 15)
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** `findRevocationAmendmentCandidates` joining on
+  `context_events.key_fingerprint` (the REGISTRY-CLAIMED fingerprint at publish
+  time) rather than the independently-resolved signer the §7 verdict itself is
+  keyed on was a safe simplification, since a claim/resolved mismatch is already
+  flagged separately as `key_fingerprint_mismatch`.
+- **Chose:** to keep it that way rather than fix it this phase. The gate verifier
+  correctly noted the claim can only ever ADD an extra, harmless candidate — never
+  drop a real one that populated the column — but that an event whose
+  `key_fingerprint` was never populated at all (most historical, pre-ACDP-0.2.0
+  rows, or a registry that never advertised the field) IS permanently unreachable
+  by this fan-out no matter how the revocation fact set changes later. Closing
+  this fully would need a real schema change — a backfilled, independently-
+  resolved-signer column on `receipt_audits` or `context_events` — out of scope
+  for a re-audit phase whose contract is "amend the 4 revocation columns only."
+  Since this is the LAST phase of the plan, there is no later phase to defer the
+  fix to; it is recorded here and in `docs/ARCHITECTURE.md`/`CLAUDE.md` as a
+  permanent, accepted limitation instead.
+- **Alternatives:** backfill a resolved-signer column now — rejected as a real
+  schema/migration change well beyond this phase's scope, for a limitation that
+  only affects PRE-0.2.0 historical data (every event since ACDP 0.2.0 populates
+  `key_fingerprint`).
+- **Blast radius if wrong:** Low-medium, and shrinking over time. Affects only
+  publishes from before a registry adopted ACDP 0.2.0 receipts, or from a
+  registry that never advertises `key_fingerprint` — a fixed, non-growing
+  population as newer traffic always populates the column.
+- **Status:** UNCONFIRMED
+
+## Reusing RECEIPT_AUDIT_BATCH_SIZE as the Phase 15 fan-out cap
+- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Assumed:** the plan's edge case #1/#5 ("bound the fan-out per sweep — reuse
+  RECEIPT_AUDIT_BATCH_SIZE or add a dedicated cap") explicitly offers reuse as the
+  first option, and revocations are rare by construction (repeated throughout
+  Phases 11-14's own headers) — a dedicated `KEY_REVOCATION_REAUDIT_BATCH_SIZE`
+  knob would be one more env var to document and reason about for a fan-out that,
+  in the overwhelming common case, has fewer candidate rows than even a modest
+  batch size.
+- **Chose:** `ReceiptAuditService.reauditForFingerprint` passes
+  `this.config.receiptAuditBatchSize` (the existing knob) as the candidate limit.
+  The two workloads (auditing brand-new publishes vs. amending old verdicts) never
+  compete for it in the same query, so sharing the number carries no scheduling
+  risk — it is purely "how many rows does one fan-out step touch," reused rather
+  than duplicated.
+- **Alternatives:** A dedicated `KEY_REVOCATION_REAUDIT_BATCH_SIZE` env var —
+  rejected for now as unjustified surface area; can be added later (additive,
+  non-breaking) if operators ever need the two batch sizes to diverge (e.g. a
+  deployment with a very hot receipt-audit sweep but a rare, large revocation
+  fan-out that should be capped much lower).
+- **Blast radius if wrong:** Low. Purely a throughput/latency knob — worst case,
+  a very large fingerprint's fan-out converges over more (or fewer) sweep passes
+  than would be ideal; no correctness impact, and adding a dedicated env var later
+  is a pure addition, not a breaking change.
+- **Status:** UNCONFIRMED

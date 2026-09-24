@@ -2332,3 +2332,555 @@ PR2, then start PR3 (Phases 10-15, RFC-ACDP-0014 producer key-revocation, branch
 - Next: Phase 10 (RFC-ACDP-0014 producer key-revocation, PR3, branch
   `rfc-0014/pr3-key-revocation`, cut fresh from updated `main`; depends on PR1 only,
   already merged — does not depend on PR2).
+
+## Phase 10 — Accept `key-revocation` on ingest (RFC-ACDP-0014 prerequisite)
+
+- 2026-09-23. Verdict: **PASS**, round 1. Verifier tier: fresh Opus (not Fable) — a
+  Set-union addition and an early-accept check on an already-gated allowlist, no
+  schema/migration, no public-contract ambiguity left open at implementation time.
+- Fix: `src/ingest/ingest.service.ts`'s `ACDP_BASE_TYPES` (the domain-pack gate's
+  always-accepted allowlist) now spreads in the two RFC-ACDP-0014 key-revocation
+  spellings (`key-revocation`, `acdp:key-revocation`) from a new shared module
+  `src/contracts/revocation.ts` (`REVOCATION_CONTEXT_TYPES`, `isRevocationContextType`)
+  rather than duplicating them inline — later revocation phases (12-15) will import the
+  same predicate for their discovery query, lineage fold, and §7 disarm check, so a
+  second drifting copy would be a correctness bug waiting to happen. Without this fix,
+  any deployment with `DOMAIN_PACKS` configured silently and PERMANENTLY dropped every
+  revocation webhook (the registry's webhook worker never retries a 4xx delivery) — a
+  severe, invisible bug that predates this plan.
+- Verified both directions matter: `isRevocationContextType` is exact-match only (no
+  case-folding) — `Key-Revocation`, `KEY-REVOCATION`, and the near-miss
+  `acdp:key_revocation` all correctly stay rejected.
+- Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 138 files (+1 new file) · unit 74 suites/957 passed/3
+  skipped/960 total (+10 new) · integration 30 suites/196 passed (+2 new).
+  Both me and the verifier independently ran the full suite and got identical counts.
+- Files touched: `src/contracts/revocation.ts` (new), `src/contracts/revocation.spec.ts`
+  (new), `src/ingest/ingest.service.ts`, `src/ingest/ingest.service.spec.ts`,
+  `test/integration/domain-packs.integration.spec.ts`, `docs/INGEST.md`, `CLAUDE.md`,
+  `plans/rfc-0014-0015-upgrade.md` (Phase 10 → DONE, no divergence). No `ASSUMPTIONS.md`
+  entries.
+Next: Phase 11 (revocation configuration, registry-profile widening, the §6 binding
+check — no behaviour change yet, config surface only).
+
+## Phase 11 — Revocation configuration, registry-profile widening, and the §6 binding check
+
+- 2026-09-23. Verdict: **PASS**, round 1. Verifier tier: fresh Opus (not Fable) — a
+  config surface plus two pure, no-I/O functions; no public contract, no schema, no
+  migration in this phase.
+- Delivers (no behaviour change yet — the sweep consuming these lands in Phase 12+):
+  - `AppConfigService`: four new knobs — `KEY_REVOCATION_CHECK_ENABLED` (bool, requires
+    `RECEIPT_AUDIT_ENABLED=true`, enforced via a `throw` in the production-only section
+    of `validate()`, positioned after `if (this.isDevelopment) return;` and mirroring
+    the `witnessCosigningEnabled` block's placement/style exactly), `KEY_REVOCATION_
+    ATTESTED_SCOPE` (`same_registry`|`global`|`off`, default `same_registry`, validated
+    against exactly those three strings), `KEY_REVOCATION_IGNORE_FINGERPRINTS` (string
+    list, the §13 operator override), `KEY_REVOCATION_LOOKBACK_HOURS` (default `720` =
+    30 days — deliberately not `RECEIPT_AUDIT_LOOKBACK_HOURS`'s 24h, since a registry
+    outage must not silently and permanently lose a revocation; enforced `>= 1`).
+  - `RegistryProfileService` widened: `ProfileCacheEntry` now also carries `registryDid`
+    and `acdpVersion` (both `string | null`, tri-stated together), extracted from the
+    SAME cached `/.well-known/acdp.json` probe as the existing `advertisesX` checks — no
+    additional HTTP request. New public `registryCapabilities(authority, tenantId)`.
+  - New `src/audit/revocation-binding.ts`: `crossCheckRegistryBinding` — a direct
+    transliteration of the SDK's `KeyRevocation::cross_check_registry_binding`
+    (`acdp-rs/crates/acdp-types/src/revocation.rs:384-405`), not exposed to Node. Two
+    comparisons, each naming which failed: `publisher === authorityToDidWeb
+    (servingAuthority)` (reusing Phase 3's `%3A`-encoding helper, not a naive template)
+    and `publisher === capabilitiesRegistryDid`.
+- Gates (mine, then independently re-run by the verifier — identical counts both times):
+  `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 · `check:build`
+  both builds 139 files · unit 75 suites/975 passed/3 skipped/978 total (+18 new,
+  960→978) · integration 30 suites/196 passed (unchanged — this phase adds no
+  integration surface).
+- All 6 acceptance criteria verified individually by the verifier: the four knobs and
+  their exact readers/validators; the two `validate()` throws (naming both variables /
+  all three valid values); `registryCapabilities`'s zero-extra-HTTP-request guarantee
+  (asserted at 1 call across 3 consecutive queries — stronger than the plan's required
+  2); `crossCheckRegistryBinding`'s exact example call plus both failure directions
+  including the port-bearing `%3A` case; the `npm test` delta matching exactly (+18, no
+  other tests changed).
+- Verifier's 3 non-blocking notes, addressed/deferred:
+  - A misleading test title in `registry-profile.service.spec.ts` (said "both fields as
+    null", asserted only one) — fixed same commit.
+  - `keyRevocationAttestedScope`'s `as` cast is unchecked at field-init (consistent with
+    this file's `streamHubStrategy`-style deferred validation, not the `policyBackend`/
+    `jwtSigningAlg`-style eager IIFE validation) and a literal empty string doesn't fall
+    back to the default (`??` only catches `undefined`) — both fail closed via the
+    production `validate()` throw, so left as-is; noted for whoever writes Phase 12's
+    `switch` over this value.
+  - `registryCapabilities` returning `{null, null}` is ambiguous between "document
+    unreadable" and "readable but both fields individually malformed" — callers needing
+    to disambiguate should also consult the `profiles` tri-state. Both fail closed under
+    §6 either way; flagged for Phase 12, not fixed here (no behaviour to fix yet).
+- Files touched: `src/config/app-config.service.ts`, `src/config/app-config.service.spec.ts`,
+  `src/audit/registry-profile.service.ts`, `src/audit/registry-profile.service.spec.ts`,
+  `src/audit/revocation-binding.ts` (new), `src/audit/revocation-binding.spec.ts` (new),
+  `docs/CONFIGURATION.md`, `.env.example`, `plans/rfc-0014-0015-upgrade.md` (Phase 11 →
+  DONE, no divergence). No `ASSUMPTIONS.md` entries.
+
+## Phase 12 — Verified revocation facts: schema, repositories, and the verification sweep
+
+- 2026-09-23. Verdict: **PASS after 2 verify rounds**, both fresh Opus (not Fable — a
+  background sweep + two-table schema on a private surface, no public contract, no
+  auth model, no irreversible migration).
+- Delivers: `RevocationAuditService` (config-gated on `KEY_REVOCATION_CHECK_ENABLED`,
+  which itself requires `RECEIPT_AUDIT_ENABLED=true`) — discovers `key-revocation` /
+  `acdp:key-revocation` context events by `context_type` alone, fetches the body
+  through the SSRF-gated federation client, and runs the full RFC-ACDP-0014 §4/§5/§6
+  pipeline: ctx_id binding → content-hash recomputation → signature verification
+  (did:key offline; did:web via `DidWebResolverService.resolveKey`'s strict
+  `assertionMethod` gate, plus a manual signer-vs-`agent_id` DID check) →
+  `parseKeyRevocation` (§4 shape + §5 step-2 not-self-signed) → `crossCheckRegistryBinding`
+  (§6, `registry_attested` only) → persist to `key_revocations` (retention-exempt,
+  `onConflictDoNothing` on `(tenant_id, ctx_id)`). New migration `0022` (both
+  `key_revocations` and `key_revocation_lineage_cursors`, the latter for Phase 13).
+  New `src/audit/revocation-verify.ts` wrapping `AcdpVerifier.parseKeyRevocation` with
+  a non-optional `signerFingerprint` (closes the SDK's optional-argument trap for
+  did:web signers). Metric `acdp_key_revocation_checks_total{status, trust_class}`.
+- Round 1 verdict: **GAPS** (1 blocking, 8 non-blocking). Blocking: the file header and
+  `CLAUDE.md` claimed permanent failures "age out of the ordinary [24h] lookback" while
+  transient failures get the wider 720h `KEY_REVOCATION_LOOKBACK_HOURS` — a genuine
+  two-window split the code never actually implements (there is exactly one shared
+  720h window, since nothing about a failed verification is persisted anywhere and a
+  narrower window for "known-bad" candidates would require the very processed-marker
+  mechanism the plan's own revision moved away from). Non-blocking: an `unverifiable`
+  ctx_id-binding outcome was silently let through instead of failing closed (diverging
+  from `contexts.controller.ts`'s established polarity); `trust_class` was mapped with
+  a fail-open ternary that would silently skip the §6 binding check on SDK drift;
+  ecdsa-p256 signers handled inconsistently between did:web (`unavailable` forever) and
+  did:key (wrongly `invalid`) with a code comment falsely claiming an `ASSUMPTIONS.md`
+  entry that didn't exist; Phase 11's carried-forward `registryCapabilities` ambiguity
+  note was dropped silently instead of carried forward again; a wrong function-name
+  header comment; an imprecise `ASSUMPTIONS.md` line; a witness-specific error message
+  reused on a non-witness path; plus two purely-informational scale/observability notes
+  (head-of-line starvation risk, no signal when an `unavailable` fact ages out).
+- Gaps closed: reworded `CLAUDE.md` and the header doc-comment to accurately describe
+  the single shared window; corrected divergence note #5 (was wrongly "not a
+  divergence") and added notes #7 (the single-window reality + bounded cost) and #8
+  (carrying Phase 11's `registryCapabilities` note forward); fixed the ctx_id-binding
+  fail-open bug (`!binding.ok` now blocks on either kind, never claiming "substitution"
+  for an unproven `unverifiable`) with its test rewritten to assert the new behaviour;
+  fixed the `trust_class` fail-open ternary to return a parse failure on anything but
+  the two real values (defensive against SDK drift — the branch has no dedicated
+  runtime test since the native `AcdpVerifier.parseKeyRevocation` static is
+  non-configurable/non-writable/non-enumerable, confirmed empirically, making a
+  monkey-patch test infeasible without a heavier `jest.mock` restructuring judged not
+  worth it for this file's "real SDK" testing style); added two new `ASSUMPTIONS.md`
+  entries ("A single shared lookback window for both permanent and transient
+  revocation-verification failures", "ecdsa-p256 revocation signers are inconsistently,
+  and only partially, handled" — this one also makes the code comment's claim true);
+  fixed the header's wrong function names; fixed the imprecise `ASSUMPTIONS.md` line;
+  genericized `multibase.ts`'s error message + its spec; added an `originAuthority`
+  clarifying comment for Phase 14. Left undone by design (non-blocking, no code
+  change): head-of-line starvation at scale and the no-signal-on-aging-out
+  observation, both folded into the single-shared-window `ASSUMPTIONS.md` entry's text
+  rather than given their own entries.
+- Round 2 verdict: **GAPS** (0 blocking, 2 non-blocking, both trivial one-line doc
+  edits): a residual stale "transient-failure retry window" phrase in `CLAUDE.md`'s
+  env-var list that could be misread as implying the two-window split the authoritative
+  bullet 45 lines above had already corrected; and the plan's divergence notes never
+  recorded that the ctx_id-binding check itself (pipeline step "1.5") is an addition
+  beyond the Approach's six listed steps, unlike the analogous signer-binding addition
+  which note #3 does record. The ctx_id-binding omission is the same underlying gap
+  flagged (less specifically) in round 1's item 3 — by the /implement round-cap rule
+  this counts as surviving 2 consecutive rounds. Per that rule ("stop and report
+  instead of continuing to loop"), no round 3 was spawned; both items were unambiguous,
+  zero-risk, one-line documentation fixes, so they were closed directly (CLAUDE.md
+  reworded; a new divergence note #3b added, explicitly distinguishing itself from
+  note #3 — this check was never optional, so omitting it would have been the actual
+  divergence) rather than re-verified by a third agent. No code changed in this step.
+- Gates (mine, then independently re-run by both verifier rounds — identical counts
+  each time): `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 142 files · unit 77 suites/1025 passed/4 skipped/1029 total
+  (+47 new, 978→1025 — the 4 skips are pre-existing and unrelated) · integration 31
+  suites/202 passed (+6 new, 196→202) — re-run on a genuinely fresh standalone
+  Postgres container (port 5435; 5433/5434 stay untouched, both occupied by unrelated
+  foreign containers) after every round to rule out container-reuse artifacts, per the
+  flake this phase investigated and ruled out mid-implementation. Conformance
+  cross-check (`rev-001-revocation-context-golden.json`) run with `ACDP_SPEC_DIR`
+  pointed at the sibling spec checkout — 15 passed/1 correctly-skipped (the
+  pre-revocation-SDK guard block).
+- Files touched: `drizzle/0022_key_revocations.sql` (new), `src/db/schema.ts`,
+  `src/storage/key-revocation.repository.ts` (new), `src/audit/revocation-verify.ts`
+  (new), `src/audit/revocation-verify.spec.ts` (new), `src/audit/revocation-audit.service.ts`
+  (new), `src/audit/revocation-audit.service.spec.ts` (new),
+  `test/integration/revocation.integration.spec.ts` (new), `src/app.module.ts`,
+  `src/telemetry/instrumentation.service.ts`, `src/common/multibase.ts`,
+  `src/common/multibase.spec.ts`, `CLAUDE.md` (local, gitignored — Producer
+  key-revocation verification bullet + env-var entries), `docs/ARCHITECTURE.md`
+  (audit-services table row + background-services bullet + RFC-ACDP-0014 references),
+  `plans/rfc-0014-0015-upgrade.md` (local, gitignored — Phase 12 → DONE, 9 divergence
+  notes), `ASSUMPTIONS.md` (4 new entries, all `UNCONFIRMED`).
+Next: Phase 13 (RFC-ACDP-0014 §7 lineage-fold consumption logic — the shared
+`classifyLineageFailure` this phase's local classifiers are temporary stand-ins for,
+and the `key_revocation_lineage_cursors` table this phase's migration already added;
+depends on Phase 12).
+
+## Phase 13 — 2026-09-23 — PASS (round 1, fresh Opus verifier)
+
+- **Delivers:** the §7 lineage fold. New `src/audit/revocation-lineage.ts` exports
+  `classifyLineageFailure` (a named, exported, exhaustively-tested transient/
+  permanent/hard classifier over `FederationFetchError`, `DidResolutionError`, and
+  raw HTTP status, replacing three now-deleted local classifiers in
+  `revocation-audit.service.ts`) and `walkRevocationLineage` (fetches
+  `GET /lineages/{lineage_id}` — never `/current` — and folds it per RFC-ACDP-0014 §7:
+  empty response fails closed, a non-empty response missing the naming `ctx_id` fails
+  closed pre-verification, a permanently-failing member is dropped with a warning
+  while the rest still fold, a transiently-failing member aborts the whole walk).
+  `revocation-audit.service.ts`'s `sweep()` now queues distinct lineages needing a
+  walk (zero known facts, OR a missing/stale cursor — checked via the new
+  `KeyRevocationRepository.countByLineage`/`findFreshLineageCursor`), enforces
+  `MAX_LINEAGE_WALKS = 100` as a hard all-or-nothing cap per pass, and persists each
+  fully-successful walk's members plus a cursor row via the new
+  `recordLineageWalk`/`deleteLineageCursor` repository methods — a cursor is written
+  ONLY on full success, every failure kind leaves it unset.
+- Verdict: **PASS**, round 1. Verifier: fresh Opus general-purpose subagent (not
+  Fable — this phase is consequential but not a one-way-door/trust-boundary change
+  per the Autonomy ladder). It independently re-ran `tsc` (both configs), lint,
+  `check:conventions`, the full unit suite, both new/touched spec files, the
+  conformance-gated tests (`ACDP_SPEC_DIR` set, 4/4 not skipped), and the integration
+  suite against its own disposable Postgres (port 5436) — all green, matching my own
+  run. It also independently verified the single most safety-critical claim of this
+  phase — that `priorFactCount` (the "zero facts forces a walk" check) is computed
+  BEFORE `record()` persists the current event's own fact, not after — by reading the
+  exact line order in `sweep()` itself, not trusting the surrounding comment. And it
+  cross-checked the AC10 reinterpretation (lineage-fetch status, not a nonexistent
+  per-member fetch) directly against the sibling `acdp-rs`
+  (`acdp-client/src/{revocation.rs,registry.rs}`) and `acdp-registry-rs`
+  (`acdp-registry-core/src/handlers/context.rs`) checkouts — confirmed there is
+  genuinely no per-member fetch anywhere in the reference architecture, not merely
+  internally consistent with this repo's own code.
+- Gap summary (round 1, all non-blocking — verdict was PASS with nits, not GAPS):
+  (a) the AC4 transient-abort test asserted the walk's outcome but not that the
+  second member's `verify` callback was never reached — **closed** by adding
+  `expect(verify).toHaveBeenCalledTimes(1)` plus asserting the one call was for
+  `ctx-1`; (b) `KeyRevocationRepository.countByLineage` fetched all matching rows
+  into memory to return `.length` rather than a SQL `count(*)` — **closed**, now a
+  single aggregate query (`sql<number>\`count(*)::int\``); (c) `findFreshLineageCursor`'s
+  doc comment claimed it returns `null` when it actually returns `boolean` — **closed**,
+  comment corrected; (d) no new Prometheus metric for `MAX_LINEAGE_WALKS`
+  exceedance — left as-is, already named and justified in this phase's own plan
+  divergence notes (scope: `instrumentation.service.ts` not in Phase 13's `Files`).
+  All three closed nits were re-verified locally (full unit suite, the two
+  touched/new spec files individually, and a full integration re-run against a fresh
+  disposable Postgres) — all still green after the fixes; no second verifier round
+  was needed since the original verdict was already PASS.
+- Gates (final, post-nit-fix state): `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit`
+  (both tsconfigs) 0 · `check:build` both builds 143 files, agree · unit 78 suites/1071
+  passed/4 skipped (pre-existing, unrelated)/1075 total · integration 31 suites/204
+  passed, run twice against fresh disposable Postgres containers (port 5435, torn down
+  after each run; 5433/5434 untouched, occupied by unrelated foreign containers) — once
+  before the nit fixes, once after, identical counts both times. Conformance
+  cross-check (`rev-002-before-after-boundary.json` scenarios E–H) run with
+  `ACDP_SPEC_DIR` pointed at the sibling spec checkout, all 4 passed (not skipped).
+- Files touched: `src/audit/revocation-lineage.ts` (new), `src/audit/revocation-lineage.spec.ts`
+  (new), `src/audit/revocation-audit.service.ts`, `src/audit/revocation-audit.service.spec.ts`,
+  `src/storage/key-revocation.repository.ts`, `test/integration/revocation.integration.spec.ts`,
+  `docs/ARCHITECTURE.md` (new "The §7 lineage walk" paragraph + sweeps-table row),
+  `plans/rfc-0014-0015-upgrade.md` (local, gitignored — Phase 13 → DONE, 5 divergence
+  notes), `ASSUMPTIONS.md` (1 new entry, `LINEAGE_CURSOR_TTL_MS`, `UNCONFIRMED`).
+Next: Phase 14 (§7 consumer semantics in the receipt-audit pipeline — depends on
+Phase 2, Phase 12, Phase 13, all now complete).
+
+### Phase 14 — §7 consumer semantics in the receipt-audit pipeline
+- Delivers: every receipt-audited event is classified against RFC-ACDP-0014 §7's
+  compromise-boundary rule using the revocations Phase 12/13 verified, via
+  `AcdpVerifier.classifyUnderRevocation` — `pre_compromise` / `revoked_at_or_after` /
+  `revoked_time_unverifiable` / `none`, landing in 4 new `receipt_audits` columns
+  (migration 0023) and surfacing on `trust.revoked`
+  (`GET /runs/:runId`) and a new dashboard `keyRevocation` tile.
+  `KEY_REVOCATION_ATTESTED_SCOPE` / `KEY_REVOCATION_IGNORE_FINGERPRINTS` (declared
+  since Phase 11, never consumed before this phase) are enforced here, at
+  classification time.
+- Verdict: **GAPS → PASS**, 2 rounds. Verifier: fresh Opus general-purpose subagent
+  both rounds (not Fable — consequential but not a one-way-door/trust-boundary
+  change per the Autonomy ladder). Round 1 verdict was GAPS (3 substantive, 3
+  minor) despite confirming all 11 ACs met and the two subtlest design points
+  (the `boundary`-presence disambiguation, and the Postgres-round-trip
+  normalization fix) correct — every gap was a missing guard or missing test
+  around otherwise-correct logic, not a wrong answer. Round 2, resumed with the
+  full gap-closure summary rather than re-spawned cold, independently RE-APPLIED
+  its own round-1 mutations (`producerFp ?? ev.keyFingerprint ?? null` →
+  `producerFp ?? null`; `normalized.filter` → `revocations.filter`) against the
+  fixed code and confirmed the new tests actually catch them (not just that
+  tests with matching names exist), then verdict **PASS**.
+- Gap summary (round 1, closed before round 2):
+  (1) **substantive** — `onModuleInit` silently fails open to `key_revocation_status
+  'none'` on every event when `KEY_REVOCATION_CHECK_ENABLED=true` but the installed
+  SDK lacks `classifyUnderRevocation` (mis-resolved native optionalDependency), with
+  no boot warning — unlike the two directly analogous cases
+  (`sdkSupportsReceipts()`, and Phase 12's `RevocationAuditService.onModuleInit`) —
+  **closed**, added a matching warning.
+  (2) **substantive** — the AC5 `producerFp ?? ev.keyFingerprint` fallback (the
+  entire mechanism by which `no_receipt`/`discrepancy`/`structural` events reach a
+  revocation verdict) had zero test coverage; the verifier mutation-proved it by
+  deleting the fallback and getting 328/328 still green — **closed**, 3 new tests
+  in `receipt-audit.service.spec.ts` plus 1 bonus test in `.crypto.spec.ts` for the
+  weaker "producerFp survives a late crypto failure, not the registry's own
+  claimed fingerprint" case.
+  (3) **substantive** — `classifyKeyRevocation`'s boundary-equality trust-class
+  match (`atBoundary = normalized.filter(...)`) was fixed to use the normalized
+  array for the SDK payload but this specific line wasn't independently pinned —
+  a half-fix (normalize the payload, filter the raw array) would silently always
+  prefer `producer_signed` on any DB-sourced multi-revocation classification,
+  regardless of which row actually set the boundary — **closed**, a pure unit test
+  hand-typing Postgres-rendering `compromisedSince` strings plus a real end-to-end
+  integration-test extension (two DB-round-tripped revocation rows, earlier
+  `registry_attested` vs. later `producer_signed`), both mutation-verified by the
+  round-2 re-verify.
+  (4) minor — `docs/API.md`'s `boundary`/`startedAt` example values showed strict
+  RFC3339, not the Postgres `timestamp with time zone` text rendering these fields
+  actually return — **closed**, examples + a new explanatory sentence corrected.
+  (5) minor — two comments stated false things: `toRevocationJson`'s doc claimed a
+  missing `reason`/`revoked_key_id` key fails SDK deserialization (empirically
+  false — serde's `Option<T>` accepts an absent key same as explicit `null`), and
+  `key_revocation_sources`'s shape was documented as `{ctx_id, publisher}`
+  (snake_case) when the actual stored JSON is `{ctxId, publisher}` — **closed**,
+  both comments corrected in `schema.ts`/migration 0023/the service file.
+  (6) minor, residual, deliberately left open per the verifier's own
+  recommendation — an unrecognised `trust_class` value would make the SDK throw
+  (no DB CHECK constraint backs the invariant), caught by `auditEvent`'s outer
+  try/catch and producing `status:'error'` + `keyRevocationStatus:'none'` —
+  fail-open on the one axis that matters, but unreachable today since Phase 12
+  fail-closed-validates `trust_class` before every write and there is no other
+  writer. Documented at the cast site; flagged for Phase 15 rather than fixed here.
+- Gates (final, post-gap-fix state): `check:conventions` 6✓ · `lint` 0 ·
+  `tsc --noEmit` (both tsconfigs) 0 · `check:build` both builds 143 files, agree ·
+  unit 78 suites/1095 passed/4 skipped (pre-existing, unrelated)/1099 total ·
+  the two new/touched spec files individually 58 passed (was 53 before gap
+  fixes) · integration 31 suites/205 passed, run against 2 fresh disposable
+  Postgres containers (port 5435, torn down after each; 5433/5434 untouched,
+  occupied by unrelated foreign sessions) — once pre-gap-fix, once post.
+- Files touched: `drizzle/0023_receipt_audit_revocation.sql` (new),
+  `src/db/schema.ts`, `src/audit/receipt-audit.service.ts`,
+  `src/audit/receipt-audit.service.spec.ts`,
+  `src/audit/receipt-audit.service.crypto.spec.ts`,
+  `src/storage/receipt-audit.repository.ts`, `src/dashboard/dashboard.service.ts`,
+  `src/telemetry/instrumentation.service.ts`,
+  `test/integration/trust-hardening.integration.spec.ts`, `docs/API.md`,
+  `docs/ARCHITECTURE.md` (new "§7 consumer classification (Phase 14)" paragraph +
+  sweeps-table row update), `CLAUDE.md` (local, gitignored — new §7 paragraph
+  inside the receipt-audit bullet), `plans/rfc-0014-0015-upgrade.md` (local,
+  gitignored — Phase 14 → DONE, 5 divergence notes), `ASSUMPTIONS.md` (2 new
+  entries: the separate-metric decision, the trust-class tie-break rule, both
+  `UNCONFIRMED`).
+Next: Phase 15 (Retroactive re-audit when a revocation predates an existing
+verdict — depends on this phase; Files:
+`src/storage/receipt-audit.repository.ts`, `src/audit/revocation-audit.service.ts`,
+`src/audit/receipt-audit.service.ts`, `docs/ARCHITECTURE.md`, `CLAUDE.md`).
+
+### Phase 15 — Retroactive re-audit when a revocation predates an existing verdict
+- Delivers: a revocation whose `compromised_since` predates already-sealed
+  `receipt_audits` history no longer leaves those old verdicts reporting
+  `verified` forever. `ReceiptAuditService.reauditForFingerprint`, called by
+  `RevocationAuditService.sweep()` every pass for every fingerprint it holds a
+  verified fact for, amends the 4 §7 revocation columns on already-sealed rows
+  IN PLACE (`ReceiptAuditRepository.amendKeyRevocation` /
+  `.findRevocationAmendmentCandidates`) — monotone (only ever tightens),
+  column-scoped (never touches `status`/`discrepancies`/the receipt-timing
+  columns), and self-advancing with no cursor table. This is the LAST phase of
+  the 15-phase plan and of PR3 (Phases 10-15).
+- Verdict: **GAPS → PASS**, 2 rounds. Verifier: fresh Opus general-purpose
+  subagent both rounds (not Fable — consequential, not a one-way-door/trust-
+  boundary change). Round 1 verdict was "PASS with gaps (no blocker)" — treated
+  as GAPS per the skill's discipline (an itemized list, however phrased, gets a
+  closure pass). Round 1 confirmed all 7 ACs met and mutation-tested the core
+  SQL predicates, the `receiptCreatedAt` normalization, and the per-row scope
+  filter — every gap was a design/robustness/doc issue, not a wrong core
+  answer. Round 2, given the full round-1 gap list rather than reviewing cold,
+  independently re-derived and hand-checked the widened SQL predicates,
+  mutation-tested both branches of both WHERE clauses (reverting each `or(...)`
+  back to bare `eq('none')` and confirming specific tests fail), re-ran the
+  full local gate itself (including a fresh disposable Postgres on port 5436,
+  confirming both new indexes are actually created), and confirmed each of the
+  7 round-1 items CLOSED — verdict **PASS**, no blocking new issues.
+- Gap summary (round 1, closed before round 2):
+  (1) **Medium** — the original design amended a `receipt_audits` row AT MOST
+  ONCE (`WHERE key_revocation_status = 'none'` alone) — fail-open: a row
+  already amended by a FIRST revocation could never be re-tightened by a
+  SECOND, earlier-dated revocation on the same fingerprint discovered later,
+  contradicting the plan's own edge case #2 — **closed**, both
+  `amendKeyRevocation` and `findRevocationAmendmentCandidates` widened to a
+  two-branch `WHERE key_revocation_status = 'none' OR compromise_boundary >
+  <newBoundary>` (the candidate query takes a new `globalMinBoundaryIso`
+  parameter, the fact set's current minimum, computed and normalized by the
+  caller); pinned by 3 new unit tests, a rewritten repository-level
+  integration test (loosening rejected / tightening accepted / idempotent at
+  final state), and a new end-to-end two-sweep integration test through the
+  real `RevocationAuditService.sweep()`.
+  (2) **Medium** — `EXPLAIN (ANALYZE, BUFFERS)` against 200k seeded rows found
+  the candidate query's `ORDER BY receiptAudits.eventId` forcing an expensive
+  Merge Join (~190ms/~505k buffer hits to return zero rows) every sweep pass,
+  forever, once a high-volume revoked fingerprint's rows are all already
+  amended — **closed**, dropped the `ORDER BY` and added a new partial index
+  `ra_key_revocation_none_idx` on `receipt_audits (tenant_id, event_id) WHERE
+  key_revocation_status = 'none'` (migration 0024, mirrored in `schema.ts`);
+  round 2 independently confirmed both indexes are actually created against a
+  freshly migrated database.
+  (3) **Medium-low** — candidate selection joins on
+  `context_events.key_fingerprint`, the registry-CLAIMED value at publish
+  time, so a pre-ACDP-0.2.0 event that never populated the column is
+  permanently unreachable — **accepted as a permanent limitation, not code-
+  fixed** (would need a real schema change/backfill, out of scope for a phase
+  whose contract is "amend the 4 revocation columns only," and there is no
+  later phase to defer it to): the repository doc comment was corrected (it
+  previously, incorrectly, claimed this could only ever add a harmless extra
+  candidate, never drop a real one), and the limitation is documented in
+  `ASSUMPTIONS.md`, `docs/ARCHITECTURE.md`, and `CLAUDE.md`.
+  (4) **Low-medium** — undocumented interaction: `DataRetentionService` purges
+  `context_events` but never `receipt_audits` (`ReceiptAuditRepository
+  .deleteBefore` exists but has zero callers), so a purged event's
+  `receipt_audits` row becomes a permanent, un-amendable orphan once retention
+  is enabled — **closed** (documentation only — this is pre-existing
+  `DataRetentionService` behavior, not something this phase introduced or is
+  in scope to fix): documented in `docs/ARCHITECTURE.md` and `CLAUDE.md`.
+  (5) **Low** — `reauditForFingerprint`'s doc comment claimed "Never throws"
+  with no per-row try/catch — one throwing row would have aborted the rest of
+  that fingerprint's candidate batch for the pass (the caller only wraps the
+  call per-fingerprint) — **closed**, added a per-row `try/catch` (logs +
+  continues, increments the existing revocation-reaudit metric with a new
+  `status: 'error'` label value), corrected the doc comment; pinned by a new
+  unit test asserting the loop continues past a rejecting row.
+  (6) **Low**, two missing-branch tests: (a) a `receipt_audits` row whose
+  `checked_at`/`event_arrived_at` is far outside `RECEIPT_AUDIT_LOOKBACK_HOURS`
+  — **closed**, new integration test seeding an old `checked_at` and driving
+  the real sweep. (b) `sdkSupportsRevocationClassification() === false` inside
+  `reauditForFingerprint` — **deliberately not added**: round 2 independently
+  judged this acceptable rather than a gap, since the branch is unreachable
+  with the pinned `^0.14.1` SDK floor, no spec in the repo mocks the `acdp`
+  binding at all, and the structurally identical Phase-14 guard has the same
+  untested branch and was never flagged.
+  (7) **Housekeeping** — `drizzle/0024_revocation_reaudit.sql` was untracked
+  — **closed**, `git add`-ed.
+  Round 2 also raised 3 new Housekeeping-only notes, none requiring action:
+  `globalMinBoundaryIso: null` is dead code from the only real caller (the
+  early-return on an empty fact set means the caller's `reduce` always yields
+  a string) — harmless defensiveness, left as-is; `CLAUDE.md`/`plans/` are
+  gitignored so their Phase 15 edits correctly never show in `git status`; and
+  the fan-out's batch cap is per-fingerprint, not per-sweep (one pass can do
+  up to `distinctFingerprints × RECEIPT_AUDIT_BATCH_SIZE` rows), slightly
+  looser than the plan's "bound the fan-out per sweep" wording but justified
+  by revocations being rare and unchanged from round 1 — flagged only as a
+  conscious accept, not a new gap.
+- Gates (final, post-gap-fix state, confirmed independently by both the
+  executor and the round-2 verifier): `check:conventions` 6✓ · `lint` 0 ·
+  `tsc --noEmit` (both tsconfigs) 0 · `check:build` both builds 143 files,
+  agree · unit 78 suites/1110 passed/4 skipped (pre-existing, unrelated)/1114
+  total · integration 31 suites/210 passed, each run against a fresh
+  disposable Postgres container (executor: port 5435; verifier: port 5436,
+  independently; both torn down after; 5433/5434 untouched, occupied by
+  unrelated foreign sessions).
+- Files touched: `drizzle/0024_revocation_reaudit.sql` (new, two indexes),
+  `src/db/schema.ts`, `src/storage/receipt-audit.repository.ts`,
+  `src/storage/key-revocation.repository.ts`, `src/audit/receipt-audit.service.ts`,
+  `src/audit/receipt-audit.service.spec.ts`, `src/audit/revocation-audit.service.ts`,
+  `src/audit/revocation-audit.service.spec.ts`, `src/telemetry/instrumentation.service.ts`,
+  `test/integration/trust-hardening.integration.spec.ts`, `docs/ARCHITECTURE.md`
+  (new "Retroactive re-audit (Phase 15)" paragraph, generalized during gap-closure),
+  `CLAUDE.md` (local, gitignored — new "Retroactive re-audit (Phase 15)"
+  paragraph, generalized during gap-closure), `plans/rfc-0014-0015-upgrade.md`
+  (local, gitignored — Phase 15 → DONE, divergence notes covering the
+  gap-closure history), `ASSUMPTIONS.md` (4 entries: the amend-once →
+  continuous-re-tightening history, the dropped `ORDER BY`/new index, the
+  accepted claimed-fingerprint limitation, plus the pre-existing reused-
+  batch-size entry).
+Next: **all 15 phases of `plans/rfc-0014-0015-upgrade.md` are now `Status: DONE`.**
+Run the `/implement` §4 finalization pass (whole-feature test re-run, seam
+integration-test gap check, doc staleness sweep, one final Opus verify over
+the CUMULATIVE Phases 10-15 diff) before handing PR3 (Phases 10-15,
+branch `rfc-0014/pr3-key-revocation`) to `/ship`. At the very end of the whole
+plan (after PR3 merges), run `/reconcile` to close out every `ASSUMPTIONS.md`
+entry logged across all 15 phases, not just this one.
+
+### Finalization — whole-feature pass over PR3 (Phases 10-15)
+- Ran the `/implement` §4 finalization procedure: full test re-run from a
+  clean state, seam-coverage review across all 6 phases, doc staleness
+  sweep, tracked-file consistency check, then one Opus verification pass
+  over the CUMULATIVE diff (`git diff origin/main...HEAD`, all 6 commits)
+  against the plan as a whole — not per-phase.
+- Verdict: **GAPS → (closing now)**, round 1. Verifier: fresh Opus
+  general-purpose subagent (not Fable — consequential, not itself a one-way
+  door). Round 1 independently re-ran the full local gate (all green,
+  matching the executor's own numbers exactly), confirmed the `/implement`
+  finalization checklist item by item (config fail-fast, graceful SDK-
+  version degradation, `filterApplicableRevocations` wiring shared by both
+  the live and Phase 15 fan-out paths, Phase 12↔15 `key_revocations`
+  consistency, tracked-file/plan/ASSUMPTIONS.md self-consistency), and found
+  **1 real, previously-undetected cross-phase bug** that no single phase's
+  own review could have caught (each phase reviewer only saw its own diff).
+- **GAP 1 (Medium) — `KEY_REVOCATION_ATTESTED_SCOPE=same_registry` (the
+  default) keyed its match on an UNAUTHENTICATED field, directly against
+  Phase 12's own written instruction to Phase 14.**
+  `filterApplicableRevocations` (`src/audit/receipt-audit.service.ts`)
+  compared `r.originAuthority === registryAuthority` — but
+  `key_revocations.origin_authority` is written from the revocation body's
+  OWN `origin_registry` claim, which sits outside `content_hash`/signature
+  coverage (proven by the integration fixtures merging it in post-signing)
+  — an attacker-steerable value, not the registry actually reached.
+  `revocation-audit.service.ts` already carried an explicit comment at the
+  write site warning "a Phase 14+ same_registry scope decision must key off
+  `ev.registryAuthority` … never this column" — Phase 14 read a column
+  instead of reading that comment. Two failure directions in the default
+  config: (a) false negative — a revocation genuinely attested by the very
+  registry serving an event was excluded whenever the body claimed a
+  different `origin_registry`; (b) false positive — an enrolled registry
+  could set `origin_registry` to a victim registry's authority on its OWN
+  attested revocation (its `publisher` still passes the §6 binding check)
+  and falsely disarm trust for every event that victim registry serves for
+  the named fingerprint — exactly the asymmetric hazard (a false positive
+  actively destroys trust) the plan's Enterprise-concerns section is shaped
+  around. **Closed** — matched on `r.publisher === authorityToDidWeb(registryAuthority)`
+  instead: `publisher` IS authenticated for a `registry_attested` row
+  (`crossCheckRegistryBinding` pins it to `authorityToDidWeb(servingAuthority)`
+  at persistence time, Phase 11's §6 check), so this is exactly "the
+  registry we actually verified attested this revocation." Both call sites
+  (the live path and the Phase 15 fan-out) share one `filterApplicableRevocations`
+  helper, so the fix applies uniformly with no risk of the two paths
+  drifting. The one guarding unit test had locked in the WRONG semantic
+  (verifier mutation-proved this: reverting to the correct `publisher`
+  comparison failed exactly that test) — rewritten into two tests proving
+  BOTH directions (`same_registry` applies a same-attester revocation
+  regardless of its `origin_registry` claim; excludes a different-attester
+  revocation even when its claim names OUR registry), plus the analogous
+  `reauditForFingerprint` per-row test and the `global`-scope test's fixture
+  corrected to a genuinely cross-registry `publisher`.
+- **GAP 2 (Low) — `docs/CONFIGURATION.md`'s Phase 15 paragraph was written
+  during Phase 15's own gap-closure but never committed**, and `PROGRESS.md`'s
+  Phase 15 "Files touched" list omitted it. **Closed** — included in this
+  finalization commit; `PROGRESS.md`'s Phase 15 entry above should be read
+  as if `docs/CONFIGURATION.md` were listed there too.
+- **Housekeeping (3, all closed):** a stale comment in
+  `revocation-audit.service.ts` still described Phase 15's ORIGINAL
+  amend-once predicate, superseded during Phase 15's own gap-closure —
+  corrected to describe the final (sealed-rows-only) behavior without
+  restating the exact SQL, so it can't go stale again the same way.
+  `CLAUDE.md`'s Phase 15 paragraph never named
+  `acdp_receipt_audit_revocation_reaudits_total` even though `docs/ARCHITECTURE.md`
+  did — added, with the same "deliberately separate from Phase 14's metric"
+  rationale already given elsewhere. `docs/API.md`'s dashboard `keyRevocation`
+  tile description didn't mention that it's window-scoped on `checked_at`,
+  which Phase 15's amendment deliberately never touches — a retroactively
+  amended row that has already scrolled out of the window stays invisible
+  on that tile forever, even though `trust.revoked` on the event's own
+  `GET /runs/:runId` is unaffected — added one clarifying sentence.
+- Gates (post-fix, run by the executor): `tsc --noEmit` (both tsconfigs) 0 ·
+  `lint` 0 · `check:conventions` 6✓ · `check:build` both builds 143 files,
+  agree · unit 78 suites/1111 passed/4 skipped (pre-existing, unrelated)/1115
+  total (net +1 over Phase 15's own commit: one scope test split into two,
+  one rewritten in place) · integration 31 suites/210 passed, disposable
+  Postgres port 5435, torn down after.
+- Files touched (this finalization pass, beyond Phase 15's own commit):
+  `src/audit/receipt-audit.service.ts` (the `filterApplicableRevocations`
+  fix), `src/audit/receipt-audit.service.crypto.spec.ts`,
+  `src/audit/receipt-audit.service.spec.ts`, `src/audit/revocation-audit.service.ts`
+  (stale-comment fix), `docs/CONFIGURATION.md`, `CLAUDE.md` (local,
+  gitignored), `docs/API.md`.
+Next: re-verify this finalization round (give the fresh verifier the gap
+list above rather than reviewing cold, per the skill's convention) — on
+PASS, hand PR3 (Phases 10-15, branch `rfc-0014/pr3-key-revocation`) to
+`/ship`.
+
+### Ship (PR3)
+pushed rfc-0014/pr3-key-revocation dec5933fb892286a2a7bb91cc8ba40bf627dbacd
+PR #168 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/168

@@ -15,8 +15,9 @@ registries (which authoritatively store contexts and emit lifecycle webhooks) an
    isolates them by **tenant**, and gates actions with **policy** and **quota**.
 7. **Audits & witnesses** registry honesty: cross-checks embedded registry
    receipts (RFC-ACDP-0010), witnesses transparency-log checkpoints and audits
-   inclusion proofs (RFC-ACDP-0012), and mints/consumes witness cosignatures
-   with N-witnessed quorum (RFC-ACDP-0015).
+   inclusion proofs (RFC-ACDP-0012), verifies producer key-revocation contexts
+   (RFC-ACDP-0014), and mints/consumes witness cosignatures with N-witnessed
+   quorum (RFC-ACDP-0015).
 
 > Where this service mirrors protocol or registry behavior (crypto, SSRF, did:web,
 > auth challenge-response, tenancy, webhook event shapes), it relies on the
@@ -86,10 +87,11 @@ src/
 │
 ├── storage/                   # Repositories: context-event, run, lineage, agent, registry,
 │                              #   context-lifecycle, registry-enrollment, receipt-audit,
-│                              #   log-witness, log-cosignature, log-inclusion-audit
+│                              #   log-witness, log-cosignature, log-inclusion-audit, key-revocation
 ├── audit/                     # Receipt audit (RFC-ACDP-0010), checkpoint witness +
 │                              #   log-inclusion audit (RFC-ACDP-0012), Merkle log-verify,
-│                              #   cosignature helpers, registry-profile probe
+│                              #   cosignature helpers, registry-profile probe,
+│                              #   key-revocation audit (RFC-ACDP-0014)
 ├── witness/                   # Witness cosigning (RFC-ACDP-0015): signing service +
 │                              #   /log/witness, /.well-known/acdp-witness.json, did.json
 ├── webhooks/                  # Outbound webhook subs + outbox-tracked delivery + retry sweep
@@ -214,14 +216,17 @@ Full detail in [AUTH.md](./AUTH.md).
   the base RFC-ACDP-0001 types (`data_snapshot`, `analysis`, `prediction`,
   `alert`) are never gated. See [INGEST.md](./INGEST.md#domain-pack-context_type-gate).
 
-## Transparency, audit & witness (RFC-ACDP-0010 / 0012 / 0015)
+## Transparency, audit & witness (RFC-ACDP-0010 / 0012 / 0014 / 0015)
 
-> **Sources of truth.** The receipt, checkpoint, Merkle-proof, and cosignature
-> wire formats and verification procedures are normative in the spec —
+> **Sources of truth.** The receipt, checkpoint, Merkle-proof, revocation, and
+> cosignature wire formats and verification procedures are normative in the
+> spec —
 > [RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0010-registry-receipts.md)
 > (receipts),
 > [RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)
 > (transparency log),
+> [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md)
+> (producer key-revocation),
 > [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md)
 > (cosigning) — and the registry side is documented in
 > [acdp-registry-rs/docs/RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md).
@@ -229,15 +234,118 @@ Full detail in [AUTH.md](./AUTH.md).
 > service* does as an observer: which sweeps run, what each records, and where
 > the verdicts surface.
 
-Three independent, advisory-locked sweeps make the control plane a second
+Four independent, advisory-locked sweeps make the control plane a second
 observer of registry honesty — each gated by its own env flag and each
 recording verdicts in its own table so the signals stay independent:
 
 | Sweep | Verifies | Evidence table | Surfaces |
 |-------|----------|----------------|----------|
-| `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; dashboard `receiptCoverage` |
+| `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs); when enabled, ALSO classifies the signer against verified revocations (RFC-ACDP-0014 §7, below) and retroactively AMENDS already-sealed verdicts a later-discovered revocation predates (Phase 15, below) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; `acdp_receipt_audit_revocation_reaudits_total{status}`; dashboard `receiptCoverage`, `keyRevocation` |
 | `CheckpointWitnessPollerService` | Fetches each log-advertising registry's `GET /log/checkpoint` and runs the RFC-ACDP-0012 checkpoint + consistency checks against the head it retains | `log_witness_checkpoints` + `log_witness_cursors` | `GET /registries/:authority/log-witness`; `log_witness_alert` SSE/webhook on state transition; `acdp_log_witness_alerts_total{reason}` |
 | `LogInclusionAuditService` | Rebuilds the leaf from OUR stored receipt, fetches `/log/proof?ctx_id=`, runs the RFC-ACDP-0012 inclusion check, and cross-binds against witnessed heads | `log_inclusion_audits` | verdicts `included` \| `invalid_proof` \| `not_logged` \| `no_log` \| `error` |
+| `RevocationAuditService` | Discovers `key-revocation` contexts by `context_type`, recomputes `content_hash`, verifies the body signature, then `AcdpVerifier.parseKeyRevocation` for the RFC-ACDP-0014 §4/§5 shape + not-self-signed checks; a `registry_attested` result additionally requires the §6 registry-binding cross-check; then walks the revocation's full lineage (RFC-ACDP-0014 §7, below); every pass, also triggers `ReceiptAuditService`'s retroactive re-audit fan-out (Phase 15, below) for every known-revoked fingerprint | `key_revocations` (permanent, retention-exempt) + `key_revocation_lineage_cursors` (TTL freshness markers) | `acdp_key_revocation_checks_total{status, trust_class}` |
+
+**The §7 lineage walk.** A single webhook-delivered revocation only proves
+one context exists; RFC-ACDP-0014 §4's earliest-`compromised_since` rule is
+defined over the *whole lineage*, including members this control plane was
+never webhooked about (published before enrollment, or naming an earlier
+key). After persisting a freshly-verified event's own fact,
+`RevocationAuditService` walks that lineage via `GET /lineages/{lineage_id}`
+— **never** `GET /lineages/{lineage_id}/current`, because a lineage whose
+members are all superseded or retracted 404s there (RFC-ACDP-0013 §8.3),
+which is exactly the case the fold most needs. Two rules are easy to get
+backwards and are worth stating plainly: **supersession does not disarm** a
+revocation unless the superseding context is itself a revocation of the same
+signer class (RFC-ACDP-0003 §3.1 constrains supersession by `agent_id`/
+version/lineage, but not by `type`), and **retraction does not un-revoke** —
+a retracted revocation still counts in the fold. The walk's failure
+discipline (`src/audit/revocation-lineage.ts`) is deliberately asymmetric: a
+member that fails verification *permanently* is dropped with a warning and
+the rest still fold (otherwise one injected garbage member suppresses every
+genuine revocation in the lineage — a denial of service the walk exists to
+avoid), while a member that fails *transiently* (DID host unreachable,
+registry erroring) aborts the **whole** walk with no partial fold recorded —
+a dropped-but-would-have-been-earlier member would silently move the fold
+later, a genuine false authorization rather than a mere omission.
+`classifyLineageFailure` is the one place this transient/permanent (plus a
+third, "hard" — a lineage too large to fetch safely, aborted the same as
+exceeding `MAX_LINEAGE_WALKS`) classification lives, shared by this walk and
+the per-event fetch above. A `key_revocation_lineage_cursors` row is a
+TTL-bounded freshness marker only, written *exclusively* on a fully
+successful walk — every failure kind leaves it unset so the next sweep
+retries — and its presence alone is never sufficient to skip a walk: if
+`key_revocations` currently holds zero facts for a lineage, the walk runs
+regardless of cursor freshness, because a cached "walked, found nothing"
+marker suppressing a walk is precisely how a revocation gets missed.
+
+**§7 consumer classification (Phase 14).** The revocation FACTS above are
+inert until something CONSUMES them against actual receipt-audited traffic —
+that's `ReceiptAuditService`'s job when `KEY_REVOCATION_CHECK_ENABLED`.
+`classifyKeyRevocation` (`src/audit/receipt-audit.service.ts`) wraps the
+SDK's `AcdpVerifier.classifyUnderRevocation`, and is a separate verification
+verdict from the receipt audit's own `status` — a registry can be perfectly
+honest about a receipt whose signer has since had their key revoked. The one
+thing worth knowing about the SDK's response shape: a fail-closed verdict
+(§7 steps 3-4 — the publish landed at/after the compromise boundary, or no
+receipt-verified time exists to compare at all) reports
+`authorization:"none"`, the SAME value the "no revocation applies at all"
+case reports — so this code disambiguates on the PRESENCE of the response's
+`boundary` field, never on `authorization` alone. `KEY_REVOCATION_ATTESTED_SCOPE`
+/ `KEY_REVOCATION_IGNORE_FINGERPRINTS` (§6/§13 policy) are enforced HERE, at
+classification time — `RevocationAuditService` above always records every
+binding-verified fact regardless of scope; only the consumer decides whether
+to act on it. Verdicts land in four new `receipt_audits` columns and surface
+on `trust.revoked` (`GET /runs/:runId`), the dashboard `keyRevocation` tile,
+and a metric kept deliberately separate from `RevocationAuditService`'s own
+(`acdp_receipt_audit_key_revocation_total{status}` vs.
+`acdp_key_revocation_checks_total{status, trust_class}`) — the two use
+disjoint status vocabularies (boundary classification vs. revocation-body
+verification outcome) that a shared metric name would make meaningless.
+
+**Retroactive re-audit (Phase 15).** §7 classification above only fires at
+AUDIT TIME. A revocation whose `compromised_since` predates already-sealed
+history — RFC-ACDP-0014 §4's own advice to producers to choose T
+conservatively, i.e. *early* — would otherwise leave those old verdicts
+reporting `verified` forever: `findUnauditedPublishes` excludes anything
+already audited, and its lookback window means old rows are never revisited.
+`ReceiptAuditService.reauditForFingerprint` closes that gap by AMENDING an
+already-sealed `receipt_audits` row IN PLACE, called by
+`RevocationAuditService.sweep()` for every fingerprint it currently holds a
+verified fact for, every pass — not only newly-recorded ones, so a
+fingerprint whose fan-out exceeds one batch (`RECEIPT_AUDIT_BATCH_SIZE`,
+reused rather than a dedicated knob) converges over subsequent sweeps.
+The amendment is deliberately in-place rather than a parallel table (unlike
+`log_inclusion_audits`'s independence from `receipt_audits` under
+RFC-ACDP-0012 §9.3): a §7 fail-closed changes the MEANING of the receipt
+verdict itself — the receipt stays cryptographically valid, that is exactly
+what places it inside the compromise window — so reporting `verified` in one
+table while a fail-closed sits unnoticed in a second table would be a worse
+trap than a documented in-place amendment. Three guarantees, all enforced at
+the SQL layer, not just in application code
+(`ReceiptAuditRepository.amendKeyRevocation`): **monotone** — the `UPDATE`'s
+own `WHERE key_revocation_status = 'none' OR compromise_boundary >
+:newBoundary` means the column can only ever move EARLIER (more severe),
+never later, and a row at its tightest known boundary can never be reached
+by this statement again — which is also what makes batching self-advancing
+with no separate cursor table (a row simply stays, or leaves, the candidate
+set based on whether a strictly tighter boundary currently exists for it);
+**column-scoped** — the `SET` clause touches only the four §7 columns, never
+`status`/`discrepancies`/`skew_ms`/`receipt_created_at`/`event_arrived_at`/
+`checked_at`; **auditable** — `key_revocation_sources` on the amended row
+names the revocation `ctx_id`(s) that drove it, same as at live audit time.
+A SECOND, earlier-dated revocation for a fingerprint already amended by a
+first correctly RE-TIGHTENS every affected row, not just the ones still at
+`'none'` — `findRevocationAmendmentCandidates` takes the fact set's current
+minimum boundary as a parameter and widens its own eligibility predicate to
+match; an earlier "amend-once" design that didn't do this was flagged as
+fail-open during Phase 15's verification gate and fixed (ASSUMPTIONS.md).
+Two accepted, permanent limitations remain (ASSUMPTIONS.md): candidate
+selection joins on `context_events.key_fingerprint`, the registry-CLAIMED
+value at publish time, so a pre-ACDP-0.2.0 event that never populated the
+column is permanently unreachable by this fan-out; and because
+`DataRetentionService` purges `context_events` but never `receipt_audits`,
+a `receipt_audits` row for a retention-purged event becomes a permanent
+orphan — invisible to this fan-out from then on, frozen at its last verdict.
 
 On top of witnessing, the CP can **cosign**: a checkpoint that passes the
 RFC-ACDP-0015 witness obligation is signed with a dedicated Ed25519 witness key
@@ -283,10 +391,11 @@ only on full success.
 - **Background services**: `WebhookService` retry sweep, `AuthSweeperService` (GCs
   expired challenges / revocations / ledger), `RevocationPollerService` (consumes
   peer feeds), `DataRetentionService` (off unless `DATA_RETENTION_ENABLED`),
-  plus the three advisory-locked audit sweeps — `ReceiptAuditService`
+  plus the four advisory-locked audit sweeps — `ReceiptAuditService`
   (`RECEIPT_AUDIT_ENABLED`), `CheckpointWitnessPollerService`
-  (`LOG_WITNESS_ENABLED`), and `LogInclusionAuditService`
-  (`LOG_INCLUSION_AUDIT_ENABLED`).
+  (`LOG_WITNESS_ENABLED`), `LogInclusionAuditService`
+  (`LOG_INCLUSION_AUDIT_ENABLED`), and `RevocationAuditService`
+  (`KEY_REVOCATION_CHECK_ENABLED`, requires `RECEIPT_AUDIT_ENABLED=true`).
 - **Boot assertions (witness)**: with `WITNESS_COSIGNING_ENABLED=true`, a
   `did:web` `WITNESS_ID` whose host disagrees with `PUBLIC_HOST` is fatal at
   boot (RFC-ACDP-0015 §9), and cosigning without `LOG_WITNESS_ENABLED=true`

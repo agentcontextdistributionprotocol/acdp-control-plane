@@ -40,6 +40,7 @@ export class DashboardService {
       receiptCoverage,
       didMethods,
       logWitness,
+      keyRevocation,
     ] = await Promise.all([
       this.database.db
         .select({ n: count() })
@@ -152,6 +153,20 @@ export class DashboardService {
              FROM log_witness_checkpoints
             WHERE tenant_id = ${tenantId} AND meets_quorum) AS heads_meeting_quorum
       `),
+      // RFC-ACDP-0014 §7 (Phase 14): audited events in the window whose
+      // signer key is independently known-revoked, by classification.
+      // Window-scoped on checked_at (receipt_audits' own timestamp), like
+      // receiptCoverage/didMethods above — a running-window trust tile, not
+      // a current-posture one like logWitness.
+      this.database.db.execute(sql`
+        SELECT
+          count(*) FILTER (WHERE key_revocation_status = 'pre_compromise')::int AS pre_compromise,
+          count(*) FILTER (WHERE key_revocation_status = 'revoked_at_or_after')::int AS revoked_at_or_after,
+          count(*) FILTER (WHERE key_revocation_status = 'revoked_time_unverifiable')::int AS revoked_time_unverifiable
+        FROM receipt_audits
+        WHERE tenant_id = ${tenantId}
+          AND checked_at > now() - interval '${sql.raw(interval)}'
+      `),
     ]);
 
     const contexts = Number(totalContexts[0]?.n ?? 0);
@@ -191,6 +206,20 @@ export class DashboardService {
         headsMeetingQuorum: Number(
           (logWitness.rows[0] as { heads_meeting_quorum?: number } | undefined)
             ?.heads_meeting_quorum ?? 0,
+        ),
+      },
+      // RFC-ACDP-0014 §7 (Phase 14): compromise-boundary classification tile.
+      keyRevocation: {
+        preCompromise: Number(
+          (keyRevocation.rows[0] as { pre_compromise?: number } | undefined)?.pre_compromise ?? 0,
+        ),
+        revokedAtOrAfter: Number(
+          (keyRevocation.rows[0] as { revoked_at_or_after?: number } | undefined)
+            ?.revoked_at_or_after ?? 0,
+        ),
+        revokedTimeUnverifiable: Number(
+          (keyRevocation.rows[0] as { revoked_time_unverifiable?: number } | undefined)
+            ?.revoked_time_unverifiable ?? 0,
         ),
       },
     };

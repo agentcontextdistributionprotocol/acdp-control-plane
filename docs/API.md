@@ -164,6 +164,72 @@ Response:
 { "data": [ /* Run */ ], "total": 42, "limit": 50, "offset": 0 }
 ```
 
+### `GET /runs/:runId` response
+
+A `Run` row plus a `trust` member — `null` when the run's events have not yet
+been through the receipt-audit sweep, otherwise the run's rollup from
+`ReceiptAuditRepository.summarizeByRun` (ACDP 0.2.0, RFC-ACDP-0010; the
+`keyRevocation*` / `revoked` members are RFC-ACDP-0014 §7, Phase 14).
+Every timestamp below (`startedAt`, `boundary`) is a `timestamp with time
+zone` column read back through Drizzle's `mode: 'string'`, which returns the
+Postgres driver's own textual rendering — a space, `+00`, no
+milliseconds — not strict RFC3339; parse with `new Date(...)`, never a
+string comparison against a value your own client formatted itself:
+
+```json
+{
+  "runId": "run-001",
+  "scenarioId": "scenario-a",
+  "status": "completed",
+  "startedAt": "2026-06-12 00:00:00+00",
+  "contextsCount": 3,
+  "trust": {
+    "audited": 3,
+    "verified": 2,
+    "verifiedHistorical": 0,
+    "structural": 0,
+    "noReceipt": 0,
+    "errors": 1,
+    "flagged": [
+      { "eventId": "...", "ctxId": "acdp://registry-a/...", "status": "discrepancy", "discrepancies": ["ctx_id_mismatch: ..."] }
+    ],
+    "keyRevocationPreCompromise": 0,
+    "keyRevocationRevokedAtOrAfter": 1,
+    "keyRevocationRevokedTimeUnverifiable": 0,
+    "revoked": [
+      {
+        "eventId": "...",
+        "ctxId": "acdp://registry-a/...",
+        "status": "revoked_at_or_after",
+        "boundary": "2026-06-01 00:00:00+00",
+        "trustClass": "producer_signed",
+        "sources": [ { "ctxId": "acdp://registry-a/...", "publisher": "did:web:agent-1.example" } ]
+      }
+    ]
+  }
+}
+```
+
+`flagged` carries only `discrepancy`-status rows — registry dishonesty
+signals. An `error`-status row's `unverified:`-prefixed notes are
+environmental (a fetch/DID failure, a non-canonical stored `ctx_id`, an
+unsupported receipt/producer signature algorithm) and never appear here.
+
+`revoked` is separate from `flagged` for the same reason: a §7 fail-closed
+verdict is not evidence the *registry* misbehaved — an otherwise honest
+registry can serve a context signed by a key its own producer has since
+revoked. Each entry's `status` is one of `pre_compromise` (the receipt-
+attested `created_at` verified strictly before the compromise boundary),
+`revoked_at_or_after` (the verified `created_at` landed at or after it), or
+`revoked_time_unverifiable` (no receipt-verified `created_at` exists at all —
+fails closed the same as `revoked_at_or_after`, just for a different reason).
+`trustClass` is `producer_signed` or `registry_attested` per RFC-ACDP-0014 §6;
+`sources` lists every verified revocation fact that fed the classification
+(their `ctxId` + `publisher`), not just the one that set the boundary. Only
+populated when `KEY_REVOCATION_CHECK_ENABLED=true`; disabled (the default)
+every event classifies `none` and `revoked` is always `[]`. See
+[ARCHITECTURE.md](./ARCHITECTURE.md) — "Producer key-revocation verification".
+
 ### `GET /runs/:runId/lineage` response
 
 ```json
@@ -421,6 +487,11 @@ KPIs over the window (default `24h`), tenant-scoped:
     "activeAlerts": 0,
     "unacknowledgedAlerts": 0,
     "headsMeetingQuorum": 3
+  },
+  "keyRevocation": {
+    "preCompromise": 0,
+    "revokedAtOrAfter": 1,
+    "revokedTimeUnverifiable": 0
   }
 }
 ```
@@ -429,7 +500,15 @@ KPIs over the window (default `24h`), tenant-scoped:
 (currently-retracted contexts from the window, and published − retracted).
 `receiptCoverage` / `didMethods` are the ACDP 0.2.0 trust tiles
 (RFC-ACDP-0010), and `logWitness` is the RFC-ACDP-0012/0015 witness posture
-(not window-scoped — it reflects current state).
+(not window-scoped — it reflects current state). `keyRevocation` is the
+RFC-ACDP-0014 §7 tile (Phase 14) — window-scoped on `receipt_audits.checked_at`
+like `receiptCoverage`/`didMethods` above, not a current-posture tile like
+`logWitness`; see `GET /runs/:runId`'s `trust.revoked` above for the per-event
+detail these counts summarize. A retroactive amendment (Phase 15) deliberately
+never touches `checked_at` (see `docs/ARCHITECTURE.md`'s "Retroactive
+re-audit" section), so a row this tile's window has already scrolled past
+stays invisible here even after being amended — `trust.revoked` on the
+row's own `GET /runs/:runId` is unaffected by the window and always current.
 
 ---
 

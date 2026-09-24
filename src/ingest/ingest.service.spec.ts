@@ -349,6 +349,48 @@ describe('IngestService', () => {
       await service.handle(body, sign(body), undefined);
       expect(processor.process).toHaveBeenCalledTimes(1);
     });
+
+    describe('RFC-ACDP-0014 key-revocation is a standard type, never pack-gated (Phase 10)', () => {
+      let reg: DomainPackRegistry;
+
+      beforeEach(() => {
+        reg = new DomainPackRegistry();
+        reg.register(FINANCE_PACK); // a pack with no revocation type declared
+        service = new IngestService(
+          config as AppConfigService,
+          processor as unknown as EventProcessorService,
+          reg,
+          enrollmentRepo as any,
+          instrumentation as any,
+        );
+      });
+
+      it('accepts context_type "key-revocation" (2xx, event persisted)', async () => {
+        const body = Buffer.from(
+          JSON.stringify({ ...validPayload, context_type: 'key-revocation' }),
+        );
+        await service.handle(body, sign(body), undefined);
+        expect(processor.process).toHaveBeenCalledTimes(1);
+      });
+
+      it('accepts the interim spelling "acdp:key-revocation" (2xx, event persisted)', async () => {
+        const body = Buffer.from(
+          JSON.stringify({ ...validPayload, context_type: 'acdp:key-revocation' }),
+        );
+        await service.handle(body, sign(body), undefined);
+        expect(processor.process).toHaveBeenCalledTimes(1);
+      });
+
+      it('still rejects an unregistered type — the gate is not disabled', async () => {
+        const body = Buffer.from(
+          JSON.stringify({ ...validPayload, context_type: 'some-unregistered-type' }),
+        );
+        await expect(
+          service.handle(body, sign(body), undefined),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(processor.process).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('registry enrollment', () => {

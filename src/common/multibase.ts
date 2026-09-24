@@ -73,7 +73,7 @@ export function decodeEd25519Multibase(input: string): MultibaseDecodeOutcome {
   if (!prefix.equals(ED25519_MULTICODEC_PREFIX)) {
     return {
       ok: false,
-      reason: `unsupported witness key algorithm (multicodec prefix 0x${prefix.toString('hex')}, want 0xed01/Ed25519): '${input}'`,
+      reason: `unsupported key algorithm (multicodec prefix 0x${prefix.toString('hex')}, want 0xed01/Ed25519): '${input}'`,
     };
   }
   const publicKey = decoded.subarray(ED25519_MULTICODEC_PREFIX.length);

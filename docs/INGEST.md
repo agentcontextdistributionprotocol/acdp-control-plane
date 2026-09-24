@@ -158,6 +158,13 @@ When one or more domain packs are configured (`DOMAIN_PACKS` set, e.g.
   registered in the spec's
   [context-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/registries)
   (RFC-ACDP-0001); domain packs only *add* vertical types on top.
+- **`key-revocation` and `acdp:key-revocation` are also always accepted** —
+  RFC-ACDP-0014 §4 registers `key-revocation` as a standard protocol context
+  type, not a domain-pack vertical, and §10 requires the pre-0.3.0 interim
+  spelling `acdp:key-revocation` to be treated as fully equivalent. Gating
+  either behind a domain pack would silently and permanently drop revocation
+  webhooks — the registry's webhook worker never retries a `4xx` delivery.
+  Both spellings are defined once in `src/contracts/revocation.ts`.
 - A **custom** `context_type` that is neither a base type nor declared by an
   active pack is **rejected with `400`**.
 - With **no** packs configured, the gate is inactive and every `context_type`

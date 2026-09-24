@@ -50,15 +50,83 @@
  * `receiptKeyForAlgorithm`, RFC-ACDP-0010 §9 lifecycle) — a key rotated out
  * of `assertionMethod` still verifies, as `verified_historical`. A key gone
  * from `verificationMethod` entirely still fails closed.
+ *
+ * ## RFC-ACDP-0014 §7 consumer classification (Phase 14)
+ *
+ * When `KEY_REVOCATION_CHECK_ENABLED`, every audited event is ALSO
+ * classified against the revocations Phase 12/13 verified for its signer
+ * key — {@link classifyKeyRevocation}, which wraps the SDK's
+ * `AcdpVerifier.classifyUnderRevocation`. This is a separate VERIFICATION
+ * VERDICT, not a `discrepancies` flag: an otherwise perfectly honest
+ * registry can serve a context signed by a key its own producer has since
+ * revoked, and RFC-ACDP-0014 §10 is explicit that a §7 fail-closed "is a
+ * verification verdict, not a wire condition."
+ *
+ * **Where it slots in.** Always AFTER the receipt verdict's `status` is
+ * already decided — never before, and never keyed on `crypto.ran` alone.
+ * §7 step 1 forbids feeding an UNVERIFIED `created_at` into the boundary
+ * check, and `crypto.ran` can be `true` while `status` is still `'error'`
+ * (an unverified-algorithm note — see the P-256 case below — does not stop
+ * the rest of the crypto pipeline from running, but DOES force the overall
+ * verdict to `'error'` via the `notes.length > 0` branch). Gating on the
+ * FINAL `status ∈ {verified, verified_historical}` rather than on
+ * `crypto.ran` is what makes the P-256 case fail closed correctly with no
+ * special-casing — see `classifyRevocationForEvent`'s call site.
+ *
+ * **The one disambiguation that matters.** `classifyUnderRevocation` reports
+ * a fail-closed verdict as `{"authorization":"none","boundary":…,"error":…}`
+ * — the SAME `authorization` value as "no revocation applies at all". Code
+ * here disambiguates on the presence of `boundary`, never on
+ * `authorization` — see {@link classifyKeyRevocation}.
+ *
+ * **The P-256 producer gap — decided, not deferred.** For a non-ed25519
+ * producer, `resolveProducerFingerprint` passes through the receipt's
+ * CLAIMED fingerprint (the SDK exposes no P-256 fingerprint helper) and
+ * appends an `unverified:` note. Feeding that unverified claim into
+ * classification as though it were confirmed would let a hostile registry
+ * dodge revocation checking by misreporting the fingerprint. Because the
+ * note already forces `status = 'error'`, the `status ∈ {verified,
+ * verified_historical}` gate on `receiptCreatedAt` above ALREADY fails this
+ * case closed — `revoked_time_unverifiable`, never `none` and never
+ * `pre_compromise` — with no extra code path.
+ *
+ * **The signer-fingerprint fallback.** `no_receipt` events never reach the
+ * crypto phase at all (no receipt ⇒ nothing to verify), so there is no
+ * `producerFp` from it. `auditEventInner` falls back to `ev.keyFingerprint`
+ * — the RFC-ACDP-0010 trust column populated straight from the webhook
+ * envelope's own (registry-supplied, UNVERIFIED) `key_fingerprint` field —
+ * so a revocation naming that claimed key still surfaces as
+ * `revoked_time_unverifiable` rather than being silently skipped (AC5).
+ * `receiptCreatedAt` is `null` in every one of these paths regardless, so
+ * this fallback can never produce `pre_compromise`.
+ *
+ * **`KEY_REVOCATION_ATTESTED_SCOPE` / `KEY_REVOCATION_IGNORE_FINGERPRINTS`
+ * apply HERE, at classification time** — never at persistence time (Phase
+ * 12's `revocation-audit.service.ts` records every binding-verified fact
+ * regardless of scope; see that file's own header note on this same split).
+ *
+ * ## Retroactive re-audit (Phase 15)
+ *
+ * Everything above classifies an event AT AUDIT TIME. {@link
+ * ReceiptAuditService#reauditForFingerprint} is the companion path for a
+ * revocation fact recorded AFTER an event was already sealed with a
+ * `verified` (or any other) verdict — `RevocationAuditService.sweep()`
+ * calls it for every fingerprint with a verified fact, every pass, so a
+ * `compromised_since` predating existing history amends the old verdicts
+ * in place instead of leaving them reporting `verified` forever. See that
+ * method's doc for the batching/idempotency/scope details, and
+ * `ReceiptAuditRepository.amendKeyRevocation` for the monotone,
+ * column-scoped guarantee the amendment itself relies on.
  */
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { AcdpDid } from '@agentcontextdistributionprotocol/acdp';
+import { AcdpDid, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 import { authorityToDidWeb, nonCanonicalAuthorityReason } from '../common/did-authority';
 import { AppConfigService } from '../config/app-config.service';
 import { SafeFederationClient } from '../contexts/safe-federation-client';
 import { DatabaseService } from '../db/database.service';
-import { ContextEvent, NewReceiptAudit } from '../db/schema';
+import { ContextEvent, KeyRevocation, NewReceiptAudit } from '../db/schema';
 import { DidWebResolverService } from '../auth/did-web/did-web-resolver.service';
+import { KeyRevocationRepository } from '../storage/key-revocation.repository';
 import { ReceiptAuditRepository } from '../storage/receipt-audit.repository';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
 import { RegistryRepository } from '../storage/registry.repository';
@@ -72,6 +140,173 @@ import {
   verifyReceipt,
 } from './receipt-verify';
 import { RegistryProfileService } from './registry-profile.service';
+
+/**
+ * `Pick<typeof AcdpVerifier, …>`, not a hand-copied interface — see
+ * CLAUDE.md's CI grep rule #6 / `receipt-verify.ts`'s `ReceiptSurface` for
+ * why: it keeps `tsc` watching the binding's real signature.
+ */
+type RevocationClassifySurface = Pick<typeof AcdpVerifier, 'classifyUnderRevocation'>;
+const classifyVerifier = AcdpVerifier as Partial<RevocationClassifySurface>;
+
+/** True when the installed `acdp` binding carries `classifyUnderRevocation` (ships in `acdp` 0.9.1+). */
+export function sdkSupportsRevocationClassification(): boolean {
+  return typeof classifyVerifier.classifyUnderRevocation === 'function';
+}
+
+export type KeyRevocationStatus =
+  | 'none'
+  | 'pre_compromise'
+  | 'revoked_at_or_after'
+  | 'revoked_time_unverifiable';
+
+export type KeyRevocationClassification =
+  | { status: 'none' }
+  | {
+      status: 'pre_compromise' | 'revoked_at_or_after' | 'revoked_time_unverifiable';
+      boundary: string;
+      trustClass: 'producer_signed' | 'registry_attested';
+      sources: Array<{ ctxId: string; publisher: string }>;
+    };
+
+/**
+ * Apply the RFC-ACDP-0014 §7 compromise-boundary rule to one signer's
+ * already-filtered set of verified revocations (§6 policy — which trust
+ * classes apply — is the CALLER's job; see `classifyRevocationForEvent`).
+ *
+ * **Disambiguates on the presence of `boundary`, never on `authorization`.**
+ * The SDK's fail-closed shape (§7 steps 3-4) reports
+ * `{"authorization":"none","boundary":…,"error":…}` — the identical
+ * `authorization` value `{"authorization":"none"}` (no revocation applies
+ * at all) also uses. Reading `authorization` alone would silently disable
+ * every fail-closed case this phase exists to add.
+ *
+ * `receiptCreatedAt === null` (no verified receipt) vs. non-null (a
+ * verified receipt whose `created_at` still landed at-or-after the
+ * boundary) is what tells `revoked_time_unverifiable` (§7 step 4) apart
+ * from `revoked_at_or_after` (§7 step 3) — the SDK's own return shape does
+ * not distinguish the two (both are `authorization:"none"` + `boundary` +
+ * `error`), because from the SDK's point of view they differ only in
+ * whether the CALLER had a verified `created_at` to offer it at all.
+ *
+ * **`receiptCreatedAt`, when non-null, is normalized to strict RFC3339
+ * internally — callers may pass either form.** At live audit time it is
+ * always already RFC3339 (a freshly-fetched receipt's own `created_at`
+ * field, straight from JSON — never DB-sourced). At Phase 15 retroactive
+ * re-audit time it comes back out of `receipt_audits.receipt_created_at`,
+ * which round-trips through the exact same Postgres `timestamp with time
+ * zone` rendering `toRevocationJson`'s doc describes for
+ * `compromised_since` (`"2026-06-12 00:00:00+00"`, not the RFC3339 it was
+ * written with) — confirmed to make the SDK throw outright, the same way,
+ * by this phase's own integration test. Normalizing here, once, for every
+ * caller (rather than requiring each one to remember it) turns a
+ * SDK-throws-a-cryptic-error footgun into a non-issue by construction.
+ */
+export function classifyKeyRevocation(
+  revocations: KeyRevocation[],
+  signerFingerprint: string,
+  receiptCreatedAt: string | null,
+): KeyRevocationClassification {
+  if (revocations.length === 0) return { status: 'none' };
+  if (!sdkSupportsRevocationClassification()) return { status: 'none' };
+  // Normalize ONCE, up front — `toRevocationJson`'s RFC3339 re-normalization
+  // (see its doc comment) must also govern the boundary-equality match below,
+  // or a DB-round-tripped row (Postgres's `"... +00"` rendering) would never
+  // equal the SDK's own RFC3339 `boundary` even when it's the very row that
+  // produced it.
+  const normalized = revocations.map((r) => ({
+    ...r,
+    compromisedSince: new Date(r.compromisedSince).toISOString(),
+  }));
+  const revocationsJson = JSON.stringify(normalized.map(toRevocationJson));
+  const normalizedReceiptCreatedAt =
+    receiptCreatedAt === null ? null : new Date(receiptCreatedAt).toISOString();
+  const raw = classifyVerifier.classifyUnderRevocation!(
+    revocationsJson,
+    signerFingerprint,
+    normalizedReceiptCreatedAt,
+  );
+  const parsed = JSON.parse(raw) as { authorization: string; boundary?: string };
+  if (typeof parsed.boundary !== 'string') return { status: 'none' };
+  const boundary = parsed.boundary;
+
+  // Trust class + sources are OURS to derive (the SDK reports only the
+  // boundary): the revocation row(s) whose own compromised_since equals the
+  // effective boundary are what "established" it. On a tie (two trust
+  // classes landing on the exact same instant — an edge case, not the
+  // common path) prefer producer_signed, the stronger class, as the
+  // reported one — a defensible tie-break, not a silent collapse of the
+  // two (see ASSUMPTIONS.md).
+  const atBoundary = normalized.filter((r) => r.compromisedSince === boundary);
+  const winners = atBoundary.length > 0 ? atBoundary : normalized;
+  // Cast, not re-validated: `key_revocations.trust_class` is a plain
+  // varchar column (Drizzle infers `string`), but every row was already
+  // fail-closed validated to exactly these two values by
+  // `parseKeyRevocation` before it was ever persisted (Phase 12) — the same
+  // invariant `key-revocation.repository.ts`'s own `KeyRevocation` type
+  // relies on elsewhere. Residual risk, unreachable today, flagged for
+  // Phase 15 rather than fixed here: there is no DB CHECK constraint behind
+  // that invariant, so a future writer of `key_revocations` that persisted
+  // an unrecognised `trust_class` would make the SDK throw on THIS row
+  // (unknown-variant deserialize failure) before this cast ever runs —
+  // caught by `auditEvent`'s outer try/catch, producing `status:'error'` +
+  // `keyRevocationStatus:'none'`, fail-OPEN on the one axis that matters.
+  const trustClass = (winners.find((r) => r.trustClass === 'producer_signed')?.trustClass ??
+    winners[0]?.trustClass ??
+    'producer_signed') as 'producer_signed' | 'registry_attested';
+  // Every row FED to this classification, not just the boundary winner(s)
+  // — RFC-ACDP-0014 §13 provenance is "surfacing which DID issued each
+  // acted-upon revocation," and every row here was acted upon (all were
+  // handed to the SDK's min() fold).
+  const sources = revocations.map((r) => ({ ctxId: r.ctxId, publisher: r.publisher }));
+
+  const status: 'pre_compromise' | 'revoked_at_or_after' | 'revoked_time_unverifiable' =
+    parsed.authorization === 'historically_authorized_pre_compromise'
+      ? 'pre_compromise'
+      : receiptCreatedAt === null
+        ? 'revoked_time_unverifiable'
+        : 'revoked_at_or_after';
+
+  return { status, boundary, trustClass, sources };
+}
+
+/**
+ * The exact snake_case shape `AcdpVerifier.parseKeyRevocation` returns
+ * (`index.d.ts:680-685`) — `classifyUnderRevocation`'s own doc says its
+ * input is "the shapes `parseKeyRevocation` returns." `reason` /
+ * `revoked_key_id` are included explicitly as `null` when absent (never
+ * omitted as keys) for parity with that shape, even though serde's
+ * `Option<T>` handling means the installed binding accepts either form —
+ * a missing key deserializes to `None` the same as an explicit `null`,
+ * confirmed empirically against the pinned `acdp` binding.
+ *
+ * **Callers MUST pass an already-RFC3339-normalized `compromisedSince`.**
+ * `key_revocations.compromised_since` round-trips through Postgres as a
+ * `timestamp with time zone` — even with Drizzle's `mode: 'string'`, what
+ * comes back is the driver's own textual rendering
+ * (`"2026-06-01 00:00:00+00"`, a space and `+00`), not the RFC3339 the row
+ * was originally written with (`"2026-06-01T00:00:00.000Z"`, from the
+ * producer's signed body via `revocation-verify.ts`). The SDK's Rust
+ * deserializer parses this field with `chrono`'s strict RFC3339 parser and
+ * rejects the Postgres rendering outright — confirmed by this phase's own
+ * integration test, which is what caught it (the unit specs construct
+ * `KeyRevocation` objects in-process with the original ISO string, so they
+ * never see the round-trip). `classifyKeyRevocation` normalizes every row
+ * with `new Date(...).toISOString()` ONCE, up front, before calling this —
+ * see its own comment for why that same normalized value also has to govern
+ * the boundary-equality match below.
+ */
+function toRevocationJson(r: KeyRevocation): Record<string, unknown> {
+  return {
+    revoked_key_fingerprint: r.revokedKeyFingerprint,
+    compromised_since: r.compromisedSince,
+    reason: r.reason,
+    revoked_key_id: r.revokedKeyId,
+    revoked_key_controller: r.revokedKeyController,
+    publisher: r.publisher,
+    trust_class: r.trustClass,
+  };
+}
 
 const ADVISORY_LOCK_KEY = 'acdp-cp-receipt-audit';
 /** Tolerated forward clock skew before `created_at` postdating is flagged. */
@@ -99,7 +334,19 @@ interface Verdict {
   discrepancies: string[];
   receiptCreatedAt: string | null;
   skewMs: number | null;
+  /** RFC-ACDP-0014 §7 — see the file header. Defaults below are 'none' / null / []. */
+  keyRevocationStatus: KeyRevocationStatus;
+  keyRevocationTrustClass: 'producer_signed' | 'registry_attested' | null;
+  compromiseBoundary: string | null;
+  keyRevocationSources: Array<{ ctxId: string; publisher: string }>;
 }
+
+const NO_REVOCATION = {
+  keyRevocationStatus: 'none' as const,
+  keyRevocationTrustClass: null,
+  compromiseBoundary: null,
+  keyRevocationSources: [],
+};
 
 /** Outcome of the cryptographic verification phase. */
 interface CryptoOutcome {
@@ -110,6 +357,16 @@ interface CryptoOutcome {
    * (RFC-ACDP-0010 §9 historically authorized). Only meaningful when `ran`.
    */
   historical: boolean;
+  /**
+   * The producer fingerprint resolved this far (independently, for ed25519;
+   * a passed-through claim for did:key/non-ed25519 — see
+   * `resolveProducerFingerprint`), or `null` if verification never got far
+   * enough to resolve one. Carried forward even on a LATER failure (e.g. the
+   * registry receipt key itself fails to resolve) — RFC-ACDP-0014 §7
+   * classification only needs to know the SIGNER, not that the receipt
+   * fully verified.
+   */
+  producerFp: string | null;
 }
 
 @Injectable()
@@ -126,6 +383,7 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     private readonly federationClient: SafeFederationClient,
     private readonly didResolver: DidWebResolverService,
     private readonly instrumentation: InstrumentationService,
+    private readonly keyRevocationRepo: KeyRevocationRepository,
   ) {}
 
   onModuleInit(): void {
@@ -135,6 +393,14 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
         'receipt audit enabled but the installed acdp SDK has no receipt API ' +
           '(pinned floor is >= 0.14.1; a mis-resolved native optionalDependency looks like ' +
           'this) — running structural cross-checks only, no signature verification',
+      );
+    }
+    if (this.config.keyRevocationCheckEnabled && !sdkSupportsRevocationClassification()) {
+      this.logger.warn(
+        'KEY_REVOCATION_CHECK_ENABLED but the installed acdp SDK has no ' +
+          'classifyUnderRevocation (ships in acdp 0.9.1+; a mis-resolved native ' +
+          'optionalDependency looks like this) — every event will classify key_revocation_status ' +
+          "'none' regardless of any verified revocation, silently disabling RFC-ACDP-0014 §7",
       );
     }
     const intervalMs = this.config.receiptAuditIntervalSeconds * 1000;
@@ -186,6 +452,11 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
         const verdict = await this.auditEvent(ev);
         await this.auditRepo.record(this.toRow(ev, verdict));
         this.instrumentation.receiptAuditsTotal.inc({ status: verdict.status });
+        if (this.config.keyRevocationCheckEnabled) {
+          this.instrumentation.receiptAuditKeyRevocationsTotal.inc({
+            status: verdict.keyRevocationStatus,
+          });
+        }
         if (verdict.status === 'discrepancy') {
           this.logger.warn(
             `receipt discrepancy ctx=${ev.ctxId ?? '?'} run=${ev.runId ?? '?'} ` +
@@ -211,8 +482,212 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
         ],
         receiptCreatedAt: null,
         skewMs: null,
+        ...NO_REVOCATION,
       };
     }
+  }
+
+  /**
+   * Attach the RFC-ACDP-0014 §7 classification to an otherwise-complete
+   * verdict. See the file header for the gating rules — in particular, why
+   * this keys on `base.status`, never on whether crypto verification merely
+   * *ran*.
+   */
+  private async withRevocationClassification(
+    ev: ContextEvent,
+    base: Omit<
+      Verdict,
+      'keyRevocationStatus' | 'keyRevocationTrustClass' | 'compromiseBoundary' | 'keyRevocationSources'
+    >,
+    producerFp: string | null,
+  ): Promise<Verdict> {
+    if (!this.config.keyRevocationCheckEnabled) return { ...base, ...NO_REVOCATION };
+    const signerFingerprint = producerFp ?? ev.keyFingerprint ?? null;
+    if (!signerFingerprint) return { ...base, ...NO_REVOCATION };
+    // §7 step 1: never a `created_at` that did not itself pass full receipt
+    // verification (`verified` / `verified_historical`) — see the file
+    // header's P-256 note for why this is `base.status`, not `crypto.ran`.
+    const receiptCreatedAt =
+      base.status === 'verified' || base.status === 'verified_historical'
+        ? base.receiptCreatedAt
+        : null;
+    const classification = await this.classifyRevocationForEvent(
+      ev,
+      signerFingerprint,
+      receiptCreatedAt,
+    );
+    if (classification.status === 'none') return { ...base, ...NO_REVOCATION };
+    return {
+      ...base,
+      keyRevocationStatus: classification.status,
+      keyRevocationTrustClass: classification.trustClass,
+      compromiseBoundary: classification.boundary,
+      keyRevocationSources: classification.sources,
+    };
+  }
+
+  /**
+   * `KEY_REVOCATION_ATTESTED_SCOPE` / `KEY_REVOCATION_IGNORE_FINGERPRINTS`
+   * are applied HERE — see the file header on why this is classification-
+   * time, not persistence-time.
+   */
+  private async classifyRevocationForEvent(
+    ev: ContextEvent,
+    signerFingerprint: string,
+    receiptCreatedAt: string | null,
+  ): Promise<KeyRevocationClassification> {
+    const all = await this.keyRevocationRepo.findByFingerprint(signerFingerprint, ev.tenantId);
+    if (all.length === 0) return { status: 'none' };
+    if (this.config.keyRevocationIgnoreFingerprints.includes(signerFingerprint)) {
+      return { status: 'none' };
+    }
+    const applicable = this.filterApplicableRevocations(all, ev.registryAuthority);
+    return classifyKeyRevocation(applicable, signerFingerprint, receiptCreatedAt);
+  }
+
+  /**
+   * `KEY_REVOCATION_ATTESTED_SCOPE`'s reach (§6 policy) — shared between the
+   * live per-event classification above and the retroactive re-audit fan-out
+   * below, so the two paths can never drift on which revocations a given
+   * registry authority's events are allowed to be classified against.
+   *
+   * `same_registry` compares against `r.publisher`, never `r.originAuthority`.
+   * `publisher` is AUTHENTICATED for a `registry_attested` row —
+   * `crossCheckRegistryBinding` (`revocation-binding.ts`) pins it to
+   * `authorityToDidWeb(servingAuthority)` at persistence time (§6), so it is
+   * exactly "the registry we actually verified attested this revocation."
+   * `originAuthority`, by contrast, is the revocation BODY's own
+   * `origin_registry` claim — outside `content_hash`/signature coverage (see
+   * the doc comment where it's written, `revocation-audit.service.ts`), so an
+   * unauthenticated, attacker-steerable value. Keying scope off it would let
+   * an enrolled registry falsely scope its OWN attested revocation onto
+   * events served by a DIFFERENT registry entirely (by claiming that
+   * registry as the body's `origin_registry`) — and would equally miss a
+   * revocation genuinely attested by the very registry serving THIS event,
+   * whenever its body happens to claim a different lineage origin. Neither
+   * failure mode is acceptable for a scope gate whose whole point is "which
+   * registry actually vouches for this."
+   */
+  private filterApplicableRevocations(
+    all: KeyRevocation[],
+    registryAuthority: string,
+  ): KeyRevocation[] {
+    return all.filter((r) => {
+      if (r.trustClass === 'producer_signed') return true;
+      switch (this.config.keyRevocationAttestedScope) {
+        case 'off':
+          return false;
+        case 'global':
+          return true;
+        case 'same_registry':
+        default: {
+          const expectedPublisher = authorityToDidWeb(registryAuthority);
+          return expectedPublisher !== null && r.publisher === expectedPublisher;
+        }
+      }
+    });
+  }
+
+  /**
+   * RFC-ACDP-0014 §7 retroactive re-audit (Phase 15). A revocation whose
+   * `compromised_since` predates already-audited history must revise those
+   * verdicts — `ReceiptAuditRepository.findUnauditedPublishes`'s `isNull`
+   * exclusion and its lookback window both mean a `verified` row from
+   * before the revocation was ever recorded would otherwise report
+   * `verified` FOREVER, exactly contrary to RFC-ACDP-0014 §4's own advice
+   * to producers to choose T conservatively (i.e. early — "the one
+   * non-recoverable mistake" is an optimistically LATE T).
+   *
+   * Called by `RevocationAuditService.sweep()` for every fingerprint it
+   * currently holds a verified fact for — not only ones with a fact
+   * freshly recorded THIS pass — so a fingerprint whose fan-out exceeds one
+   * batch (`RECEIPT_AUDIT_BATCH_SIZE`, reused rather than a dedicated knob:
+   * see ASSUMPTIONS.md) converges over the next periodic sweep instead of
+   * needing its own retry mechanism (AC5).
+   *
+   * Amends IN PLACE via `ReceiptAuditRepository.amendKeyRevocation` — see
+   * its doc for the monotone, column-scoped guarantee. Candidate selection
+   * (`findRevocationAmendmentCandidates`) and the amendment's own WHERE
+   * clause both widen on `globalMinBoundaryIso`/`amendment.boundary`, so a
+   * row already amended once IS revisited by a LATER, earlier-dated
+   * revocation on the same fingerprint that tightens it further — see that
+   * repository method's doc for the two-predicate design (candidate
+   * selection over-inclusive on scope, the amendment itself exact).
+   *
+   * Per-row try/catch: one row throwing (e.g. a malformed stored value) logs
+   * and counts an `error`, but must not abandon the rest of the batch — the
+   * caller (`RevocationAuditService.sweep()`) only wraps this call
+   * per-FINGERPRINT, so without a per-row boundary here a single bad row
+   * would have silently dropped every other candidate for this fingerprint,
+   * for this pass.
+   */
+  async reauditForFingerprint(tenantId: string, fingerprint: string): Promise<number> {
+    if (!this.config.keyRevocationCheckEnabled) return 0; // AC7
+    if (!sdkSupportsRevocationClassification()) return 0;
+    if (this.config.keyRevocationIgnoreFingerprints.includes(fingerprint)) return 0;
+
+    // The full current fact set for this fingerprint, fetched ONCE and
+    // reused across candidate selection AND classification — §4's fold is
+    // min(compromised_since) over the WHOLE set. `globalMinBoundaryIso`
+    // widens candidate selection to also catch rows a SECOND, earlier-dated
+    // revocation could tighten further; each `compromisedSince` is
+    // normalized the same way `classifyKeyRevocation` normalizes it
+    // internally, since raw comparison of Postgres-rendered timestamp text
+    // is not a safe substitute for comparing actual instants.
+    const all = await this.keyRevocationRepo.findByFingerprint(fingerprint, tenantId);
+    if (all.length === 0) return 0;
+    const globalMinBoundaryIso = all
+      .map((r) => new Date(r.compromisedSince).toISOString())
+      .reduce((min, iso) => (iso < min ? iso : min));
+
+    const candidates = await this.auditRepo.findRevocationAmendmentCandidates(
+      tenantId,
+      fingerprint,
+      globalMinBoundaryIso,
+      this.config.receiptAuditBatchSize,
+    );
+    if (candidates.length === 0) return 0;
+
+    let amended = 0;
+    for (const row of candidates) {
+      try {
+        // Same gate as `withRevocationClassification`: a `created_at` only
+        // ever reaches classification when the ORIGINAL verdict's status
+        // was itself fully verified — see the file header's P-256 note.
+        const receiptCreatedAt =
+          row.status === 'verified' || row.status === 'verified_historical'
+            ? row.receiptCreatedAt
+            : null;
+        const applicable = this.filterApplicableRevocations(all, row.registryAuthority);
+        const classification = classifyKeyRevocation(applicable, fingerprint, receiptCreatedAt);
+        if (classification.status === 'none') continue; // e.g. scope='off' filtered every row out
+        const amendedThisRow = await this.auditRepo.amendKeyRevocation(tenantId, row.eventId, {
+          status: classification.status,
+          trustClass: classification.trustClass,
+          boundary: classification.boundary,
+          sources: classification.sources,
+        });
+        if (amendedThisRow) {
+          amended++;
+          this.instrumentation.receiptAuditRevocationReauditsTotal.inc({
+            status: classification.status,
+          });
+        }
+      } catch (err) {
+        this.instrumentation.receiptAuditRevocationReauditsTotal.inc({ status: 'error' });
+        this.logger.warn(
+          `key-revocation re-audit failed event=${row.eventId} fingerprint=${fingerprint} ` +
+            `tenant=${tenantId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    if (amended > 0) {
+      this.logger.log(
+        `key-revocation re-audit: amended ${amended}/${candidates.length} receipt_audits ` +
+          `row(s) for fingerprint=${fingerprint} tenant=${tenantId}`,
+      );
+    }
+    return amended;
   }
 
   private async auditEventInner(ev: ContextEvent): Promise<Verdict> {
@@ -228,16 +703,24 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     if (!receipt) {
       const advertises = await this.profiles.advertisesReceipts(authority, ev.tenantId);
       if (advertises === true) {
-        return {
-          status: 'discrepancy',
-          discrepancies: [
-            `missing_receipt: '${authority}' advertises acdp-registry-receipts but the publish event carried no registry_receipt`,
-          ],
-          receiptCreatedAt: null,
-          skewMs: null,
-        };
+        return this.withRevocationClassification(
+          ev,
+          {
+            status: 'discrepancy',
+            discrepancies: [
+              `missing_receipt: '${authority}' advertises acdp-registry-receipts but the publish event carried no registry_receipt`,
+            ],
+            receiptCreatedAt: null,
+            skewMs: null,
+          },
+          null,
+        );
       }
-      return { status: 'no_receipt', discrepancies: [], receiptCreatedAt: null, skewMs: null };
+      return this.withRevocationClassification(
+        ev,
+        { status: 'no_receipt', discrepancies: [], receiptCreatedAt: null, skewMs: null },
+        null,
+      );
     }
 
     const flags: string[] = []; // trust flags — registry dishonesty signals
@@ -308,12 +791,16 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
               ? 'verified_historical'
               : 'verified'
             : 'structural';
-    return {
-      status,
-      discrepancies: [...flags, ...notes],
-      receiptCreatedAt: rCreatedAt && Number.isFinite(claimedMs) ? rCreatedAt : null,
-      skewMs,
-    };
+    return this.withRevocationClassification(
+      ev,
+      {
+        status,
+        discrepancies: [...flags, ...notes],
+        receiptCreatedAt: rCreatedAt && Number.isFinite(claimedMs) ? rCreatedAt : null,
+        skewMs,
+      },
+      crypto.producerFp,
+    );
   }
 
   /**
@@ -329,11 +816,19 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     flags: string[],
     notes: string[],
   ): Promise<CryptoOutcome> {
-    const notRun: CryptoOutcome = { ran: false, historical: false };
-    if (!sdkSupportsReceipts()) return notRun;
+    // A function, not a constant: several failure sites below resolve a
+    // producer fingerprint before failing on something ELSE (e.g. the
+    // registry receipt key), and that fingerprint must still reach §7
+    // classification — see CryptoOutcome.producerFp's doc.
+    const notRun = (producerFp: string | null = null): CryptoOutcome => ({
+      ran: false,
+      historical: false,
+      producerFp,
+    });
+    if (!sdkSupportsReceipts()) return notRun();
     if (!ev.ctxId) {
       notes.push('unverified: event has no ctx_id to fetch');
-      return notRun;
+      return notRun();
     }
     // The SDK parses `expectedCtxId` with `CtxId::parse`, so a non-canonical
     // ctx_id in OUR OWN row makes `verifyReceipt` throw. That throw is
@@ -351,7 +846,7 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
           `verified against a ctx_id the protocol cannot parse`,
       );
       this.warnCtxIdUnverifiable(ev, 'stored_ctx_id_not_canonical');
-      return notRun;
+      return notRun();
     }
 
     const registry = await this.registryRepo.findByAuthority(
@@ -360,7 +855,7 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     );
     if (!registry?.baseUrl) {
       notes.push(`unverified: no base_url known for '${ev.registryAuthority}'`);
-      return notRun;
+      return notRun();
     }
 
     // Fetch the FullContext through the SSRF gate (public-only, no creds).
@@ -370,19 +865,19 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
       const resp = await this.federationClient.get(url);
       if (resp.status < 200 || resp.status >= 300) {
         notes.push(`unverified: context fetch returned HTTP ${resp.status}`);
-        return notRun;
+        return notRun();
       }
       const full = JSON.parse(resp.body) as { body?: unknown };
       if (full.body === null || typeof full.body !== 'object') {
         notes.push('unverified: retrieval response has no body member');
-        return notRun;
+        return notRun();
       }
       body = full.body as Record<string, unknown>;
     } catch (err) {
       notes.push(
         `unverified: context fetch failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return notRun;
+      return notRun();
     }
 
     // Independently recompute the body hash. On success the echoed string is
@@ -392,7 +887,7 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     const echoedHash = strOf(body['content_hash']);
     if (!echoedHash) {
       notes.push('unverified: retrieved body has no content_hash');
-      return notRun;
+      return notRun();
     }
     const hashCheck = verifyContentHash(bodyJson, echoedHash);
     if (!hashCheck.ok) {
@@ -402,13 +897,13 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
       const diagnosis = explainHashMismatch(bodyJson, echoedHash);
       const detail = diagnosis ? ` [${diagnosis.slice(0, 300)}]` : '';
       flags.push(`content_hash_mismatch: ${hashCheck.reason}${detail}`);
-      return notRun;
+      return notRun();
     }
 
     // Producer key fingerprint — resolved INDEPENDENTLY of the registry's
     // claim wherever possible (that independence is the audit's value).
     const producerFp = await this.resolveProducerFingerprint(ev, body, receipt, flags, notes);
-    if (producerFp === null) return notRun;
+    if (producerFp === null) return notRun();
 
     // Registry receipt key: must belong to the source registry's did:web
     // identity; resolved from its DID document via the shared resolver.
@@ -419,7 +914,7 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     const receiptKeyId = strOf(sig?.['key_id']);
     if (!receiptKeyId) {
       flags.push('receipt_invalid: signature.key_id missing');
-      return notRun;
+      return notRun(producerFp);
     }
     // Registries MUST sign receipts with Ed25519 (RFC-ACDP-0010); the SDK's
     // verifyReceipt verifies Ed25519 only. Reject any other declared algorithm
@@ -431,7 +926,7 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
         `unverified: receipt signature algorithm '${receiptAlg}' is unsupported — ` +
           `registries MUST sign receipts with ${RECEIPT_SIG_ALG} (RFC-ACDP-0010)`,
       );
-      return notRun;
+      return notRun(producerFp);
     }
     // Same canonical encoder as the source-authority binding above: the DID a
     // `host:port` registry signs its receipts under is `did:web:host%3Aport`.
@@ -441,13 +936,13 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
         `unverified: cannot derive the registry's did:web identity to bind the receipt key to — ` +
           nonCanonicalAuthorityReason(ev.registryAuthority),
       );
-      return notRun;
+      return notRun(producerFp);
     }
     if (AcdpDid.stripFragment(receiptKeyId) !== expectedRegistryDid) {
       flags.push(
         `receipt_key_foreign_did: '${receiptKeyId}' is not a key of '${expectedRegistryDid}'`,
       );
-      return notRun;
+      return notRun(producerFp);
     }
     // Registry receipt key uses the RFC-ACDP-0010 §9 lifecycle (NOT the
     // assertionMethod gate): a key rotated out of assertionMethod but kept in
@@ -462,7 +957,7 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
       notes.push(
         `unverified: registry receipt key resolution failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return notRun;
+      return notRun(producerFp);
     }
 
     // `bodyJson` is the SAME string `verifyContentHash` was run against, so
@@ -504,9 +999,9 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
         default:
           flags.push(`receipt_invalid: ${result.reason}`);
       }
-      return notRun;
+      return notRun(producerFp);
     }
-    return { ran: true, historical };
+    return { ran: true, historical, producerFp };
   }
 
   /**
@@ -617,6 +1112,10 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
       receiptCreatedAt: verdict.receiptCreatedAt,
       eventArrivedAt: ev.createdAt,
       skewMs: verdict.skewMs,
+      keyRevocationStatus: verdict.keyRevocationStatus,
+      keyRevocationTrustClass: verdict.keyRevocationTrustClass,
+      compromiseBoundary: verdict.compromiseBoundary,
+      keyRevocationSources: verdict.keyRevocationSources,
     };
   }
 }

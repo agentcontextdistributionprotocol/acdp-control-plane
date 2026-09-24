@@ -91,6 +91,42 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['meets'] as const,
   });
 
+  // ── ACDP 0.3.0 producer key-revocation (RFC-ACDP-0014) ────────────────
+
+  readonly keyRevocationChecksTotal = new client.Counter({
+    name: 'acdp_key_revocation_checks_total',
+    help: 'Producer key-revocation verification sweep outcomes by status and trust class',
+    labelNames: ['status', 'trust_class'] as const,
+  });
+
+  // RFC-ACDP-0014 §7 consumer classification (Phase 14) — a DISTINCT metric
+  // from the one above, deliberately not folded into it: that counter is
+  // the revocation-AUDIT sweep's own body-verification outcomes ('verified'
+  // | 'invalid' | 'unavailable' over a revocation CONTEXT'S signature), this
+  // one is the receipt-audit sweep's §7 boundary classification of an
+  // ORDINARY audited event ('none' | 'pre_compromise' |
+  // 'revoked_at_or_after' | 'revoked_time_unverifiable'). Sharing one
+  // counter across both would silently conflate two unrelated status
+  // vocabularies under the same label values.
+  readonly receiptAuditKeyRevocationsTotal = new client.Counter({
+    name: 'acdp_receipt_audit_key_revocation_total',
+    help: 'RFC-ACDP-0014 §7 compromise-boundary classification outcomes for audited receipts, by status',
+    labelNames: ['status'] as const,
+  });
+
+  // RFC-ACDP-0014 §7 retroactive re-audit (Phase 15) — a DISTINCT metric
+  // from the one above, deliberately not folded into it: that counter is
+  // the LIVE classification of a freshly-audited event; this one is the
+  // FAN-OUT amendment of an ALREADY-sealed row, driven by a revocation
+  // fact recorded after the fact. Conflating them would hide the
+  // retroactive-correction signal inside ordinary sweep traffic — the
+  // progress metric the plan's Scale edge case calls for.
+  readonly receiptAuditRevocationReauditsTotal = new client.Counter({
+    name: 'acdp_receipt_audit_revocation_reaudits_total',
+    help: 'RFC-ACDP-0014 §7 retroactive amendments to already-sealed receipt_audits rows, by resulting status (including the pseudo-status "error" for a row that threw during re-classification)',
+    labelNames: ['status'] as const,
+  });
+
   onModuleInit(): void {
     client.collectDefaultMetrics();
   }

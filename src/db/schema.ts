@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
@@ -58,6 +59,14 @@ export const contextEvents = pgTable(
     agentIdx: index('ce_agent_idx').on(t.agentId),
     lineageIdx: index('ce_lineage_idx').on(t.lineageId),
     typeIdx: index('ce_type_idx').on(t.eventType),
+    // RFC-ACDP-0014 §7 retroactive re-audit (migration 0024, Phase 15): the
+    // fan-out from a revoked fingerprint to every receipt_audits row whose
+    // event carries it joins here. Partial — most rows predate ACDP 0.2.0
+    // trust metadata or never resolved a producer key, so key_fingerprint is
+    // NULL far more often than not.
+    keyFingerprintIdx: index('ce_key_fingerprint_idx')
+      .on(t.tenantId, t.keyFingerprint)
+      .where(sql`${t.keyFingerprint} is not null`),
   }),
 );
 
@@ -391,12 +400,49 @@ export const receiptAudits = pgTable(
     checkedAt: timestamp('checked_at', { withTimezone: true, mode: 'string' })
       .notNull()
       .defaultNow(),
+    // RFC-ACDP-0014 §7 consumer classification (migration 0023, Phase 14).
+    // A verification VERDICT, deliberately never folded into `discrepancies`
+    // (which means registry dishonesty — this is a producer-key-lifecycle
+    // fact about an otherwise-honest receipt). 'none' | 'pre_compromise' |
+    // 'revoked_at_or_after' | 'revoked_time_unverifiable' — enumerated in a
+    // comment, not a DB enum, per house style.
+    keyRevocationStatus: varchar('key_revocation_status', { length: 32 })
+      .notNull()
+      .default('none'),
+    // 'producer_signed' | 'registry_attested' of the revocation(s) that
+    // established the boundary below. Never NULL when status <> 'none' —
+    // §6 is explicit the two trust classes must never be collapsed.
+    keyRevocationTrustClass: varchar('key_revocation_trust_class', { length: 32 }),
+    compromiseBoundary: timestamp('compromise_boundary', {
+      withTimezone: true,
+      mode: 'string',
+    }),
+    // §13 provenance: {ctxId, publisher} per revocation row that fed this
+    // classification — "surfacing which DID issued each acted-upon
+    // revocation," not just the boundary number.
+    keyRevocationSources: jsonb('key_revocation_sources')
+      .$type<Array<{ ctxId: string; publisher: string }>>()
+      .notNull()
+      .default([]),
   },
   (t) => ({
     runIdx: index('ra_run_idx').on(t.runId),
     statusIdx: index('ra_status_idx').on(t.status),
     tenantIdx: index('ra_tenant_idx').on(t.tenantId),
     registryIdx: index('ra_registry_idx').on(t.registryAuthority),
+    // Partial: the overwhelming majority of rows are 'none' (RFC-ACDP-0014
+    // revocations are rare by construction).
+    keyRevocationStatusIdx: index('ra_key_revocation_status_idx')
+      .on(t.keyRevocationStatus)
+      .where(sql`${t.keyRevocationStatus} <> 'none'`),
+    // Phase 15 fan-out: `findRevocationAmendmentCandidates` filters on
+    // (tenant_id, event_id) restricted to still-eligible rows. Partial and
+    // inverse of the index above — most rows stay 'none' forever, but the
+    // candidate query for a NEVER-revoked fingerprint (the common case, every
+    // sweep) still needs to resolve quickly against this predicate alone.
+    keyRevocationNoneIdx: index('ra_key_revocation_none_idx')
+      .on(t.tenantId, t.eventId)
+      .where(sql`${t.keyRevocationStatus} = 'none'`),
   }),
 );
 
@@ -604,6 +650,72 @@ export const logCosignatures = pgTable(
   }),
 );
 
+// Producer key-revocation signal (RFC-ACDP-0014, migration 0022). VERIFIED
+// FACTS, PERMANENT, RETENTION-EXEMPT — §4: "there is no un-revoking a key",
+// so a fact that expired out of a retention purge would silently
+// re-authorize everything published after its compromise boundary.
+// DataRetentionService MUST NOT touch this table, and
+// KeyRevocationRepository deliberately has no deleteBefore/purge method.
+//
+// `publisher` and `trustClass` are both stored and both always reported —
+// §6 is explicit the classification "MUST NOT be collapsed", and §13's
+// cross-producer-revocation mitigation rests on surfacing which DID issued
+// each acted-upon revocation. Never derive one from the other at read time.
+export const keyRevocations = pgTable(
+  'key_revocations',
+  {
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    ctxId: text('ctx_id').notNull(),
+    revokedKeyFingerprint: varchar('revoked_key_fingerprint', { length: 80 }).notNull(),
+    compromisedSince: timestamp('compromised_since', { withTimezone: true, mode: 'string' }).notNull(),
+    revokedKeyController: text('revoked_key_controller').notNull(),
+    publisher: text('publisher').notNull(),
+    // 'producer_signed' | 'registry_attested' — see header. Enumerated in a
+    // comment, not a DB enum type, per house style.
+    trustClass: varchar('trust_class', { length: 32 }).notNull(),
+    revokedKeyId: text('revoked_key_id'),
+    reason: text('reason'),
+    lineageId: text('lineage_id').notNull(),
+    originAuthority: varchar('origin_authority', { length: 255 }).notNull(),
+    // Which spelling named this revocation ('key-revocation' | the §10
+    // pre-0.3.0 interim 'acdp:key-revocation') — recorded for observability
+    // only, never branched on downstream (§10: both are fully equivalent).
+    contextType: varchar('context_type', { length: 64 }).notNull(),
+    verifiedAt: timestamp('verified_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.tenantId, t.ctxId] }),
+    fingerprintIdx: index('kr_fingerprint_idx').on(t.tenantId, t.revokedKeyFingerprint),
+    lineageIdx: index('kr_lineage_idx').on(t.tenantId, t.lineageId),
+  }),
+);
+
+// TTL-bounded per-vantage FRESHNESS MARKERS ("lineage L was fully walked
+// from registry R at time T") — a SEPARATE table from keyRevocations, on
+// purpose (mirrors the SDK reference client's own facts-vs-markers split).
+// A cached *absence* of a walk must never suppress a walk when fact rows are
+// missing, so this cursor must be independently deletable and must be
+// deleted whenever fact rows for that lineage are. Populated/consumed by the
+// §7 lineage-fold sweep (a later phase); the table is created here so both
+// key-revocation tables land in one migration.
+export const keyRevocationLineageCursors = pgTable(
+  'key_revocation_lineage_cursors',
+  {
+    tenantId: varchar('tenant_id', { length: 255 }).notNull().default('default'),
+    lineageId: text('lineage_id').notNull(),
+    registryAuthority: varchar('registry_authority', { length: 255 }).notNull(),
+    walkedAt: timestamp('walked_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.tenantId, t.lineageId, t.registryAuthority] }),
+    walkedAtIdx: index('krlc_walked_at_idx').on(t.walkedAt),
+  }),
+);
+
 export type ContextEvent = typeof contextEvents.$inferSelect;
 export type NewContextEvent = typeof contextEvents.$inferInsert;
 export type Run = typeof runs.$inferSelect;
@@ -638,3 +750,7 @@ export type LogInclusionAudit = typeof logInclusionAudits.$inferSelect;
 export type NewLogInclusionAudit = typeof logInclusionAudits.$inferInsert;
 export type LogCosignature = typeof logCosignatures.$inferSelect;
 export type NewLogCosignature = typeof logCosignatures.$inferInsert;
+export type KeyRevocation = typeof keyRevocations.$inferSelect;
+export type NewKeyRevocation = typeof keyRevocations.$inferInsert;
+export type KeyRevocationLineageCursor = typeof keyRevocationLineageCursors.$inferSelect;
+export type NewKeyRevocationLineageCursor = typeof keyRevocationLineageCursors.$inferInsert;
