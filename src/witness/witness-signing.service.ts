@@ -41,7 +41,6 @@ import { AppConfigService } from '../config/app-config.service';
 import {
   nodeWitnessSigner,
   sdkHasCosignatureSurface,
-  type LogCosignature,
   type WitnessSigner,
 } from '../audit/cosign';
 
@@ -212,11 +211,6 @@ export class WitnessSigningService {
       covered_logs: coveredLogs,
       cosignature_endpoint: '/log/witness',
     };
-  }
-
-  /** A cosignature verifies under THIS witness's own assertionMethod key. */
-  ownCosignatureVerifies(cosignature: LogCosignature): boolean {
-    return cosignature.witness_id === this.witnessId;
   }
 }
 

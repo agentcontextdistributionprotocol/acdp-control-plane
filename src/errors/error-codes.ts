@@ -41,6 +41,18 @@ export enum ErrorCode {
   // category for locally failing proofs — the RFC's consumer-side use of the
   // `invalid_log_proof` semantic.
   INVALID_LOG_PROOF = 'INVALID_LOG_PROOF',
+  // RFC-ACDP-0015 §10 registers `invalid_witness_cosignature` as its own wire
+  // code (HTTP 502) and is emphatic it must not collapse into
+  // `invalid_log_proof`: "an `invalid_log_proof` indicts the LOG … an
+  // `invalid_witness_cosignature` indicts a WITNESS's attestation, an
+  // independent verdict over an independent signer. Collapsing them would
+  // overload a single semantic." A cosignature failing §8 never indicts the
+  // checkpoint itself (§8: "it does not, by itself, fail the checkpoint … it
+  // simply does not count toward N") — so this is a verdict/diagnostic
+  // category for a locally failing cosignature (mirrors INVALID_LOG_PROOF's
+  // "verdict/alert category for locally failing proofs" role), never a new
+  // `WitnessAlertReason`.
+  INVALID_WITNESS_COSIGNATURE = 'INVALID_WITNESS_COSIGNATURE',
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   INTERNAL_ERROR = 'INTERNAL_ERROR',
 }

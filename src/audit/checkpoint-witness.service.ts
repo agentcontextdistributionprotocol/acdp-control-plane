@@ -833,7 +833,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       });
       if (report.failures.length > 0) {
         this.logger.debug(
-          `quorum for '${authority}' had ${report.failures.length} non-counting cosignature(s): ${report.failures.join('; ')}`,
+          `quorum for '${authority}' had ${report.failures.length} non-counting cosignature(s): ${boundedJoin(report.failures)}`,
         );
       }
       return {
@@ -867,6 +867,21 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
 
 function msgOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** Longest a joined-failures debug log line may render as, before truncation. */
+const QUORUM_FAILURES_LOG_MAX_CHARS = 2000;
+
+/**
+ * Join `QuorumReport.failures` for a debug log line, capped so a checkpoint
+ * with many aggregated cosignatures (a registry trusting a large witness
+ * set) can never produce an unbounded log line.
+ */
+function boundedJoin(failures: string[]): string {
+  const joined = failures.join('; ');
+  return joined.length > QUORUM_FAILURES_LOG_MAX_CHARS
+    ? `${joined.slice(0, QUORUM_FAILURES_LOG_MAX_CHARS)}… (+${failures.length} total)`
+    : joined;
 }
 
 /**

@@ -156,6 +156,13 @@ describe('transparency-log witness cosigning (integration)', () => {
     expect(badSize.status).toBe(400);
   });
 
+  it('GET /log/witness rejects an authority containing `_` (B9b: tightened to the closed schema\'s character class, no underscore)', async () => {
+    const res = await ctx.client.requestRaw('GET', '/log/witness', {
+      query: { log_id: 'did:web:reg_istry.example/log/a_b' },
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('GET /.well-known/acdp-witness.json advertises the witness capabilities', async () => {
     await repo.record(makeCosignRow(signing, LOG_ID, 5, ROOT_5));
     const res = await ctx.client.requestRaw('GET', '/.well-known/acdp-witness.json');

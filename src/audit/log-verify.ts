@@ -220,12 +220,23 @@ export interface LogCheckpoint {
 const WIRE_HASH_RE = /^sha256:[0-9a-f]{64}$/;
 /** Canonical millisecond-precision RFC 3339 UTC (RFC-ACDP-0001 §5.3). */
 const CANONICAL_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-/** §6: `<did:web DID>/log/<instance>` with instance `[a-z0-9-]{1,32}`. */
-const LOG_ID_RE = /^(did:web:[A-Za-z0-9._%:-]+)\/log\/[a-z0-9-]{1,32}$/;
+// §6: `<did:web DID>/log/<instance>`. The authority character class matches
+// the closed JSON schema's `log_id` pattern EXACTLY
+// (schemas/json/acdp-log-checkpoint.schema.json) — no `_`, unlike a `did:web`
+// DID's general grammar (RFC-ACDP-0001 §5.11.2 allows `_` in a domain label).
+// `log-verify.ts` is this repo's sole log-vocabulary owner (B9b): every other
+// module imports {@link LOG_ID_RE} rather than re-declaring its own copy, so
+// the pattern can only drift once, not three times.
+const LOG_ID_AUTHORITY = '[a-zA-Z0-9.%:-]+';
+const LOG_ID_INSTANCE = '[a-z0-9-]{1,32}';
+/** Plain match/test form — no capture group. */
+export const LOG_ID_RE = new RegExp(`^did:web:${LOG_ID_AUTHORITY}/log/${LOG_ID_INSTANCE}$`);
+/** Same pattern with the registry DID captured (group 1), for extracting it. */
+const LOG_ID_CAPTURE_RE = new RegExp(`^(did:web:${LOG_ID_AUTHORITY})/log/${LOG_ID_INSTANCE}$`);
 
 /** The `did:web:...` registry DID embedded in a `log_id`, or null. */
 export function logIdRegistryDid(logId: string): string | null {
-  const m = LOG_ID_RE.exec(logId);
+  const m = LOG_ID_CAPTURE_RE.exec(logId);
   return m ? m[1]! : null;
 }
 

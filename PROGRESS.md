@@ -2231,3 +2231,81 @@ it did, twice, confirming a clean no-op on retry).
   `plans/rfc-0014-0015-upgrade.md` (Phase 8 → DONE). No `ASSUMPTIONS.md` entries.
 Next: Phase 9 (quorum result fidelity — failure reasons as objects not `"[object
 Object]"` strings, the `invalid_witness_cosignature` error code, cleanup; B4, B5, B9).
+
+## Phase 9 — Quorum result fidelity: failure reasons, `invalid_witness_cosignature`, cleanup (B4, B5, B9)
+
+- 2026-09-23. Verdict: **PASS**, round 1. Verifier tier: fresh Opus (not Fable) — no
+  schema/migration, no public-contract shape decision left open at implementation time;
+  the plan's own Approach section already specified the exact fix for each of the four
+  defects.
+- B4 fix: `nativeEvaluateQuorum`'s `report.failures.map((f) => String(f))` — which
+  collapsed every native-path rejection reason to the literal `"[object Object]"`, since
+  the binding's `evaluate_witness_quorum_report` (confirmed directly against
+  `acdp-rs/bindings/acdp-node/src/v040.rs`) returns each entry as `{valid, code, error}`,
+  never a string — replaced with a new `formatQuorumFailure` helper: `{code, error}` →
+  `"code: error"`, bare string → passthrough (future-proofing against a binding
+  reverting to strings), anything else → bounded (500-char) `JSON.stringify`. Exported
+  for direct unit testing of all three shape branches.
+- B5 fix: new `ErrorCode.INVALID_WITNESS_COSIGNATURE` (`error-codes.ts`), with a comment
+  block modelled on `INVALID_LOG_PROOF`'s explaining the RFC-ACDP-0015 §10 distinction
+  (log-proof failures indict the log; cosignature failures indict an independent
+  witness's attestation — never collapsed into one wire code). `CosignOutcome` widened
+  to `{ok:false; code?: string; reason: string}`; the native branch now propagates the
+  binding's own lowercase code (`invalid_witness_cosignature`) instead of discarding it,
+  and every host-fallback failure branch (`tsVerifyCosignature`,
+  `cosignatureFreshnessOk`) carries the TS enum's uppercase value — the same
+  unreconciled dual-convention precedent this codebase already has for
+  `INVALID_LOG_PROOF` vs. the binding's `invalid_log_proof`.
+- B9a fix: deleted `WitnessSigningService.ownCosignatureVerifies` (zero call sites
+  confirmed via `grep -rn` across `src/`, `test/`, `e2e/`) and its misleading doc
+  comment; removed the now-unused `LogCosignature` type import.
+- B9b fix: `LOG_ID_RE` was declared three times, each over-permissive (accepting `_` in
+  the authority, which the closed JSON schema — verified directly against
+  `schemas/json/acdp-log-checkpoint.schema.json` — does not allow). Consolidated into
+  one `export`ed constant in `log-verify.ts` (the log-vocabulary owner), built from
+  shared `LOG_ID_AUTHORITY`/`LOG_ID_INSTANCE` string fragments so the plain and
+  capture-group forms can never drift apart; `witness.controller.ts` and `cosign.ts`
+  now import it instead of each declaring their own copy. This is a real behavior
+  change on `GET /log/witness?log_id=…` (an underscore now 400s instead of silently
+  matching nothing) — covered by a new integration test.
+- Tests added: `cosign.spec.ts` — a host-path binding-mismatch test asserting
+  `ErrorCode.INVALID_WITNESS_COSIGNATURE`, a native-path equivalent asserting the
+  binding's raw `invalid_witness_cosignature` code (guarded on
+  `sdkHasCosignatureSurface()`, which is true in this environment — so it actually
+  exercises the real SDK, not a stub), and a 6-case `formatQuorumFailure` describe block
+  (object/string/no-code-or-error/oversized-truncation/never-`[object Object]`, plus a
+  live native `evaluateWitnessQuorum()` call against an unresolved trusted witness,
+  proving the real binding's output formats as `code: message` and never
+  `[object Object]`). `log-verify.spec.ts` — `LOG_ID_RE` accepts the schema's character
+  class and rejects `_` in both the authority and the instance segment.
+  `witness-cosigning.integration.spec.ts` — extended the existing malformed-`log_id`
+  test with a dedicated `_`-rejection case (`GET /log/witness` → 400).
+- Acceptance criteria 1-7 all verified concretely by both me and the verifier (not just
+  asserted): the `[object Object]` grep over the witness/cosign suites' test output
+  returns nothing; `LOG_ID_RE` greps to exactly one declaration in `src/`;
+  `ownCosignatureVerifies` greps to zero; `WitnessAlertReason` is untouched by the diff.
+- Verifier's non-blocking observations (no action required): `hostEvaluateQuorum`'s own
+  failure strings don't prefix `verdict.code` the way the native path now does (B4 was
+  scoped to the native `String(f)` defect only — the host path never had that bug);
+  `CosignOutcome.code` has no downstream consumer yet beyond tests, which is intentional
+  per the plan (verdict/diagnostic category only, never a `WitnessAlertReason`); all
+  touched files fail `prettier --check`, but that's pre-existing repo-wide and prettier
+  isn't wired into CI or any npm script.
+- Gates: `check:conventions` 6✓ · `lint` 0 · `tsc --noEmit` (both tsconfigs) 0 ·
+  `check:build` both builds 137 files · unit 73 suites/947 passed/3 skipped/950 total
+  (+10 new since Phase 8) · integration 30 suites/194 passed (+1 new test in an existing
+  file; ran against a temporary standalone Postgres on an alternate port since the usual
+  5433 was occupied by an unrelated foreign `aitp_control_plane_test` container — the
+  documented, sanctioned `DATABASE_URL`-override workflow per `test/helpers/test-db.ts`'s
+  own comment, not a new problem).
+- Files touched: `src/errors/error-codes.ts`, `src/audit/cosign.ts`,
+  `src/audit/checkpoint-witness.service.ts`, `src/witness/witness-signing.service.ts`,
+  `src/witness/witness.controller.ts`, `src/audit/log-verify.ts`, `docs/API.md`,
+  `CLAUDE.md`, `src/audit/cosign.spec.ts`, `src/audit/log-verify.spec.ts`,
+  `test/integration/witness-cosigning.integration.spec.ts`,
+  `plans/rfc-0014-0015-upgrade.md` (Phase 9 → DONE, divergence notes). No new
+  `ASSUMPTIONS.md` entries.
+
+This closes out PR2's scope (Phases 5-9, `rfc-0014/pr2-witness-fixes`). Next: `/ship`
+PR2, then start PR3 (Phases 10-15, RFC-ACDP-0014 producer key-revocation, branch
+`rfc-0014/pr3-key-revocation`, depends on PR1 only — already merged).

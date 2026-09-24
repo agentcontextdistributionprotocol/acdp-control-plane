@@ -18,11 +18,13 @@ import { createHash, createPrivateKey, KeyObject } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AcdpCanonicalizer, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
+import { ErrorCode } from '../errors/error-codes';
 import {
   cosignatureAgeOk,
   cosignatureFreshnessOk,
   cosignatureHash,
   evaluateQuorum,
+  formatQuorumFailure,
   hostEvaluateQuorum,
   mintCosignature,
   nativeEvaluateQuorum,
@@ -118,6 +120,47 @@ describe('cosignature construction (RFC-ACDP-0015 §4–§5)', () => {
     );
     expect(verifyCosignature(tampered, witnessPubB64).ok).toBe(false);
   });
+
+  it('B5: host-path (tsVerifyCosignature) failure carries ErrorCode.INVALID_WITNESS_COSIGNATURE', () => {
+    const minted = mintCosignature(CHECKPOINT, '2026-07-04T12:00:05.000Z', signer);
+    if (!minted.ok) throw new Error('mint failed');
+    const tampered = {
+      ...minted.cosignature,
+      signature: { ...minted.cosignature.signature, key_id: 'did:web:evil.example.org#k1' },
+    };
+    const witnessPubB64 = b64FromHex(
+      '17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce',
+    );
+    const outcome = tsVerifyCosignature(tampered, witnessPubB64);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.code).toBe(ErrorCode.INVALID_WITNESS_COSIGNATURE);
+  });
+
+  (sdkHasCosignatureSurface() ? it : it.skip)(
+    'B5: native-path (nativeVerifyCosignature) §8 step-3 binding failure carries the binding\'s own lowercase `invalid_witness_cosignature` wire code',
+    () => {
+      const minted = mintCosignature(CHECKPOINT, '2026-07-04T12:00:05.000Z', signer);
+      if (!minted.ok) throw new Error('mint failed');
+      const tampered = {
+        ...minted.cosignature,
+        signature: { ...minted.cosignature.signature, key_id: 'did:web:evil.example.org#k1' },
+      };
+      const witnessPubB64 = b64FromHex(
+        '17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce',
+      );
+      const expectedCheckpoint: LogCheckpoint = {
+        checkpoint_version: 'acdp-log/1',
+        log_id: CHECKPOINT.log_id,
+        tree_size: CHECKPOINT.tree_size,
+        root_hash: CHECKPOINT.root_hash,
+        timestamp: CHECKPOINT.timestamp,
+        signature: { algorithm: 'ed25519', key_id: 'did:web:registry.example.com#receipt-key-1', value: 'x' },
+      };
+      const outcome = nativeVerifyCosignature(tampered, witnessPubB64, expectedCheckpoint);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.code).toBe('invalid_witness_cosignature');
+    },
+  );
 
   it('parseCosignature enforces the closed §4 schema', () => {
     const minted = mintCosignature(CHECKPOINT, '2026-07-04T12:00:05.000Z', signer);
@@ -681,6 +724,91 @@ describe('evaluateQuorum (RFC-ACDP-0015 §8 N-witnessed consumption)', () => {
     expect(native.historicalWitnessedCount).toBe(host.historicalWitnessedCount);
     expect(native.meetsQuorum).toBe(host.meetsQuorum);
   });
+});
+
+describe('formatQuorumFailure (B4: a native failures() entry is an object, never a bare string)', () => {
+  it('formats a {code, error} object as "code: error"', () => {
+    expect(
+      formatQuorumFailure({ valid: false, code: 'invalid_witness_cosignature', error: 'boom' }),
+    ).toBe('invalid_witness_cosignature: boom');
+  });
+
+  it('defaults the code to acdp_error when only `error` is a string', () => {
+    expect(formatQuorumFailure({ error: 'no code here' })).toBe('acdp_error: no code here');
+  });
+
+  it('passes a bare string through unchanged (in case a future binding reverts to strings)', () => {
+    expect(formatQuorumFailure('already a string')).toBe('already a string');
+  });
+
+  it('never renders any shape as the literal "[object Object]" (the B4 defect)', () => {
+    for (const shape of [
+      { valid: false, code: 'x', error: 'y' },
+      { foo: 'bar' },
+      null,
+      42,
+      [1, 2, 3],
+      undefined,
+    ]) {
+      expect(formatQuorumFailure(shape)).not.toBe('[object Object]');
+    }
+  });
+
+  it('falls back to (bounded) JSON for a shape with neither `code` nor `error`', () => {
+    expect(formatQuorumFailure({ foo: 'bar' })).toBe(JSON.stringify({ foo: 'bar' }));
+    expect(formatQuorumFailure(null)).toBe('null');
+    expect(formatQuorumFailure(42)).toBe('42');
+  });
+
+  it('truncates an oversized garbage-shaped entry to 500 chars plus an ellipsis', () => {
+    const out = formatQuorumFailure({ data: 'x'.repeat(1000) });
+    expect(out.length).toBe(501);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  (sdkHasCosignatureSurface() ? it : it.skip)(
+    "a real native evaluateWitnessQuorum() failure — an unresolved trusted witness's cosignature — never renders as \"[object Object]\"",
+    () => {
+      const witnessId = 'did:web:witness-unresolved.example';
+      const cp: LogCheckpoint = {
+        checkpoint_version: 'acdp-log/1',
+        log_id: 'did:web:registry.example.com/log/1',
+        tree_size: 5,
+        root_hash: 'sha256:0b5978172c671ca050b44790a749b18fc29d58a7a17495fbb4e0f86eb885f731',
+        timestamp: '2026-07-04T12:00:00.000Z',
+        signature: { algorithm: 'ed25519', key_id: 'did:web:registry.example.com#receipt-key-1', value: 'x' },
+      };
+      const tuple: WitnessedCheckpoint = {
+        log_id: cp.log_id,
+        tree_size: cp.tree_size,
+        root_hash: cp.root_hash,
+        timestamp: cp.timestamp,
+      };
+      const signer = signerFromSeed('44'.repeat(32), witnessId, `${witnessId}#witness-key-1`);
+      const minted = mintCosignature(tuple, '2026-07-04T12:00:01.000Z', signer);
+      if (!minted.ok) throw new Error('mint failed');
+      const native = nativeEvaluateQuorum({
+        cosignatures: [minted.cosignature],
+        checkpoint: cp,
+        trustedWitnessIds: [witnessId],
+        // No entry for witnessId — the key never resolved, so the native
+        // binding cannot synthesize a DID document for it and must reject.
+        witnessKeysB64: {},
+        minWitnesses: 1,
+        nowMs: new Date('2026-07-04T12:05:00.000Z').getTime(),
+      });
+      expect(native).not.toBeNull();
+      if (native === null) return;
+      expect(native.witnessedCount).toBe(0);
+      expect(native.failures.length).toBeGreaterThan(0);
+      for (const f of native.failures) {
+        expect(f).not.toBe('[object Object]');
+        // Acceptance criterion 2: `code: message` (`/^[a-z_]+: /`), never a
+        // bare object stringification.
+        expect(f).toMatch(/^[a-z_]+: /);
+      }
+    },
+  );
 });
 
 /** A minimal resolvable witness DID document for `evaluateWitnessQuorum` (§9). */

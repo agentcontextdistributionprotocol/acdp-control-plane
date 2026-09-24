@@ -29,13 +29,12 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { LOG_ID_RE } from '../audit/log-verify';
 import { Public } from '../auth/public.decorator';
 import { AppException } from '../errors/app-exception';
 import { ErrorCode } from '../errors/error-codes';
 import { LogCosignatureRepository } from '../storage/log-cosignature.repository';
 import { WitnessSigningService } from './witness-signing.service';
-
-const LOG_ID_RE = /^did:web:[A-Za-z0-9._%:-]+\/log\/[a-z0-9-]{1,32}$/;
 
 @ApiTags('witness')
 @Controller()

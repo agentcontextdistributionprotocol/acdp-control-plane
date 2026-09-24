@@ -38,7 +38,13 @@ All non-`2xx` responses use a consistent shape (normalized by
 `RUN_NOT_FOUND`, `REGISTRY_NOT_FOUND`, `AGENT_NOT_FOUND`, `CONTEXT_NOT_FOUND`,
 `FEDERATION_UPSTREAM_RATE_LIMITED`, `CONTEXT_ID_MISMATCH`,
 `CONTEXT_BINDING_UNVERIFIABLE`, `INVALID_PAYLOAD`, `INVALID_SIGNATURE`,
-`VALIDATION_ERROR`, `INTERNAL_ERROR`.
+`INVALID_LOG_PROOF`, `INVALID_WITNESS_COSIGNATURE`, `VALIDATION_ERROR`,
+`INTERNAL_ERROR`.
+
+`INVALID_LOG_PROOF` and `INVALID_WITNESS_COSIGNATURE` are deliberately
+distinct (RFC-ACDP-0015 §10): the former indicts a transparency-log proof or
+checkpoint, the latter a witness's own cosignature — an independent verdict
+over an independent signer, never collapsed into one code.
 
 Policy denials return `403` with `{ message, code, reason }`; quota exceeded
 returns `429` with a `Retry-After` header (see [POLICY.md](./POLICY.md)).

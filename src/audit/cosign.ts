@@ -50,20 +50,30 @@ import { createHash, sign as edSign, type KeyObject } from 'node:crypto';
 import { AcdpCanonicalizer, AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
 import { verifySignatureB64 } from '../auth/acdp-verify';
 import { encodeEd25519Multibase } from '../common/multibase';
-import type { LogCheckpoint } from './log-verify';
+import { ErrorCode } from '../errors/error-codes';
+import { LOG_ID_RE, type LogCheckpoint } from './log-verify';
 
 /** RFC-ACDP-0015 §4: the sole cosignature envelope version / domain separator. */
 export const COSIGNATURE_VERSION = 'acdp-cosig/1';
 /** RFC-ACDP-0015 §8 step 5 skew allowance (RFC-ACDP-0011 §7 step 6). */
 export const COSIGNATURE_MAX_FUTURE_SKEW_MS = 120_000;
 
-export type CosignOutcome = { ok: true } | { ok: false; reason: string };
+/**
+ * `code` carries the verdict category for a FAILING cosignature (B5): the
+ * native binding's own lowercase wire code (e.g. `invalid_witness_cosignature`,
+ * RFC-ACDP-0015 §10) when the native path ran, or `ErrorCode.INVALID_WITNESS_COSIGNATURE`
+ * when the host §8 fallback (`tsVerifyCosignature`) computed the failure
+ * itself — both name the SAME verdict category, just in each path's own
+ * string convention (mirrors how this codebase's local `ErrorCode` enum and
+ * the SDK's own wire codes already coexist unreconciled elsewhere, e.g.
+ * `INVALID_LOG_PROOF` usage vs. the binding's `invalid_log_proof`). Optional
+ * because a malformed-shape / JCS failure never reaches a binding call.
+ */
+export type CosignOutcome = { ok: true } | { ok: false; code?: string; reason: string };
 
 const WIRE_HASH_RE = /^sha256:[0-9a-f]{64}$/;
 /** Canonical millisecond-precision RFC 3339 UTC (RFC-ACDP-0001 §5.3). */
 const CANONICAL_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-/** §6: `<did:web DID>/log/<instance>` with instance `[a-z0-9-]{1,32}`. */
-const LOG_ID_RE = /^did:web:[A-Za-z0-9._%:-]+\/log\/[a-z0-9-]{1,32}$/;
 /** §4: witness_id is a did:web or did:key. */
 const WITNESS_DID_RE = /^did:(web:[a-zA-Z0-9.%:-]+|key:z[1-9A-HJ-NP-Za-km-z]+)$/;
 
@@ -197,6 +207,38 @@ function nativeErr(err: unknown): string {
     return `${String((err as { code: unknown }).code)}: ${err instanceof Error ? err.message : String(err)}`;
   }
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Longest a garbage-shaped `failures` entry may render as, before truncation. */
+const QUORUM_FAILURE_MAX_CHARS = 500;
+
+/**
+ * B4 fix: `evaluate_witness_quorum_report` returns each `failures` entry as
+ * an OBJECT (`{valid: false, code, error}` — see `v040.rs`'s `failure()`),
+ * never a string. The bare `String(f)` this replaces coerced every entry to
+ * the literal text `"[object Object]"`, destroying the ONLY reason the
+ * native path (always taken — the binding is native-first and the pinned
+ * floor is `^0.14.1`) ever surfaces for a rejected cosignature. Handles
+ * every shape defensively, never throws: `{code, error}` → `"code: error"`;
+ * a bare string → passthrough (in case a future binding version reverts to
+ * strings); anything else → bounded `JSON.stringify` so a shape drift is
+ * still legible rather than reproducing the same "[object Object]" defect
+ * one level down.
+ */
+export function formatQuorumFailure(f: unknown): string {
+  if (typeof f === 'string') return f;
+  if (f !== null && typeof f === 'object') {
+    const obj = f as { code?: unknown; error?: unknown };
+    if (typeof obj.code === 'string' || typeof obj.error === 'string') {
+      const code = typeof obj.code === 'string' ? obj.code : 'acdp_error';
+      const error = typeof obj.error === 'string' ? obj.error : JSON.stringify(obj);
+      return `${code}: ${error}`;
+    }
+  }
+  const json = JSON.stringify(f) ?? String(f);
+  return json.length > QUORUM_FAILURE_MAX_CHARS
+    ? `${json.slice(0, QUORUM_FAILURE_MAX_CHARS)}…`
+    : json;
 }
 
 /**
@@ -490,15 +532,16 @@ export function nativeVerifyCosignature(
   } catch (err) {
     return { ok: false, reason: nativeErr(err) };
   }
-  let parsed: { valid?: unknown; error?: unknown };
+  let parsed: { valid?: unknown; code?: unknown; error?: unknown };
   try {
-    parsed = JSON.parse(json) as { valid?: unknown; error?: unknown };
+    parsed = JSON.parse(json) as { valid?: unknown; code?: unknown; error?: unknown };
   } catch {
     return { ok: false, reason: 'native cosignature verification returned non-JSON' };
   }
   if (parsed.valid === true) return { ok: true };
   return {
     ok: false,
+    code: typeof parsed.code === 'string' ? parsed.code : undefined,
     reason:
       typeof parsed.error === 'string' ? parsed.error : 'native cosignature verification failed',
   };
@@ -512,6 +555,7 @@ export function tsVerifyCosignature(
   if (cosignature.signature.algorithm !== 'ed25519') {
     return {
       ok: false,
+      code: ErrorCode.INVALID_WITNESS_COSIGNATURE,
       reason: `unsupported cosignature algorithm '${cosignature.signature.algorithm}' — ed25519 is mandatory (RFC-ACDP-0015 §5)`,
     };
   }
@@ -520,13 +564,14 @@ export function tsVerifyCosignature(
   if (keyDid !== cosignature.witness_id) {
     return {
       ok: false,
+      code: ErrorCode.INVALID_WITNESS_COSIGNATURE,
       reason: `signature.key_id '${cosignature.signature.key_id}' is not a key of witness_id '${cosignature.witness_id}'`,
     };
   }
   const { signature: _omit, ...unsigned } = cosignature;
   const hash = cosignatureHash(unsigned);
   if (hash === null) {
-    return { ok: false, reason: 'cosignature could not be canonicalized (JCS)' };
+    return { ok: false, code: ErrorCode.INVALID_WITNESS_COSIGNATURE, reason: 'cosignature could not be canonicalized (JCS)' };
   }
   const valid = verifySignatureB64(
     'ed25519',
@@ -534,7 +579,9 @@ export function tsVerifyCosignature(
     hash,
     cosignature.signature.value,
   );
-  return valid ? { ok: true } : { ok: false, reason: 'witness cosignature signature invalid' };
+  return valid
+    ? { ok: true }
+    : { ok: false, code: ErrorCode.INVALID_WITNESS_COSIGNATURE, reason: 'witness cosignature signature invalid' };
 }
 
 /**
@@ -553,6 +600,7 @@ export function cosignatureFreshnessOk(
   if (ts - nowMs > maxFutureSkewMs) {
     return {
       ok: false,
+      code: ErrorCode.INVALID_WITNESS_COSIGNATURE,
       reason: `witnessed_at '${cosignature.witnessed_at}' is in the future beyond the ${Math.round(maxFutureSkewMs / 1000)}s skew allowance`,
     };
   }
@@ -788,7 +836,7 @@ export function nativeEvaluateQuorum(inp: QuorumInputs): QuorumReport | null {
     verifiedWitnessIds: Array.isArray(report.witnesses)
       ? report.witnesses.filter((w): w is string => typeof w === 'string')
       : [],
-    failures: Array.isArray(report.failures) ? report.failures.map((f) => String(f)) : [],
+    failures: Array.isArray(report.failures) ? report.failures.map(formatQuorumFailure) : [],
     freshWitnessedCount: freshCount,
     meetsFreshQuorum:
       report.meets_fresh_quorum === undefined ? report.meets_quorum === true : report.meets_fresh_quorum === true,
