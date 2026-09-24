@@ -758,6 +758,81 @@ describe('ACDP 0.2.0 trust hardening (integration)', () => {
     );
 
     it(
+      'findRevocationAmendmentCandidates samples across repeated calls instead of returning ' +
+        'the same deterministic subset every time — the head-of-line-blocking fix ' +
+        '(post-plan review, 2026-09-23)',
+      async () => {
+        // A row that filters to classification.status === 'none' under
+        // KEY_REVOCATION_ATTESTED_SCOPE (e.g. a registry_attested fact from a
+        // DIFFERENT registry, under the default 'same_registry' scope) is
+        // never amended, so it stays eligible here forever — correctly, since
+        // a later scope change must be able to re-surface it. That means a
+        // fingerprint's eligible pool can contain a mix of rows that will
+        // NEVER amend under the current config alongside rows that genuinely
+        // should. Without an ORDER BY, an unordered scan with LIMIT returns
+        // the identical subset on every call against unchanged data — if the
+        // "never amends" rows fill the whole limit, the genuinely-amendable
+        // ones are starved out of every sweep forever. This test proves the
+        // fix at the repository layer directly: it doesn't need to simulate
+        // the scope-filtering scenario at all, since the bug and its fix are
+        // both purely about this query's own row ordering, independent of
+        // what the caller later does with the rows it gets back.
+        const runId = 'run-audit-hol';
+        const producer = AcdpProducer.generate(
+          'did:web:agent-1.example',
+          'did:web:agent-1.example#key-1',
+        );
+        const registryKey = AcdpProducer.generate(
+          `did:web:${AUTHORITY}`,
+          `did:web:${AUTHORITY}#receipt-key-1`,
+        );
+        const producerFp = AcdpVerifier.fingerprintEd25519B64(producer.publicKeyB64);
+        const ctxIds = ['60', '61', '62', '63', '64', '65'].map(
+          (n) => `acdp://${AUTHORITY}/${U(n)}`,
+        );
+
+        for (let i = 0; i < ctxIds.length; i++) {
+          const ctxId = ctxIds[i]!;
+          const body = mintBody(ctxId, producer);
+          await ctx.client.ingest(
+            makeEvent({
+              ctx_id: ctxId,
+              lineage_id: LINEAGE_ID,
+              event_id: `evt-audit-hol${i}`,
+              key_fingerprint: producerFp,
+              registry_receipt: mintReceiptFor(ctxId, body, producerFp, registryKey),
+            }),
+            { runId, secret: SECRET },
+          );
+          const { audited } = await sweepWithStubbedNetwork(body, { producer, registryKey });
+          expect(audited).toBe(1);
+        }
+
+        const repo = ctx.module.get(ReceiptAuditRepository);
+        const limit = 3; // strictly less than the 6 eligible rows above
+        const seen = new Set<string>();
+        for (let i = 0; i < 25; i++) {
+          const candidates = await repo.findRevocationAmendmentCandidates(
+            'default',
+            producerFp,
+            '2026-01-01T00:00:00.000Z',
+            limit,
+          );
+          expect(candidates).toHaveLength(limit);
+          for (const c of candidates) seen.add(c.eventId);
+        }
+
+        // Deterministic (unordered) selection would keep `seen.size === limit`
+        // across all 25 calls, since nothing else writes to these rows
+        // between calls — reproducing exactly the starvation this fix
+        // closes. A random-ordered selection draws a fresh sample each call,
+        // so 25 draws of 3-of-6 virtually certainly cover more than 3
+        // distinct rows.
+        expect(seen.size).toBeGreaterThan(limit);
+      },
+    );
+
+    it(
       'bounds the fan-out per sweep and converges over a subsequent sweep, with no row skipped (AC5)',
       async () => {
         const runId = 'run-audit-8';

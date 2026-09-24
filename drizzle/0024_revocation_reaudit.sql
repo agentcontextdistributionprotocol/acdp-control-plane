@@ -20,14 +20,21 @@
 -- 2. ra_key_revocation_none_idx: the candidate query
 --    (findRevocationAmendmentCandidates) restricts receipt_audits to rows
 --    still eligible for amendment — 'none', or a stored compromise_boundary
---    later than the fact set's current minimum. The overwhelmingly common
---    steady-state case (a fingerprint with no revocation at all, or one
---    already fully amended) resolves against the 'none' branch of that
---    predicate alone; this partial index (mirroring the inverse
---    ra_key_revocation_status_idx from migration 0023) keeps that branch an
---    index lookup rather than a scan, even at scale (EXPLAIN (ANALYZE,
+--    later than the fact set's current minimum. Its only production caller
+--    (ReceiptAuditService.reauditForFingerprint) returns early whenever
+--    there is no verified fact at all for a fingerprint, so the runtime
+--    predicate is always the OR form, never the bare 'none' branch alone —
+--    the steady-state case is "no revocation known for this fingerprint,"
+--    which never reaches this query in the first place, not "this query
+--    runs the bare 'none' branch." This partial index (mirroring the
+--    inverse ra_key_revocation_status_idx from migration 0023) still keeps
+--    the OR's 'none' arm an index lookup rather than a scan, combined via a
+--    BitmapOr with a scan for the gt(compromise_boundary, ...) arm, rather
+--    than falling back to a scan for the whole predicate (EXPLAIN (ANALYZE,
 --    BUFFERS) against 200k seeded rows showed ~190ms / ~505k buffer hits
---    without it, on a table where every row was already amended).
+--    without it, on a table where every row was already amended, i.e. only
+--    exercising the 'none' arm) — re-verify against the actual OR predicate
+--    if this index's cost/benefit is ever revisited.
 --
 -- Idempotent: CREATE INDEX IF NOT EXISTS is native and safe to re-run.
 --

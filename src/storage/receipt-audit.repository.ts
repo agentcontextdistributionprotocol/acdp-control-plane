@@ -212,6 +212,38 @@ export class ReceiptAuditRepository {
    * docs/ARCHITECTURE.md), not fixed here, since closing it would need a
    * backfilled, independently-resolved-signer column, a real schema change
    * out of scope for this phase.
+   *
+   * `ORDER BY random()` (post-review fix, 2026-09-23 — see PROGRESS.md's
+   * "Post-plan review" section): the caller
+   * (`ReceiptAuditService.reauditForFingerprint`) applies its OWN further
+   * filter on top of this row set — `filterApplicableRevocations`'s
+   * `KEY_REVOCATION_ATTESTED_SCOPE` gate, keyed on each row's
+   * `registryAuthority` — and a row that filters to `classification.status
+   * === 'none'` there is skipped WITHOUT being amended, so its stored
+   * `key_revocation_status` stays `'none'` and it remains eligible here
+   * forever (correctly — a scope change, e.g. `same_registry` -> `global`,
+   * must be able to re-surface it later). Same head-of-line-blocking class
+   * as `KeyRevocationRepository.findCandidates` (see that file): a
+   * DETERMINISTIC, unordered scan returns the identical `limit`-sized
+   * subset every sweep, so if that scope-excluded subset for one
+   * fingerprint is >= `limit`, a genuinely-amendable row for the SAME
+   * fingerprint sharing the candidate pool (e.g. a `producer_signed`
+   * revocation, or a same-registry `registry_attested` one, discovered
+   * after a DIFFERENT-registry `registry_attested` fact already occupies
+   * the pool) could be starved out of every sweep indefinitely — a fail-
+   * open outcome for §7's retroactive re-audit guarantee. Unlike
+   * `findCandidates`, there is no "newest wins" axis to order on here (this
+   * is a closed, already-sealed backlog per fingerprint, not a stream of
+   * fresh arrivals), so the fix is a random shuffle per call: each sweep
+   * draws a different `limit`-sized sample from the full eligible set, so a
+   * stuck subset no longer wins the same slots every time and the
+   * genuinely-amendable rows converge in expectation over repeated sweeps
+   * instead of being blocked forever. Cheap in practice — the row set this
+   * sorts is already narrowed to ONE fingerprint's rows via
+   * `ce_key_fingerprint_idx` + the eligible-predicate index, and
+   * revocations (hence this fan-out's working set) are rare by
+   * construction (see this repository's and `KeyRevocationRepository`'s
+   * headers).
    */
   async findRevocationAmendmentCandidates(
     tenantId: string,
@@ -243,6 +275,7 @@ export class ReceiptAuditRepository {
           eligible,
         ),
       )
+      .orderBy(sql`random()`)
       .limit(limit);
     return rows;
   }
