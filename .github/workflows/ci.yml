@@ -28,11 +28,13 @@ jobs:
         # without a commit here. The wit-001..004 / log-001 / log-003 golden
         # parity specs (cosign.spec.ts, log-verify.parity.spec.ts) need this
         # checkout — see CP-7. Bump deliberately when adopting new fixtures.
-        # (spec main HEAD as of 2026-08-28)
+        # Bumped for Phase 13's rev-002 scenarios E-H (revocation-lineage.spec.ts),
+        # which need the lineage-fold `revocation_lineage.L1/L2/L3` fixture data
+        # added upstream after the prior pin. (spec main HEAD as of 2026-09-21)
         uses: actions/checkout@v7
         with:
           repository: agentcontextdistributionprotocol/agentcontextdistributionprotocol
-          ref: bff3cf3afbdcea619834916e8f0bcac7e82ba658
+          ref: 9deb7e7bdabfa7416fcc0e25a7fcac6eb642b6dd
           path: acdp-spec
       - uses: actions/setup-node@v7
         with:
