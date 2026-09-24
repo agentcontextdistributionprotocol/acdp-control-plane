@@ -2880,3 +2880,6 @@ Next: re-verify this finalization round (give the fresh verifier the gap
 list above rather than reviewing cold, per the skill's convention) — on
 PASS, hand PR3 (Phases 10-15, branch `rfc-0014/pr3-key-revocation`) to
 `/ship`.
+
+### Ship (PR3)
+pushed rfc-0014/pr3-key-revocation dec5933fb892286a2a7bb91cc8ba40bf627dbacd
