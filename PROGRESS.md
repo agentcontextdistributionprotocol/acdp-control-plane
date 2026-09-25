@@ -3234,3 +3234,15 @@ verdicts stay uncounted by any metric") flipped from `NEEDS-CHANGE` to
 PR strategy: single PR (one-phase plan, no natural seams).
 
 pushed fix/revocation-lineage-member-metric f98df64
+
+Ship-gate verification: PASS (fresh Opus agent, independent full-diff
+review — re-ran the two touched spec files, tsc, lint; confirmed all 9
+return sites threaded, the increment loop ordered ahead of the early
+return and the persistence loop, no plan/doc drift, zero UNCONFIRMED
+ASSUMPTIONS.md entries). Two non-blocking nits noted, not fixed: a
+`Status` cast in the `.inc()` loop that would be a lie only for an
+unreachable-in-shipped-code dynamic key; one doc sentence that slightly
+undersells the triggering member being counted on both counters
+(covered by the adjacent rate-not-census caveat).
+
+PR #175 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/175
