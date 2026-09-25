@@ -920,6 +920,45 @@
   motivates it; this was noticed only as an asymmetry while implementing the fix).
 - **Blast radius if wrong:** Low. Pure observability gap, not a correctness one — a
   dropped P-256 lineage member is still logged at `warn` (this phase's fix) even though
-  it isn't separately counted. Reversible any time as a pure metric addition.
-- **Status:** UNCONFIRMED — flagged here per the plan's own Open Questions, not yet
-  routed through `/reconcile`.
+  it isn't separately counted. Reversible any time as a pure metric addition — with one
+  caveat, see the 2026-09-25 correction below.
+- **Correction (2026-09-25), from `/reconcile`:** the "by extension of
+  `InstrumentationService`" clause above is an unsupported extrapolation — the file
+  header quote it leans on (`revocation-lineage.ts:172-180`) is scoped to "the
+  SDK/DID-resolution machinery," and `LineageWalkDeps` (`revocation-lineage.ts:187-191`)
+  already injects side-effecting dependencies (`federationClient`, `verifyMemberBody`,
+  `logger: Pick<Logger, 'warn'>`), so a metrics dependency would fit that same shape
+  fine. The real, narrower convention this entry should have cited: metrics are
+  incremented only inside `@Injectable()` service classes in this repo — every
+  audit/witness service (`receipt-audit`, `log-inclusion-audit`, `checkpoint-witness`,
+  `revocation-audit`) imports `InstrumentationService`; no pure helper module
+  (`revocation-lineage.ts`, `log-verify.ts`, `cosign.ts`, `multibase.ts`) does. That
+  convention DOES argue against injecting a counter into `walkRevocationLineage`
+  itself, but not against counting lineage-member verdicts at all: the pattern-
+  preserving shape is a per-status tally returned on `LineageWalkResult`, incremented
+  by `RevocationAuditService.walkAndPersistLineage` (`revocation-audit.service.ts:469-489`),
+  which already holds `this.instrumentation`.
+
+  There is also a genuine, previously understated signal gap, in the fail-open
+  direction: an `'unsupported'` lineage member is dropped (Rule 2-shaped,
+  `revocation-lineage.ts:325-334`) with no fact ever recorded in `key_revocations`,
+  so Phase 14/15 never tighten a boundary for it — under-reporting compromise, not
+  merely a missing metric for its own sake. The only operator-visible signal is a
+  `warn` log line from a background sweep (no `requestId`, since it's outside a
+  request) — every OTHER verification sweep in this repo has a matching Prometheus
+  counter; this is the one unmetered verdict path.
+
+  The "reversible any time as a pure metric addition" framing above is only true for
+  a NEW counter. Reusing `acdp_key_revocation_checks_total` with an added label (e.g.
+  `stage`) to disambiguate the webhook-candidate and lineage-walk paths is explicitly
+  the WRONG shape — the "A separate metric for §7 classification" entry above (Phase
+  14) already rejected the identical move for a different pair of paths, for the same
+  reason: conflating two contexts' status vocabularies under one label domain
+  confuses more than it clarifies. A follow-up must add a genuinely new counter (e.g.
+  `acdp_key_revocation_lineage_members_total{status}`), never a label on the existing
+  one.
+- **Status:** NEEDS-CHANGE (2026-09-25) — not a blocker (Low blast radius; nothing
+  currently shipping depends on or is broken by the gap), but the "confirm as
+  permanently uncounted" framing this entry originally proposed does not hold up.
+  Tracked as follow-up issue
+  [#173](https://github.com/agentcontextdistributionprotocol/acdp-control-plane/issues/173).
