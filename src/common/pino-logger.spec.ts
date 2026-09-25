@@ -39,17 +39,25 @@ describe('PinoLogger', () => {
     // Drive the transport directly to a file: the worker writes asynchronously,
     // and asserting on stdout from inside jest is not reliable.
     const out = join(tmpdir(), `pino-pretty-probe-${process.pid}-${Date.now()}.log`);
+    const transport = pino.transport({
+      target: 'pino-pretty',
+      // Same options PinoLogger uses, plus a file destination. `sync` here
+      // only makes pino-pretty's OWN write to `destination` synchronous — it
+      // does not make the cross-thread handoff from this process to the
+      // transport's worker thread synchronous, so a fixed sleep here is
+      // always a race against however long that handoff + worker startup
+      // happens to take under current load. `flush()`'s callback fires only
+      // once the worker has actually consumed and acknowledged the write, so
+      // waiting on it (rather than guessing a duration) is what makes this
+      // deterministic regardless of machine load.
+      options: { colorize: true, destination: out, mkdir: true, sync: true },
+    });
     try {
-      const transport = pino.transport({
-        target: 'pino-pretty',
-        // Same options PinoLogger uses, plus a file destination. `sync` keeps the
-        // worker from outliving the assertion.
-        options: { colorize: true, destination: out, mkdir: true, sync: true },
-      });
       const probe = pino({ level: 'info' }, transport);
       probe.info({ context: 'Probe' }, 'transport-alive');
-      // Let the transport worker flush before reading.
-      await new Promise((r) => setTimeout(r, 250));
+      await new Promise<void>((resolve, reject) => {
+        transport.flush((err) => (err ? reject(err) : resolve()));
+      });
 
       const written = readFileSync(out, 'utf8');
       expect(written).toContain('transport-alive');
@@ -59,6 +67,13 @@ describe('PinoLogger', () => {
       expect(written).toMatch(/\x1b\[/);
       expect(written).not.toMatch(/^\{"level"/m);
     } finally {
+      // Shut the worker thread down and wait for it to actually exit, rather
+      // than leaving it to jest's force-exit — that's what was producing "A
+      // worker process has failed to exit gracefully" on a full suite run.
+      await new Promise<void>((resolve) => {
+        transport.once('close', () => resolve());
+        transport.end();
+      });
       rmSync(out, { force: true });
     }
   });
