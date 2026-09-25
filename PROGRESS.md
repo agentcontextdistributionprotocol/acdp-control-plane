@@ -3246,3 +3246,7 @@ undersells the triggering member being counted on both counters
 (covered by the adjacent rate-not-census caveat).
 
 PR #175 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/175
+
+All 3 required checks green (docker build, jest integration, lint+tsc+jest
+unit). merged #175 (squash commit d22687d), branch deleted, local main
+fast-forwarded.
