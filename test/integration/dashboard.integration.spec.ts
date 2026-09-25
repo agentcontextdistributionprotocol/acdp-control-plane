@@ -3,6 +3,7 @@
  * including the raw `byScenario` / `byRegistry` GROUP BY queries that the
  * tenancy spec's count-only assertions don't reach — and the window param.
  */
+import { AppConfigService } from '../../src/config/app-config.service';
 import { createTestApp, TestAppContext } from '../helpers/test-app';
 
 interface Overview {
@@ -15,6 +16,25 @@ interface Overview {
   recentRuns: Array<{ runId: string }>;
   byScenario: Array<{ scenario_id: string; run_count: number }>;
   byRegistry: Array<{ registry_authority: string; event_count: number }>;
+  logWitness: {
+    witnessedLogs: number;
+    activeAlerts: number;
+    unacknowledgedAlerts: number;
+    headsMeetingQuorum: number;
+  } | null;
+  keyRevocation: {
+    preCompromise: number;
+    revokedAtOrAfter: number;
+    revokedTimeUnverifiable: number;
+  } | null;
+  features: {
+    receiptAudit: boolean;
+    keyRevocationCheck: boolean;
+    logWitness: boolean;
+    logInclusionAudit: boolean;
+    witnessCosigning: boolean;
+    witnessQuorum: boolean;
+  };
 }
 
 describe('Dashboard overview (integration)', () => {
@@ -148,5 +168,61 @@ describe('Dashboard overview (integration)', () => {
     expect(body.recentRuns).toEqual([]);
     expect(body.byScenario).toEqual([]);
     expect(body.byRegistry).toEqual([]);
+  });
+
+  // Issue #176: keyRevocation/logWitness were always populated with `?? 0`
+  // defaults, so a tenant that never enabled the check couldn't be told apart
+  // from one running it and finding nothing clean.
+  it('nulls keyRevocation/logWitness and reports every flag false by default', async () => {
+    const body = await ctx.client.requestJson<Overview>('GET', '/dashboard/overview');
+    expect(body.keyRevocation).toBeNull();
+    expect(body.logWitness).toBeNull();
+    expect(body.features).toEqual({
+      receiptAudit: false,
+      keyRevocationCheck: false,
+      logWitness: false,
+      logInclusionAudit: false,
+      witnessCosigning: false,
+      witnessQuorum: false,
+    });
+  });
+
+  it('populates keyRevocation/logWitness and flips features when their flags are enabled', async () => {
+    // `keyRevocationCheckEnabled` is boot-validated to require
+    // `receiptAuditEnabled` in production (app-config.service.ts:573-579),
+    // but that check is skipped in development mode
+    // (app-config.service.ts:445), which is what this harness runs in
+    // (test-app.ts) — so it isn't enforced here. Flipping both together
+    // anyway keeps this test representative of the real, valid combination,
+    // mirroring the pattern in trust-hardening.integration.spec.ts:519-534.
+    const config = ctx.module.get(AppConfigService) as unknown as {
+      receiptAuditEnabled: boolean;
+      keyRevocationCheckEnabled: boolean;
+      logWitnessEnabled: boolean;
+    };
+    config.receiptAuditEnabled = true;
+    config.keyRevocationCheckEnabled = true;
+    config.logWitnessEnabled = true;
+    try {
+      const body = await ctx.client.requestJson<Overview>('GET', '/dashboard/overview');
+      expect(body.keyRevocation).toEqual({
+        preCompromise: 0,
+        revokedAtOrAfter: 0,
+        revokedTimeUnverifiable: 0,
+      });
+      expect(body.logWitness).toEqual({
+        witnessedLogs: 0,
+        activeAlerts: 0,
+        unacknowledgedAlerts: 0,
+        headsMeetingQuorum: 0,
+      });
+      expect(body.features.receiptAudit).toBe(true);
+      expect(body.features.keyRevocationCheck).toBe(true);
+      expect(body.features.logWitness).toBe(true);
+    } finally {
+      config.receiptAuditEnabled = false;
+      config.keyRevocationCheckEnabled = false;
+      config.logWitnessEnabled = false;
+    }
   });
 });

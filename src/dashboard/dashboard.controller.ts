@@ -12,7 +12,10 @@ export class DashboardController {
   @Get('overview')
   @ApiOperation({
     summary:
-      'KPIs and chart data: totalRuns, totalContexts, totalRetracted, totalContextsLive, totalAgents, recentRuns, byScenario, byRegistry.',
+      'KPIs and chart data: totalRuns, totalContexts, totalRetracted, totalContextsLive, ' +
+      'totalAgents, recentRuns, byScenario, byRegistry, receiptCoverage, didMethods, ' +
+      'logWitness, keyRevocation (the last two null when their check is disabled — see ' +
+      'features), features (which of the 6 audit/witness flags are enabled).',
   })
   async getOverview(
     @Query(new ValidationPipe({ transform: true, whitelist: true }))
