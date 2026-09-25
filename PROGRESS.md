@@ -3140,3 +3140,14 @@ own Open Questions item 2; `DECISIONS.md` appended).
 PR strategy: single PR (one-phase plan, no natural seams).
 
 pushed fix/revocation-lineage-p256-status bcba082
+
+Ship-gate verification: PASS (fresh Opus agent, third independent
+verification pass — independently re-derived the P-256 multicodec
+prefix bytes `0x80 0x24` a second time from scratch via a standalone
+base58 decode of a real minted did:key, confirming the plan-review
+agent's and the implementation-verification agent's earlier findings).
+One non-blocking nit noted (CLAUDE.md's shared-lookback-window sentence
+doesn't explicitly name 'unsupported' among the classes sharing it —
+factually accurate as written, just slightly under-stated; not fixed).
+
+PR #172 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/172
