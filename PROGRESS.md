@@ -3227,6 +3227,10 @@ Verified by a fresh Opus subagent across 3 rounds:
 
 No new `ASSUMPTIONS.md` entries — the plan's one Open Question (tally
 present on both outcome branches) was decided directly by Opus in the plan
-itself, not left `UNCONFIRMED`.
+itself, not left `UNCONFIRMED`. The originating entry ("Lineage-walk member
+verdicts stay uncounted by any metric") flipped from `NEEDS-CHANGE` to
+`CONFIRMED` in this same finalization pass; `DECISIONS.md` appended.
 
 PR strategy: single PR (one-phase plan, no natural seams).
+
+pushed fix/revocation-lineage-member-metric f98df64
