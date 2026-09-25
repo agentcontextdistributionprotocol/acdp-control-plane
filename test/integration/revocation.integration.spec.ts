@@ -14,7 +14,7 @@
  * .resolveKey` (the DID-document HTTP boundary) while still running a real
  * Ed25519 signature check against the resolved key.
  */
-import { AcdpProducer } from '@agentcontextdistributionprotocol/acdp';
+import { AcdpP256Producer, AcdpProducer } from '@agentcontextdistributionprotocol/acdp';
 import { DidWebResolverService } from '../../src/auth/did-web/did-web-resolver.service';
 import { RevocationAuditService } from '../../src/audit/revocation-audit.service';
 import { fingerprintEd25519B64 } from '../../src/audit/receipt-verify';
@@ -418,6 +418,132 @@ describe('producer key-revocation sweep (RFC-ACDP-0014, integration)', () => {
       expect(await revocationSvc.sweep()).toBe(0);
       expect(federationGetSpy).not.toHaveBeenCalled();
     });
+
+    it(
+      'a P-256 member sharing a lineage does not abort the walk — an EARLIER Ed25519 member ' +
+        'is still discovered and persisted (issue #170)',
+      async () => {
+        const fixture = fixtureFor('reg-lineage-p256.example');
+        const producer = AcdpProducer.fromSeedDidKey(Buffer.alloc(32, 20));
+        const revokedKey = AcdpProducer.fromSeedDidKey(Buffer.alloc(32, 21));
+        const revokedFp = fingerprintEd25519B64(revokedKey.publicKeyB64);
+
+        // R1: the EARLIEST revocation — exists only inside the lineage array,
+        // never webhooked on its own (same shape as the "discovers an
+        // EARLIER revocation" test above). This is the fact that must still
+        // be discovered despite the P-256 member sharing the lineage. Note:
+        // pre-fix, a did:key P-256 member (the flavor this test uses)
+        // classified 'invalid', not 'unavailable' — so THIS specific
+        // combination would already have dropped-not-aborted even before
+        // this fix. The did:web P-256 branch is the one that pre-fix
+        // classified 'unavailable' and would have aborted the whole walk
+        // (Rule 3) here — that abort-vs-drop routing is proven directly (and
+        // for BOTH branches' real outcomes) by revocation-lineage.spec.ts's
+        // unit-level "member verifying as unsupported... does NOT abort"
+        // test, since walkRevocationLineage's Rule 2/3 routing depends only
+        // on the verdict's `status`, never on which DID method produced it.
+        // What THIS test proves is the thing unit tests can't: that a REAL,
+        // genuinely-signed P-256 body flows through the real crypto pipeline
+        // end to end to an 'unsupported' verdict, and that the surrounding
+        // lineage still persists correctly around it.
+        const r1CtxId = `acdp://${fixture.authority}/00000000-0000-4000-8000-0000000000a1`;
+        const r1 = {
+          ...(JSON.parse(
+            producer.buildPublishRequest({
+              title: 'Key revocation — earliest boundary',
+              contextType: 'key-revocation',
+              metadata: JSON.stringify({
+                revoked_key_fingerprint: revokedFp,
+                compromised_since: '2026-03-01T00:00:00.000Z',
+                reason: 'earliest known compromise boundary',
+              }),
+            }),
+          ) as Record<string, unknown>),
+          ctx_id: r1CtxId,
+          lineage_id: LINEAGE_ID,
+          origin_registry: fixture.authority,
+          created_at: '2026-03-01T00:05:00.000Z',
+        };
+
+        // A genuinely-signed P-256 did:key revocation body — real crypto via
+        // the SDK's AcdpP256Producer, same as every other fixture in this
+        // file. This pipeline has no verification path for ecdsa-p256 (no
+        // SDK fingerprint helper), so it must be dropped as 'unsupported'
+        // WITHOUT aborting the walk — the exact scenario issue #170 exists
+        // to fix.
+        const p256Producer = AcdpP256Producer.fromSeedDidKey(Buffer.alloc(32, 22));
+        const p256CtxId = `acdp://${fixture.authority}/00000000-0000-4000-8000-0000000000a2`;
+        const p256Member = {
+          ...(JSON.parse(
+            p256Producer.buildPublishRequest({
+              title: 'Key revocation — P-256 signer (unsupported here)',
+              contextType: 'key-revocation',
+              metadata: JSON.stringify({
+                revoked_key_fingerprint: revokedFp,
+                compromised_since: '2026-01-01T00:00:00.000Z',
+                reason: 'P-256 signer — must be dropped, must not abort the walk',
+              }),
+            }),
+          ) as Record<string, unknown>),
+          ctx_id: p256CtxId,
+          lineage_id: LINEAGE_ID,
+          origin_registry: fixture.authority,
+          created_at: '2026-01-01T00:05:00.000Z',
+        };
+
+        // R2: the lineage HEAD — the one the webhook actually announces.
+        // sweep() only queues a lineage walk after its OWN webhook candidate
+        // verifies, so the Ed25519 revocation under test must be the
+        // ingested/webhooked one; the P-256 member lives only in the
+        // /lineages/ response.
+        const r2 = producerSignedBody(fixture, producer, revokedFp);
+
+        await ctx.client.ingest(
+          webhookPayload(fixture, { agent_id: producer.agentDid }),
+          { runId: 'run-rev-lineage-p256', secret: SECRET },
+        );
+        federationGetSpy.mockImplementation(async (url: string): Promise<FederationResponse> => {
+          if (url === `${fixture.baseUrl}/contexts/${encodeURIComponent(fixture.ctxId)}`) {
+            return { status: 200, contentType: 'application/json', body: JSON.stringify({ body: r2 }) };
+          }
+          if (url === `${fixture.baseUrl}/lineages/${encodeURIComponent(LINEAGE_ID)}`) {
+            return {
+              status: 200,
+              contentType: 'application/json',
+              body: JSON.stringify([
+                { body: r1, registry_state: { status: 'superseded' } },
+                { body: p256Member, registry_state: { status: 'active' } },
+                { body: r2, registry_state: { status: 'active' } },
+              ]),
+            };
+          }
+          throw new Error(`unexpected federation fetch in test: ${url}`);
+        });
+
+        const n = await revocationSvc.sweep();
+        expect(n).toBe(1);
+
+        // Both Ed25519 facts (the webhooked head AND the lineage-only
+        // earlier member) persist. The P-256 member does NOT — it was
+        // dropped as 'unsupported', and critically, it did NOT abort the
+        // walk. A status of 'unavailable' WOULD have aborted here per Rule
+        // 3, leaving R1 permanently undiscovered — that is the did:web
+        // branch's pre-fix behavior (issue #170), proven directly by
+        // revocation-lineage.spec.ts's unit-level abort-vs-drop tests;
+        // this end-to-end test instead proves the did:key P-256 signature
+        // genuinely verifies and the resulting 'unsupported' verdict flows
+        // correctly through the real walk without aborting or folding in.
+        const facts = await revocationRepo.findByFingerprint(revokedFp, 'default');
+        expect(facts.map((f) => f.ctxId).sort()).toEqual([r1CtxId, fixture.ctxId].sort());
+
+        // A cursor still marks this lineage as freshly walked despite the
+        // dropped P-256 member — same idempotency guarantee as the
+        // all-Ed25519 lineage-walk test above.
+        federationGetSpy.mockClear();
+        expect(await revocationSvc.sweep()).toBe(0);
+        expect(federationGetSpy).not.toHaveBeenCalled();
+      },
+    );
 
     it('cursor semantics against the real database: zero facts for a lineage forces a walk even once a cursor already exists', async () => {
       const fixture = fixtureFor('reg-lineage-cursor.example');

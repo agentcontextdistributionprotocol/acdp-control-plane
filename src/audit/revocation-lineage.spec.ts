@@ -218,6 +218,63 @@ describe('walkRevocationLineage', () => {
     void bad;
   });
 
+  // ── issue #170: 'unsupported' drops like 'invalid', never aborts like 'unavailable' ──
+  it(
+    'a member verifying as unsupported (capability gap, e.g. ecdsa-p256) is dropped with a ' +
+      'warning; the walk does NOT abort — unlike unavailable, and unlike the naive fix issue ' +
+      '#170 rejected',
+    async () => {
+      const good = revocation({ compromisedSince: '2026-01-01T00:00:00.000Z' });
+      const verify = jest.fn(async (_a: string, _b: string, _c: string, body: Record<string, unknown>): Promise<LineageMemberVerdict> => {
+        if (body['ctx_id'] === 'ctx-1') return { status: 'unsupported', reason: 'ecdsa-p256 has no fingerprint helper' };
+        return { status: 'verified', revocation: good };
+      });
+      const d = deps(
+        async () => ({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([fullContext('ctx-1'), fullContext('ctx-2')]),
+        }),
+        verify,
+      );
+      const result = await walkRevocationLineage(d, params({ expectCtxId: 'ctx-1' }));
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.members).toHaveLength(1);
+        expect(result.members[0].ctxId).toBe('ctx-2');
+        expect(result.members[0].revocation).toEqual(good);
+      }
+      // Both members were reached — proving the walk did not abort on ctx-1,
+      // the exact contrast with the 'unavailable' case in AC4 below.
+      expect(verify).toHaveBeenCalledTimes(2);
+      expect(d.logger.warn).toHaveBeenCalledWith(expect.stringContaining('ctx-1'));
+    },
+  );
+
+  // ── Runtime counterpart of the compile-time exhaustiveness guard ───────
+  it('drops a member with a status outside the known union rather than crashing or folding it in', async () => {
+    const good = revocation({ compromisedSince: '2026-01-01T00:00:00.000Z' });
+    const verify = jest.fn(async (_a: string, _b: string, _c: string, body: Record<string, unknown>): Promise<LineageMemberVerdict> => {
+      if (body['ctx_id'] === 'ctx-1') return { status: 'bogus' } as unknown as LineageMemberVerdict;
+      return { status: 'verified', revocation: good };
+    });
+    const d = deps(
+      async () => ({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([fullContext('ctx-1'), fullContext('ctx-2')]),
+      }),
+      verify,
+    );
+    const result = await walkRevocationLineage(d, params({ expectCtxId: 'ctx-1' }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.members).toHaveLength(1);
+      expect(result.members[0].ctxId).toBe('ctx-2');
+    }
+    expect(verify).toHaveBeenCalledTimes(2);
+  });
+
   // ── AC4 ──────────────────────────────────────────────────────────────
   it('a transiently-failing member aborts the WHOLE walk — no partial fold recorded', async () => {
     const verify = jest.fn(async (_a: string, _b: string, _c: string, body: Record<string, unknown>): Promise<LineageMemberVerdict> => {

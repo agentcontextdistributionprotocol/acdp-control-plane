@@ -3056,3 +3056,85 @@ The fifth found a real one:
 No other findings across the other four review areas. The whole-plan
 implementation holds up under an independent adversarial re-read, with
 this one exception now closed.
+
+## Plan: revocation-lineage-p256-status (issue #170) — 2026-09-25 — PASS (round 1, fresh Opus verifier)
+
+Single-phase plan fixing the P-256 revocation-signer misclassification
+found during the rfc-0014-0015-upgrade `/reconcile` pass (see
+`ASSUMPTIONS.md`'s "ecdsa-p256 revocation signers" entry and
+`DECISIONS.md`'s 2026-09-23 deferral). A did:web P-256 signer failed
+closed as `'unavailable'` (silently lost after 30 days, debug-level
+log only); a did:key P-256 signer was rejected as `'invalid'` at the
+multibase-decode step — despite `AcdpVerifier.verifyBodyOffline`
+already proving its signature genuine, misreporting a real compromise
+signal as malformed. The obvious fix (unify both to `'unavailable'`)
+was rejected as fail-open for Ed25519: `'unavailable'` aborts the
+entire §7 lineage walk (Rule 3, cursor unset) while `'invalid'` drops
+only that member (Rule 2) — unifying would let one P-256 member
+anywhere in a mixed-signer lineage permanently block every Ed25519
+revocation fact in that same lineage.
+
+Plan reviewed by a fresh Opus agent: REVISE → 7 findings (wrong P-256
+multicodec prefix bytes — `0x1200` instead of the real varint encoding
+`0x80 0x24`, later independently re-confirmed by the main session
+itself minting a real `AcdpP256Producer` did:key and base58-decoding it
+by hand; mischaracterized the unhandled-status risk as "silently folds
+in as verified" when it's actually an uncaught `TypeError` that aborts
+the whole sweep pass; under-specified exhaustiveness-guard code shape;
+one missing `Files` entry (`instrumentation.service.ts`'s doc comment);
+two integration-test construction errors; one wrong attribution in
+`DECISIONS.md`) — all applied, one round, no second round needed.
+
+Implemented: a third `Status`/`LineageMemberVerdict` value,
+`'unsupported'`, applied uniformly via
+`RevocationAuditService.verifyRevocationBody` (both the did:web
+algorithm-check branch and a new early-return in the did:key branch,
+keyed off `decodeEd25519Multibase`'s extended return shape). Both
+`sweep()`'s per-candidate loop and `walkRevocationLineage`'s
+per-member loop converted from if-chains to exhaustive `switch`
+statements with a compile-time `never`-guard in `default`, whose
+runtime fallback fails closed (`continue`, never `throw` — neither
+file is on `CLAUDE.md`'s `throw new Error` exemption list) —
+mirroring `classifyLineageFailure`'s established convention. New
+integration test mints a real `AcdpP256Producer` did:key body, proving
+end-to-end that a genuinely-signed P-256 member drops without
+aborting the walk or folding in, alongside a real earlier Ed25519
+member that must still be discovered.
+
+Files: `src/common/multibase.ts`, `src/common/multibase.spec.ts`,
+`src/telemetry/instrumentation.service.ts`,
+`src/audit/revocation-audit.service.ts`,
+`src/audit/revocation-audit.service.spec.ts`,
+`src/audit/revocation-lineage.ts`, `src/audit/revocation-lineage.spec.ts`,
+`test/integration/revocation.integration.spec.ts`, plus local-only
+`CLAUDE.md`.
+
+Gate: `tsc --noEmit` (both tsconfigs) clean; `eslint` clean;
+`check:conventions` all 6 rules clean (one grep-trap false positive
+along the way — explanatory comments containing the literal string
+"throw new Error" tripped rule #1, reworded); unit 78 suites/1120
+passed/4 skipped/1 pre-existing unrelated flake (`pino-logger.spec.ts`,
+confirmed passing alone); integration 31 suites/212 passed (+1 from
+baseline), disposable Postgres port 5435, torn down after each run.
+
+Verified by a fresh Opus subagent: PASS, 5 non-blocking findings.
+Closed 3 before finalizing: two stale "two-way `Outcome.status`" doc
+comments in `revocation-audit.service.ts` (file header, `toStatus()`
+helper) updated to four-way; the new integration test's comments
+originally overclaimed reproducing "the pre-fix bug" for its did:key
+P-256 member — corrected, since a did:key P-256 member was already
+`'invalid'` (non-aborting) pre-fix, so this test never actually
+exercised the historically dangerous did:web-specific abort path (that
+hazard is covered separately by unit tests) — reworded to state
+precisely what the test does prove instead. One finding (metric
+increment ordering relative to the exhaustiveness switch) judged not
+worth fixing: the compile-time `never`-guard already prevents an
+out-of-union status reaching that line in real code. One finding
+(`ASSUMPTIONS.md`/`DECISIONS.md` not yet updated) was explicitly "on
+schedule, not missing" per the verifier — closed as part of this
+finalization pass (`ASSUMPTIONS.md`'s "ecdsa-p256 revocation signers"
+entry flipped to CONFIRMED; new low-blast-radius entry logged for the
+deliberately-unextended lineage-walk metric coverage per the plan's
+own Open Questions item 2; `DECISIONS.md` appended).
+
+PR strategy: single PR (one-phase plan, no natural seams).

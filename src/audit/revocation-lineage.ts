@@ -43,7 +43,11 @@
  *    warning, not fatal — otherwise one injected garbage member suppresses
  *    every genuine revocation in the lineage (the same denial-of-service
  *    the walk exists to avoid). Such a member was never going to contribute
- *    a valid `compromised_since` to the fold anyway.
+ *    a valid `compromised_since` to the fold anyway. A member whose signer
+ *    uses an algorithm this pipeline has no verification path for (e.g.
+ *    ecdsa-p256 — `LineageMemberVerdict.status === 'unsupported'`, issue
+ *    #170) is dropped the SAME Rule-2-shaped way — never fatal — but logged
+ *    distinguishably as a capability gap rather than a failed verification.
  * 3. A member that fails verification TRANSIENTLY aborts the WHOLE walk.
  *    This asymmetry is load-bearing: a dropped member that *would* have
  *    named an earlier `compromised_since` moves the fold LATER — a genuine
@@ -161,7 +165,7 @@ export interface LineageMember {
 }
 
 export interface LineageMemberVerdict {
-  status: 'verified' | 'invalid' | 'unavailable';
+  status: 'verified' | 'invalid' | 'unavailable' | 'unsupported';
   reason?: string;
   revocation?: ParsedRevocation;
 }
@@ -293,20 +297,49 @@ export async function walkRevocationLineage(
     }
     const bodyJson = JSON.stringify(m.body);
     const verdict = await deps.verifyMemberBody(params.registryAuthority, params.tenantId, bodyJson, m.body);
-    if (verdict.status === 'unavailable') {
-      // Rule 3: a transient member failure aborts the whole walk.
-      return {
-        ok: false,
-        kind: 'transient',
-        reason: `lineage '${params.lineageId}' member '${m.ctxId}' unverifiable this pass: ${verdict.reason ?? ''}`,
-      };
-    }
-    if (verdict.status === 'invalid') {
-      // Rule 2: dropped with a warning, remaining members still fold.
-      deps.logger.warn(
-        `lineage walk: dropped member ctx='${m.ctxId}' lineage='${params.lineageId}' (failed verification): ${verdict.reason ?? ''}`,
-      );
-      continue;
+    // Exhaustive by construction (mirrors classifyLineageFailure's own
+    // established pattern above) — a status value reaching neither an
+    // explicit `case` nor `default` here would otherwise fall through to
+    // `members.push({..., revocation: verdict.revocation!})` with
+    // `revocation` `undefined`, which doesn't crash HERE but does one level
+    // up in the caller (RevocationAuditService.walkAndPersistLineage,
+    // reading `member.revocation.compromisedSince`), uncaught, crashing the
+    // whole sweep pass. The `default` branch's runtime fallback is a safe,
+    // fail-closed drop (`continue`) rather than a thrown error — this file
+    // is not on CLAUDE.md's "no throwing Error in handler paths" exemption
+    // list.
+    switch (verdict.status) {
+      case 'unavailable':
+        // Rule 3: a transient member failure aborts the whole walk.
+        return {
+          ok: false,
+          kind: 'transient',
+          reason: `lineage '${params.lineageId}' member '${m.ctxId}' unverifiable this pass: ${verdict.reason ?? ''}`,
+        };
+      case 'invalid':
+        // Rule 2: dropped with a warning, remaining members still fold.
+        deps.logger.warn(
+          `lineage walk: dropped member ctx='${m.ctxId}' lineage='${params.lineageId}' (failed verification): ${verdict.reason ?? ''}`,
+        );
+        continue;
+      case 'unsupported':
+        // Same Rule-2-shaped drop as 'invalid' (never abort, remaining
+        // members still fold) but logged distinguishably: a capability gap
+        // (e.g. an ecdsa-p256 signer), not a failed verification — see
+        // issue #170 / ASSUMPTIONS.md §"ecdsa-p256 revocation signers".
+        deps.logger.warn(
+          `lineage walk: dropped member ctx='${m.ctxId}' lineage='${params.lineageId}' (unsupported algorithm, capability gap): ${verdict.reason ?? ''}`,
+        );
+        continue;
+      case 'verified':
+        break;
+      default: {
+        const _exhaustive: never = verdict.status;
+        deps.logger.warn(
+          `lineage walk: dropped member ctx='${m.ctxId}' lineage='${params.lineageId}' (unexpected status '${String(_exhaustive)}')`,
+        );
+        continue;
+      }
     }
     members.push({
       ctxId: m.ctxId,

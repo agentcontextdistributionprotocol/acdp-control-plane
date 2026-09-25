@@ -593,11 +593,22 @@
   already-shipped, tested code path and deserves its own phase with its own
   verification gate, not a same-day patch. Tracked as
   [issue #170](https://github.com/agentcontextdistributionprotocol/acdp-control-plane/issues/170).
-- **Status:** UNCONFIRMED — facts corrected, resolution DEFERRED to a follow-up
-  phase (see `DECISIONS.md` and issue #170). Blast radius unchanged at Medium for a P-256-only
-  deployment; the corrected picture is not more dangerous in practice than
-  originally assessed (mixed Ed25519+P-256 lineages remain a narrow trigger), but
-  the wrong-fix risk this correction heads off is real.
+- **Status:** CONFIRMED (2026-09-25) — the deferred follow-up shipped via
+  `plans/revocation-lineage-p256-status.md` (issue #170, closed by that PR). A third
+  `Status`/`LineageMemberVerdict` value, `'unsupported'`, now covers both branches:
+  the did:web algorithm check and a new P-256-multicodec-recognizing early return in
+  `RevocationAuditService.verifyRevocationBody`'s did:key branch (after
+  `AcdpVerifier.verifyBodyOffline` succeeds — the genuine-signature fact is preserved
+  in the `'unsupported'` verdict's reason string, not discarded). Both the
+  did:web silent-loss bug (now logged at `warn`, not `debug`) and the did:key
+  false-"invalid" misreport are fixed; a P-256 member anywhere in a mixed-signer
+  lineage now drops (Rule-2-shaped) rather than either aborting the walk (Rule 3,
+  the pre-existing did:web hazard) or folding in as verified. Both call sites
+  (`RevocationAuditService.sweep()`'s per-candidate loop and
+  `walkRevocationLineage`'s per-member loop) route the three-way status through an
+  exhaustive `switch` with a compile-time `never`-guard and a fail-closed (never
+  `throw`) runtime fallback, mirroring `classifyLineageFailure`'s established
+  convention. See `DECISIONS.md`'s matching entry for the full record.
 
 ## Lineage cursor TTL hardcoded rather than config-exposed (Phase 13)
 - **Plan:** `plans/rfc-0014-0015-upgrade.md`
@@ -887,3 +898,28 @@
   whenever this path can run (`KEY_REVOCATION_CHECK_ENABLED` hard-requires
   `RECEIPT_AUDIT_ENABLED`), and a dedicated knob stays a pure, non-breaking
   addition later if the (now-corrected) divergence case ever materializes.
+
+## Lineage-walk member verdicts stay uncounted by any metric (Phase 1, issue #170)
+- **Plan:** `plans/revocation-lineage-p256-status.md`
+- **Assumed:** issue #170's metric ask ("wherever `Status` is currently counted, count
+  `'unsupported'` too") scopes to the webhook-candidate path only —
+  `keyRevocationChecksTotal` (incremented in `RevocationAuditService.sweep()`'s
+  per-candidate loop). `walkRevocationLineage` (`src/audit/revocation-lineage.ts`) has
+  never counted its own per-member verdicts (`'invalid'`/`'unavailable'` aren't counted
+  there today either) — its file header states it deliberately "stays free of the
+  SDK/DID-resolution machinery," and by extension of `InstrumentationService`.
+- **Chose:** leave lineage-walk member verdicts uncounted; extend only
+  `keyRevocationChecksTotal`'s label set to include `'unsupported'` (the webhook-candidate
+  path already counts there). Extending lineage-walk observability is a separate,
+  unscoped enhancement — pure additive metric coverage, no behavior change — deliberately
+  not attempted alongside the correctness fix issue #170 actually asks for.
+- **Alternatives:** add a matching counter to `walkRevocationLineage`'s member loop now,
+  while the exhaustive `switch` handling each `Status` value is already being written —
+  rejected as scope creep past issue #170's own ask, and as a departure from the file's
+  stated "metrics-free" design without a driving need (no operator complaint or incident
+  motivates it; this was noticed only as an asymmetry while implementing the fix).
+- **Blast radius if wrong:** Low. Pure observability gap, not a correctness one — a
+  dropped P-256 lineage member is still logged at `warn` (this phase's fix) even though
+  it isn't separately counted. Reversible any time as a pure metric addition.
+- **Status:** UNCONFIRMED — flagged here per the plan's own Open Questions, not yet
+  routed through `/reconcile`.

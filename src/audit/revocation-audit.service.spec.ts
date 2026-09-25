@@ -277,6 +277,28 @@ describe('RevocationAuditService', () => {
       expect(out.reason).toContain('undecodable did:key');
     });
 
+    it(
+      'is unsupported (not invalid) for a P-256 did:key agent_id — the signature genuinely ' +
+        'verified offline, it is only dropped for capability (issue #170)',
+      async () => {
+        respond(makeBody());
+        mockDecodeEd25519Multibase.mockReturnValue({
+          ok: false,
+          reason: 'unsupported key algorithm',
+          unsupportedAlgorithm: 'ecdsa-p256',
+        });
+        const out = await svc.verifyEvent(makeEvent());
+        expect(out.status).toBe('unsupported');
+        expect(out.reason).toContain('ecdsa-p256');
+        // The signature check ran and passed — this is not a rejection of a
+        // possibly-fraudulent body.
+        expect(mockVerifyBodyOffline).toHaveBeenCalled();
+        // We never got far enough to compute a fingerprint or parse the
+        // revocation shape — parseKeyRevocation must not be called.
+        expect(mockParseKeyRevocation).not.toHaveBeenCalled();
+      },
+    );
+
     it('verifies end-to-end and persists a producer_signed revocation', async () => {
       respond(makeBody());
       const out = await svc.verifyEvent(makeEvent());
@@ -322,10 +344,12 @@ describe('RevocationAuditService', () => {
       expect(out.reason).toContain('key_not_authorized');
     });
 
-    it('is unavailable for a non-ed25519 algorithm (no SDK fingerprint helper)', async () => {
+    it('is unsupported (not unavailable) for a non-ed25519 algorithm — a capability gap, ' +
+      'not a transient failure, since unavailable would abort the whole §7 lineage walk',
+    async () => {
       respond(webBody({ algorithm: 'ecdsa-p256' }));
       const out = await svc.verifyEvent(webEvent());
-      expect(out.status).toBe('unavailable');
+      expect(out.status).toBe('unsupported');
     });
 
     it('classifies a DidResolutionError FETCH as unavailable, PICK as invalid', async () => {
@@ -459,6 +483,37 @@ describe('RevocationAuditService', () => {
         trust_class: 'unknown',
       });
     });
+
+    it('does not persist an unsupported outcome, and counts it distinguishably from invalid/unavailable', async () => {
+      revocationRepo.findCandidates.mockResolvedValue([makeEvent({ agentId: 'did:web:agents.example.com:producer' })]);
+      respond({
+        ...makeBody({ agent_id: 'did:web:agents.example.com:producer' }),
+        signature: { algorithm: 'ecdsa-p256', key_id: 'did:web:agents.example.com:producer#key-1', value: 'c2ln' },
+      });
+      const n = await svc.sweep();
+      expect(n).toBe(1);
+      expect(revocationRepo.record).not.toHaveBeenCalled();
+      expect(instrumentation.keyRevocationChecksTotal.inc).toHaveBeenCalledWith({
+        status: 'unsupported',
+        trust_class: 'unknown',
+      });
+    });
+
+    it(
+      'never throws and never crashes the pass on a status value outside the known union ' +
+        '(the runtime counterpart of the compile-time exhaustiveness guard)',
+      async () => {
+        revocationRepo.findCandidates.mockResolvedValue([makeEvent()]);
+        jest
+          .spyOn(svc, 'verifyEvent')
+          .mockResolvedValue({ status: 'bogus', trustClass: 'unknown' } as unknown as Awaited<
+            ReturnType<typeof svc.verifyEvent>
+          >);
+        await expect(svc.sweep()).resolves.toBe(1);
+        expect(revocationRepo.record).not.toHaveBeenCalled();
+        expect(database.advisoryUnlock).toHaveBeenCalled();
+      },
+    );
 
     it('skips the pass when another instance holds the advisory lock', async () => {
       database.tryAdvisoryLock.mockResolvedValue(false);
