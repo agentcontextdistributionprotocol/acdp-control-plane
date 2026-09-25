@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { and, count, countDistinct, desc, eq, gt, sql } from 'drizzle-orm';
+import { AppConfigService } from '../config/app-config.service';
 import { DatabaseService } from '../db/database.service';
 import { contextEvents, runs } from '../db/schema';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
@@ -21,13 +22,21 @@ export interface DashboardOverviewOptions {
 
 @Injectable()
 export class DashboardService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly config: AppConfigService,
+  ) {}
 
   async getOverview(opts: DashboardOverviewOptions) {
     const window: Window = opts.window ?? '24h';
     const tenantId = opts.tenantId ?? DEFAULT_TENANT_ID;
     const interval = WINDOW_INTERVAL[window];
     const cutoff = sql`now() - interval '${sql.raw(interval)}'`;
+    // Both gate their own query below AND null their own response tile (issue
+    // #176) — a tenant that never enabled the sweep gets an absent tile, not
+    // an indistinguishable-from-"checked, clean" all-zero one.
+    const logWitnessEnabled = this.config.logWitnessEnabled;
+    const keyRevocationEnabled = this.config.keyRevocationCheckEnabled;
 
     const [
       totalRuns,
@@ -134,39 +143,49 @@ export class DashboardService {
       // how many distinct logs this control plane is witnessing, and how many
       // registries currently sit in an alerted state (root rewrite, split
       // view, regression, reset). Not window-scoped: witness state is a
-      // current posture, not an event stream.
-      this.database.db.execute(sql`
-        SELECT
-          (SELECT count(DISTINCT log_id)::int
-             FROM log_witness_checkpoints
-            WHERE tenant_id = ${tenantId}) AS witnessed_logs,
-          (SELECT count(*)::int
-             FROM log_witness_cursors
-            WHERE tenant_id = ${tenantId} AND alerted) AS active_alerts,
-          (SELECT count(*)::int
-             FROM log_witness_cursors
-            WHERE tenant_id = ${tenantId} AND alerted AND acknowledged_at IS NULL)
-            AS unacknowledged_alerts,
-          -- RFC-ACDP-0015 §8: distinct current-posture heads whose aggregated
-          -- witness cosignatures met the configured N-witnessed quorum.
-          (SELECT count(*)::int
-             FROM log_witness_checkpoints
-            WHERE tenant_id = ${tenantId} AND meets_quorum) AS heads_meeting_quorum
-      `),
+      // current posture, not an event stream. Skipped entirely (not
+      // run-then-discarded) when LOG_WITNESS_ENABLED is off (issue #176) — a
+      // tenant running with the sweep off, the default posture, shouldn't pay
+      // for this query on every dashboard load when the tile itself is null.
+      logWitnessEnabled
+        ? this.database.db.execute(sql`
+            SELECT
+              (SELECT count(DISTINCT log_id)::int
+                 FROM log_witness_checkpoints
+                WHERE tenant_id = ${tenantId}) AS witnessed_logs,
+              (SELECT count(*)::int
+                 FROM log_witness_cursors
+                WHERE tenant_id = ${tenantId} AND alerted) AS active_alerts,
+              (SELECT count(*)::int
+                 FROM log_witness_cursors
+                WHERE tenant_id = ${tenantId} AND alerted AND acknowledged_at IS NULL)
+                AS unacknowledged_alerts,
+              -- RFC-ACDP-0015 §8: distinct current-posture heads whose
+              -- aggregated witness cosignatures met the configured
+              -- N-witnessed quorum.
+              (SELECT count(*)::int
+                 FROM log_witness_checkpoints
+                WHERE tenant_id = ${tenantId} AND meets_quorum) AS heads_meeting_quorum
+          `)
+        : Promise.resolve({ rows: [] } as { rows: unknown[] }),
       // RFC-ACDP-0014 §7 (Phase 14): audited events in the window whose
       // signer key is independently known-revoked, by classification.
       // Window-scoped on checked_at (receipt_audits' own timestamp), like
       // receiptCoverage/didMethods above — a running-window trust tile, not
-      // a current-posture one like logWitness.
-      this.database.db.execute(sql`
-        SELECT
-          count(*) FILTER (WHERE key_revocation_status = 'pre_compromise')::int AS pre_compromise,
-          count(*) FILTER (WHERE key_revocation_status = 'revoked_at_or_after')::int AS revoked_at_or_after,
-          count(*) FILTER (WHERE key_revocation_status = 'revoked_time_unverifiable')::int AS revoked_time_unverifiable
-        FROM receipt_audits
-        WHERE tenant_id = ${tenantId}
-          AND checked_at > now() - interval '${sql.raw(interval)}'
-      `),
+      // a current-posture one like logWitness. Skipped entirely when
+      // KEY_REVOCATION_CHECK_ENABLED is off, same reasoning as logWitness
+      // above (issue #176).
+      keyRevocationEnabled
+        ? this.database.db.execute(sql`
+            SELECT
+              count(*) FILTER (WHERE key_revocation_status = 'pre_compromise')::int AS pre_compromise,
+              count(*) FILTER (WHERE key_revocation_status = 'revoked_at_or_after')::int AS revoked_at_or_after,
+              count(*) FILTER (WHERE key_revocation_status = 'revoked_time_unverifiable')::int AS revoked_time_unverifiable
+            FROM receipt_audits
+            WHERE tenant_id = ${tenantId}
+              AND checked_at > now() - interval '${sql.raw(interval)}'
+          `)
+        : Promise.resolve({ rows: [] } as { rows: unknown[] }),
     ]);
 
     const contexts = Number(totalContexts[0]?.n ?? 0);
@@ -189,38 +208,62 @@ export class DashboardService {
       byRegistry: byRegistry.rows,
       receiptCoverage: receiptCoverage.rows,
       didMethods: didMethods.rows,
-      // ACDP 0.3.0 Tier 3 (RFC-ACDP-0012): checkpoint-witness posture.
-      logWitness: {
-        witnessedLogs: Number(
-          (logWitness.rows[0] as { witnessed_logs?: number } | undefined)?.witnessed_logs ?? 0,
-        ),
-        activeAlerts: Number(
-          (logWitness.rows[0] as { active_alerts?: number } | undefined)?.active_alerts ?? 0,
-        ),
-        // Alerts an operator has not yet acknowledged — the durable worklist.
-        unacknowledgedAlerts: Number(
-          (logWitness.rows[0] as { unacknowledged_alerts?: number } | undefined)
-            ?.unacknowledged_alerts ?? 0,
-        ),
-        // RFC-ACDP-0015 §8 quorum consumption: heads meeting the N-witnessed policy.
-        headsMeetingQuorum: Number(
-          (logWitness.rows[0] as { heads_meeting_quorum?: number } | undefined)
-            ?.heads_meeting_quorum ?? 0,
-        ),
-      },
+      // ACDP 0.3.0 Tier 3 (RFC-ACDP-0012): checkpoint-witness posture. `null`
+      // when LOG_WITNESS_ENABLED is off (issue #176) — distinguishes "never
+      // witnessing" from "witnessing, currently clean" instead of collapsing
+      // both to the same all-zero shape.
+      logWitness: logWitnessEnabled
+        ? {
+            witnessedLogs: Number(
+              (logWitness.rows[0] as { witnessed_logs?: number } | undefined)
+                ?.witnessed_logs ?? 0,
+            ),
+            activeAlerts: Number(
+              (logWitness.rows[0] as { active_alerts?: number } | undefined)?.active_alerts ??
+                0,
+            ),
+            // Alerts an operator has not yet acknowledged — the durable worklist.
+            unacknowledgedAlerts: Number(
+              (logWitness.rows[0] as { unacknowledged_alerts?: number } | undefined)
+                ?.unacknowledged_alerts ?? 0,
+            ),
+            // RFC-ACDP-0015 §8 quorum consumption: heads meeting the N-witnessed policy.
+            headsMeetingQuorum: Number(
+              (logWitness.rows[0] as { heads_meeting_quorum?: number } | undefined)
+                ?.heads_meeting_quorum ?? 0,
+            ),
+          }
+        : null,
       // RFC-ACDP-0014 §7 (Phase 14): compromise-boundary classification tile.
-      keyRevocation: {
-        preCompromise: Number(
-          (keyRevocation.rows[0] as { pre_compromise?: number } | undefined)?.pre_compromise ?? 0,
-        ),
-        revokedAtOrAfter: Number(
-          (keyRevocation.rows[0] as { revoked_at_or_after?: number } | undefined)
-            ?.revoked_at_or_after ?? 0,
-        ),
-        revokedTimeUnverifiable: Number(
-          (keyRevocation.rows[0] as { revoked_time_unverifiable?: number } | undefined)
-            ?.revoked_time_unverifiable ?? 0,
-        ),
+      // `null` when KEY_REVOCATION_CHECK_ENABLED is off (issue #176), same
+      // reasoning as logWitness above.
+      keyRevocation: keyRevocationEnabled
+        ? {
+            preCompromise: Number(
+              (keyRevocation.rows[0] as { pre_compromise?: number } | undefined)
+                ?.pre_compromise ?? 0,
+            ),
+            revokedAtOrAfter: Number(
+              (keyRevocation.rows[0] as { revoked_at_or_after?: number } | undefined)
+                ?.revoked_at_or_after ?? 0,
+            ),
+            revokedTimeUnverifiable: Number(
+              (keyRevocation.rows[0] as { revoked_time_unverifiable?: number } | undefined)
+                ?.revoked_time_unverifiable ?? 0,
+            ),
+          }
+        : null,
+      // Feature-flag signal (issue #176): lets a consumer distinguish "off"
+      // from "on and clean" for every tile above (and for flags with no tile
+      // of their own, e.g. witnessQuorum's contribution to
+      // logWitness.headsMeetingQuorum) without guessing from zeros.
+      features: {
+        receiptAudit: this.config.receiptAuditEnabled,
+        keyRevocationCheck: this.config.keyRevocationCheckEnabled,
+        logWitness: this.config.logWitnessEnabled,
+        logInclusionAudit: this.config.logInclusionAuditEnabled,
+        witnessCosigning: this.config.witnessCosigningEnabled,
+        witnessQuorum: this.config.witnessQuorumEnabled,
       },
     };
   }

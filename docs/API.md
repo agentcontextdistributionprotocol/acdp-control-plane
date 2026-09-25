@@ -492,6 +492,14 @@ KPIs over the window (default `24h`), tenant-scoped:
     "preCompromise": 0,
     "revokedAtOrAfter": 1,
     "revokedTimeUnverifiable": 0
+  },
+  "features": {
+    "receiptAudit": true,
+    "keyRevocationCheck": true,
+    "logWitness": true,
+    "logInclusionAudit": false,
+    "witnessCosigning": false,
+    "witnessQuorum": false
   }
 }
 ```
@@ -499,16 +507,38 @@ KPIs over the window (default `24h`), tenant-scoped:
 `totalRetracted` / `totalContextsLive` are the ACDP 0.3.0 lifecycle tiles
 (currently-retracted contexts from the window, and published − retracted).
 `receiptCoverage` / `didMethods` are the ACDP 0.2.0 trust tiles
-(RFC-ACDP-0010), and `logWitness` is the RFC-ACDP-0012/0015 witness posture
-(not window-scoped — it reflects current state). `keyRevocation` is the
-RFC-ACDP-0014 §7 tile (Phase 14) — window-scoped on `receipt_audits.checked_at`
-like `receiptCoverage`/`didMethods` above, not a current-posture tile like
-`logWitness`; see `GET /runs/:runId`'s `trust.revoked` above for the per-event
-detail these counts summarize. A retroactive amendment (Phase 15) deliberately
-never touches `checked_at` (see `docs/ARCHITECTURE.md`'s "Retroactive
-re-audit" section), so a row this tile's window has already scrolled past
-stays invisible here even after being amended — `trust.revoked` on the
-row's own `GET /runs/:runId` is unaffected by the window and always current.
+(RFC-ACDP-0010), always present — they read ingest-time columns and don't
+depend on any sweep being enabled. `logWitness` is the RFC-ACDP-0012/0015
+witness posture (not window-scoped — it reflects current state). `keyRevocation`
+is the RFC-ACDP-0014 §7 tile (Phase 14) — window-scoped on
+`receipt_audits.checked_at` like `receiptCoverage`/`didMethods` above, not a
+current-posture tile like `logWitness`; see `GET /runs/:runId`'s
+`trust.revoked` above for the per-event detail these counts summarize. A
+retroactive amendment (Phase 15) deliberately never touches `checked_at`
+(see `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section), so a row
+this tile's window has already scrolled past stays invisible here even
+after being amended — `trust.revoked` on the row's own `GET /runs/:runId`
+is unaffected by the window and always current.
+
+**`logWitness` and `keyRevocation` are `null`, not a zeroed object, when
+their respective sweep is disabled** (`LOG_WITNESS_ENABLED=false` /
+`KEY_REVOCATION_CHECK_ENABLED=false` — issue #176). Before this, both tiles
+were always built with `?? 0` defaults, so a tenant that never enabled the
+check was indistinguishable from one running it and genuinely finding
+nothing — a consumer had no way to tell "off" from "on and clean". The
+gated queries are also skipped entirely (not run-then-discarded) when their
+flag is off, so this fix costs nothing extra in the common (off-by-default)
+deployment posture.
+
+**`features`** exposes every audit/witness enable flag as a boolean, so a
+consumer can resolve the same ambiguity for a flag with no top-level tile of
+its own — e.g. whether `logWitness.headsMeetingQuorum` reflects live quorum
+consumption (`features.witnessQuorum`) rather than guessing from a `0`.
+`features.logWitness` (the flag) and the top-level `logWitness` (the tile)
+are deliberately both present at their own distinct JSON paths — the field
+names mirror `AppConfigService`'s own flag names 1:1
+(`logWitnessEnabled` → `logWitness`, `keyRevocationCheckEnabled` →
+`keyRevocationCheck`).
 
 ---
 

@@ -3250,3 +3250,94 @@ PR #175 opened: https://github.com/agentcontextdistributionprotocol/acdp-control
 All 3 required checks green (docker build, jest integration, lint+tsc+jest
 unit). merged #175 (squash commit d22687d), branch deleted, local main
 fast-forwarded.
+
+## Plan: dashboard-feature-flags-signal (issue #176)
+
+`/dashboard/overview`'s `keyRevocation` and `logWitness` tiles
+(`dashboard.service.ts:161-169`/`:211-224` and `:138-155`/`:192-210`) are
+built unconditionally with `?? 0` defaults, with no reference to
+`KEY_REVOCATION_CHECK_ENABLED`/`LOG_WITNESS_ENABLED` — a tenant that never
+enabled either sweep gets back the identical all-zero shape as one running
+the sweep and finding nothing. Issue #176 (filed by the ACDP UI Console's
+own account) names this for `keyRevocation`; `logWitness` has the identical
+bug, not named in the issue. `receiptCoverage`/`didMethods` were checked and
+confirmed NOT to share this ambiguity — they read ingest-time
+`context_events` columns, independent of `RECEIPT_AUDIT_ENABLED`.
+
+Decision (Opus, consequential-but-decidable, recorded in the plan): null
+both `keyRevocation` and `logWitness` when their flag is off (satisfies the
+UI Console's already-written `{keyRevocation && …}` guard with zero
+client-side change, and fixes `logWitness`'s identical ambiguity for free),
+**and** add a general `features: {receiptAudit, keyRevocationCheck,
+logWitness, logInclusionAudit, witnessCosigning, witnessQuorum}` object to
+the same response, covering every flag for every future consumer. Landed on
+`/dashboard/overview`, not `/healthz` — the latter is a liveness-only
+probe (`@Public()`, no tenant/DB-derived business state), the former is
+already the tenant-scoped surface explaining these exact tiles. Judged
+reversible (internal, tenant/API-key-gated dashboard endpoint, not a
+versioned wire protocol) — no user escalation.
+
+Plan reviewed by a fresh Opus agent: REVISE → 3 findings, one round. (1) A
+factual error — the plan claimed `keyRevocationCheckEnabled=true` with
+`receiptAuditEnabled=false` "cannot occur in a running process" via
+boot-time `validate()`; actually `validate()` returns early in development
+mode (`app-config.service.ts:445`) and the integration harness runs in
+development mode (`test-app.ts:99`), so the cross-check is never enforced
+there — corrected in the plan's Edge cases section, no implementation
+impact (the dashboard never relied on the invariant). (2) The "skipped
+entirely, not run-then-discarded" efficiency claim (Approach step 3) had no
+falsifiable test — integration tests can only see response shape, not query
+count — closed by adding this file's first unit spec
+(`dashboard.service.spec.ts`), asserting `db.execute` is called 5 times
+(disabled) vs 7 (enabled). (3) Naming overlap between the top-level
+`logWitness` tile (object|null) and nested `features.logWitness` (boolean),
+not previously flagged — recorded as a deliberate, non-colliding design
+choice (distinct JSON paths, `features.*` mirrors `AppConfigService`'s own
+flag names 1:1) rather than fixed. Everything else — all
+`dashboard.service.ts`/`app-config.service.ts`/`receipt-audit.repository.ts`/
+migration-0023 citations, "no other consumer of `.keyRevocation`/
+`.logWitness` in the repo" (fresh grep), the `Promise.all`/ternary typing,
+single-phase scope — confirmed sound, no second round needed.
+
+PR strategy: single PR (one-phase plan, no natural seams).
+
+### Phase 1 — Gate keyRevocation/logWitness, add features — 2026-09-25
+
+Implemented per plan, no changes to the design. `DashboardService` gained an
+`AppConfigService` dependency; `keyRevocation`/`logWitness` are `null` when
+their flag is off and populated (including all-zero, now meaningfully
+"checked, clean") when on; their two `db.execute` queries are skipped
+entirely rather than run-then-discarded; a new `features` object surfaces
+all 6 flags. `dashboard.controller.ts`'s stale `@ApiOperation` summary
+corrected. `docs/API.md:466-513` updated (worked example + prose).
+
+Divergence found during implementation, not anticipated by the plan:
+`test/integration/log-witness.integration.spec.ts`'s existing "dashboard
+overview carries the logWitness tile" test seeded witness data directly
+without ever enabling `LOG_WITNESS_ENABLED`, so it broke under the new
+gating (data present ≠ tile shown; the flag must also be on) — surfaced by
+running the full integration suite, not by the plan's file grep. Fixed by
+flipping the booted `AppConfigService` singleton for that one test (same
+`trust-hardening.integration.spec.ts:519-534` pattern already used
+elsewhere in this phase) and adding a companion test proving `null` persists
+even with data present when the flag is off.
+
+New: `src/dashboard/dashboard.service.spec.ts` — this file's first unit
+spec, proving the query-skip efficiency claim via an `execute()` call-count
+assertion (5 disabled / 7 enabled) that the integration suite alone can't
+observe.
+
+Gate: `tsc --noEmit` both tsconfigs clean; `eslint` clean; `check:conventions`
+all 6 rules clean; `check:build` (both cold + incremental) clean; unit 79
+suites/1127 passed/4 skipped, no failures; integration 31 suites/215 passed,
+disposable Postgres port 5435 (5433/5434 untouched), `redis-test` container
+and `acdp-control-plane_default` network both torn down after the run.
+
+Files: `src/dashboard/dashboard.service.ts`, `src/dashboard/dashboard.controller.ts`,
+`src/dashboard/dashboard.service.spec.ts` (new),
+`test/integration/dashboard.integration.spec.ts`,
+`test/integration/log-witness.integration.spec.ts`, `docs/API.md`.
+
+No new `ASSUMPTIONS.md` entries — the plan's one design decision (null +
+`features`, landed on `/dashboard/overview`) was already decided and
+recorded directly in the plan itself, not left `UNCONFIRMED`.

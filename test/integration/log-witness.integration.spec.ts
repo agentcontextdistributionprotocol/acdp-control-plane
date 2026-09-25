@@ -22,6 +22,7 @@ import { CheckpointWitnessPollerService } from '../../src/audit/checkpoint-witne
 import { LogInclusionAuditService } from '../../src/audit/log-inclusion-audit.service';
 import { checkpointHash, leafHash, LogCheckpoint, nodeHash } from '../../src/audit/log-verify';
 import { RegistryProfileService } from '../../src/audit/registry-profile.service';
+import { AppConfigService } from '../../src/config/app-config.service';
 import { SafeFederationClient } from '../../src/contexts/safe-federation-client';
 import { DatabaseService } from '../../src/db/database.service';
 import { logInclusionAudits } from '../../src/db/schema';
@@ -186,22 +187,43 @@ describe('transparency-log checkpoint witness (integration)', () => {
       detail: { error: 'split view' },
     });
 
-    const overview = (await ctx.client.requestJson('GET', '/dashboard/overview')) as {
-      logWitness: {
-        witnessedLogs: number;
-        activeAlerts: number;
-        unacknowledgedAlerts: number;
-        headsMeetingQuorum: number;
-      };
+    // The tile is `null` unless LOG_WITNESS_ENABLED is on (issue #176); this
+    // harness drives the sweep directly rather than via the env flag (see
+    // test-app.ts), so flip the booted config singleton for this one
+    // assertion — same pattern as trust-hardening.integration.spec.ts:519-534.
+    const config = ctx.module.get(AppConfigService) as unknown as {
+      logWitnessEnabled: boolean;
     };
-    // 1 witnessed head, 1 alert (root_mismatch) that is not yet acknowledged,
-    // and no head meeting quorum (quorum consumption disabled in this harness).
-    expect(overview.logWitness).toEqual({
-      witnessedLogs: 1,
-      activeAlerts: 1,
-      unacknowledgedAlerts: 1,
-      headsMeetingQuorum: 0,
-    });
+    config.logWitnessEnabled = true;
+    try {
+      const overview = (await ctx.client.requestJson('GET', '/dashboard/overview')) as {
+        logWitness: {
+          witnessedLogs: number;
+          activeAlerts: number;
+          unacknowledgedAlerts: number;
+          headsMeetingQuorum: number;
+        };
+      };
+      // 1 witnessed head, 1 alert (root_mismatch) that is not yet acknowledged,
+      // and no head meeting quorum (quorum consumption disabled in this harness).
+      expect(overview.logWitness).toEqual({
+        witnessedLogs: 1,
+        activeAlerts: 1,
+        unacknowledgedAlerts: 1,
+        headsMeetingQuorum: 0,
+      });
+    } finally {
+      config.logWitnessEnabled = false;
+    }
+  });
+
+  it('dashboard overview nulls the logWitness tile when LOG_WITNESS_ENABLED is off, even with witnessed data present', async () => {
+    await witnessRepo.recordCheckpoint(checkpointRow(3, ROOT_3));
+
+    const overview = (await ctx.client.requestJson('GET', '/dashboard/overview')) as {
+      logWitness: unknown;
+    };
+    expect(overview.logWitness).toBeNull();
   });
 
   it('records + refreshes the §8 quorum trust signal on a witnessed head', async () => {
