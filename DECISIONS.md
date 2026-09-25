@@ -407,3 +407,42 @@ because it sets an internal API shape that later code will copy.
   `/reconcile`).
 - **Files:** `ASSUMPTIONS.md`.
 - **Status:** CONFIRMED.
+
+## 2026-09-25 — Revocation lineage walk: third `'unsupported'` status shipped (issue #170)
+- **Plan:** `plans/revocation-lineage-p256-status.md`
+- **Prior assumption:** the 2026-09-23 entry above deferred the actual fix — a third
+  `Status`/`LineageMemberVerdict` value distinguishing "capability gap" from both
+  "verification failure" (`invalid`) and "transient/couldn't check" (`unavailable`) — to
+  its own phase with its own verification gate, rather than patching it same-day.
+- **What shipped:** `/plan` produced `plans/revocation-lineage-p256-status.md` for issue
+  #170 (one phase), reviewed by a fresh Opus agent (`REVISE` → 7 findings, all applied —
+  see that plan's own "Plan review" section), then implemented via `/implement` and
+  verified `PASS` (5 non-blocking findings, all closed) by a second fresh Opus agent.
+  Added `Status`/`LineageMemberVerdict` value `'unsupported'`, applied at both sites that
+  previously misclassified a P-256 signer: `RevocationAuditService.verifyRevocationBody`'s
+  did:web algorithm check (was `'unavailable'`, silently lost after 30 days at
+  `debug`-level logging) and a new early return in its did:key branch, keyed off
+  `decodeEd25519Multibase`'s extended return shape recognizing the REAL P-256 multicodec
+  varint prefix `0x80 0x24` (not the raw multicodec code `0x1200` — confirmed empirically
+  by minting a real `AcdpP256Producer` did:key and base58-decoding it by hand; the
+  existing `multibase.spec.ts` fixture had used the wrong bytes and is now corrected).
+  The did:key path now preserves the fact that `AcdpVerifier.verifyBodyOffline` already
+  proved the signature genuine — the prior `'invalid'` verdict actively misreported a
+  cryptographically-proven-genuine revocation as malformed. Both `sweep()`'s per-candidate
+  loop and `walkRevocationLineage`'s per-member loop now route the three-way `Status`
+  through an exhaustive `switch` with a compile-time `never`-guard in `default`
+  (`classifyLineageFailure`'s established pattern), whose runtime fallback is fail-closed
+  (`continue`, never `throw` — neither file is on `CLAUDE.md`'s `throw new Error`
+  exemption list) rather than risking the uncaught `TypeError` an unhandled status would
+  otherwise cause (a non-null assertion on a field only `'verified'` populates, which
+  would abort the entire sweep pass — a hard availability bug, not a silent security one;
+  this was itself a correction the plan-review agent caught in the first draft).
+- **Files:** `src/common/multibase.ts`, `src/common/multibase.spec.ts`,
+  `src/telemetry/instrumentation.service.ts`, `src/audit/revocation-audit.service.ts`,
+  `src/audit/revocation-audit.service.spec.ts`, `src/audit/revocation-lineage.ts`,
+  `src/audit/revocation-lineage.spec.ts`, `test/integration/revocation.integration.spec.ts`,
+  `ASSUMPTIONS.md` (entry above flipped to CONFIRMED; new low-blast-radius entry logged
+  for the deliberately-unextended lineage-walk metric coverage, per the plan's own Open
+  Questions), `CLAUDE.md` (one-line doc update).
+- **Status:** CONFIRMED (2026-09-25) — shipped, tested (unit + integration against a
+  disposable Postgres; full local gate green), and independently verified.

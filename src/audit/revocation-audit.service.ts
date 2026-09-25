@@ -63,11 +63,26 @@
  * criteria (6/7) with the plan's stated evidence-recording principle.
  *
  * **Failure discipline** (revised from the plan's first draft — see
- * `plans/rfc-0014-0015-upgrade.md`, Phase 12 divergence note #7): a body
- * that fails verification PERMANENTLY (bad signature, hash mismatch, §4/§5
- * rejection, a ctx_id substitution) counts `status="invalid"`. A body that
- * could not even be FETCHED or DID-resolved (registry down, DID host
- * unreachable, timeout) is TRANSIENT — `status="unavailable"`.
+ * `plans/rfc-0014-0015-upgrade.md`, Phase 12 divergence note #7; extended to
+ * a third bucket by issue #170 / `plans/revocation-lineage-p256-status.md`):
+ * a body that fails verification PERMANENTLY (bad signature, hash mismatch,
+ * §4/§5 rejection, a ctx_id substitution) counts `status="invalid"`. A body
+ * that could not even be FETCHED or DID-resolved (registry down, DID host
+ * unreachable, timeout) is TRANSIENT — `status="unavailable"`. A body whose
+ * signer uses an algorithm this pipeline has no verification path for
+ * (currently: ecdsa-p256 — no SDK fingerprint helper for a revocation body,
+ * for EITHER DID method) is a CAPABILITY GAP, not a verification outcome —
+ * `status="unsupported"`. This third bucket exists because the other two are
+ * both wrong for it: `"invalid"` would misreport a body whose signature may
+ * be genuinely valid (confirmed empirically for did:key ecdsa-p256, which
+ * offline-verifies before being dropped at the multibase-decode step) as
+ * malformed, and `"unavailable"` would ABORT THE ENTIRE §7 lineage walk
+ * (Rule 3, `revocation-lineage.ts`) on any lineage containing even one
+ * unsupported-algorithm member — fail-open for every Ed25519 fact sharing
+ * that lineage. `"unsupported"` drops only the one candidate/member, same as
+ * `"invalid"`, but is logged and counted distinguishably so an operator can
+ * tell "we rejected this" apart from "we cannot currently verify this at
+ * all" (see ASSUMPTIONS.md §"ecdsa-p256 revocation signers").
  *
  * **Both classes share ONE candidate window**, `KEY_REVOCATION_LOOKBACK_HOURS`
  * (default 720h = 30 days) — deliberately NOT the narrower 24h
@@ -89,7 +104,9 @@
  * (`src/audit/revocation-lineage.ts`) — one shared table for both this
  * per-event fetch and the §7 lineage walk below, not two drifting copies.
  * Its three-way result (`'transient' | 'permanent' | 'hard'`) collapses to
- * this file's two-way `Outcome.status` via `toStatus` at the bottom: `'hard'`
+ * two of this file's four `Outcome.status` values (`'unavailable'` |
+ * `'invalid'` — never `'unsupported'`, a capability gap distinct from any
+ * fetch/DID-resolution outcome) via `toStatus` at the bottom: `'hard'`
  * (a response too large to trust) gets the same `'invalid'` treatment as
  * `'permanent'` here, because a single oversized context body is simply
  * unusable evidence, not a lineage that must never be silently truncated —
@@ -214,7 +231,7 @@ function lineageCursorTtlMs(config: AppConfigService): number {
   return config.keyRevocationLineageCursorTtlHours * 60 * 60 * 1000;
 }
 
-type Status = 'verified' | 'invalid' | 'unavailable';
+type Status = 'verified' | 'invalid' | 'unavailable' | 'unsupported';
 
 interface Outcome {
   status: Status;
@@ -313,19 +330,44 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
           status: outcome.status,
           trust_class: outcome.trustClass,
         });
-        if (outcome.status === 'invalid') {
-          this.logger.warn(
-            `key-revocation rejected ctx=${ev.ctxId ?? '?'} registry=${ev.registryAuthority}: ${outcome.reason ?? ''}`,
-          );
-          continue;
+        // Exhaustive by construction (mirrors classifyLineageFailure's own
+        // established pattern, revocation-lineage.ts) — a status value
+        // reaching neither an explicit `case` nor `default` here would
+        // otherwise fall through to `outcome.revocation!`/`outcome.body!`
+        // below with both `undefined`, throwing and crashing this WHOLE
+        // sweep pass (skipping every remaining candidate, the lineage-walk
+        // phase, and Phase 15's re-audit fan-out for this pass — not a
+        // silent security hole, but a real availability one). The `default`
+        // branch's runtime fallback is a safe, fail-closed `continue` rather
+        // than a thrown error — this file is not on CLAUDE.md's "no throwing
+        // Error in handler paths" exemption list, same discipline
+        // `classifyLineageFailure` already uses for its own unreachable
+        // default.
+        switch (outcome.status) {
+          case 'invalid':
+            this.logger.warn(
+              `key-revocation rejected ctx=${ev.ctxId ?? '?'} registry=${ev.registryAuthority}: ${outcome.reason ?? ''}`,
+            );
+            continue;
+          case 'unavailable':
+            this.logger.debug(
+              `key-revocation unverifiable this pass ctx=${ev.ctxId ?? '?'}: ${outcome.reason ?? ''}`,
+            );
+            continue;
+          case 'unsupported':
+            this.logger.warn(
+              `key-revocation unsupported (capability gap, not a verification failure) ` +
+                `ctx=${ev.ctxId ?? '?'} registry=${ev.registryAuthority}: ${outcome.reason ?? ''}`,
+            );
+            continue;
+          case 'verified':
+            break;
+          default: {
+            const _exhaustive: never = outcome.status;
+            this.logger.warn(`key-revocation: unexpected status '${String(_exhaustive)}' — dropping`);
+            continue;
+          }
         }
-        if (outcome.status === 'unavailable') {
-          this.logger.debug(
-            `key-revocation unverifiable this pass ctx=${ev.ctxId ?? '?'}: ${outcome.reason ?? ''}`,
-          );
-          continue;
-        }
-        // status === 'verified'
         const revocation = outcome.revocation!;
         const body = outcome.body!;
         const lineageId = strOf(body['lineage_id']) ?? ev.lineageId ?? '';
@@ -610,12 +652,26 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
         return { status: 'invalid', trustClass: 'unknown', reason: `body_signature_invalid: ${offline.reason}` };
       }
       // A P-256 did:key body reaches here with `offline.ok === true` (the
-      // signature genuinely verifies) and is rejected below for an
-      // unrelated reason — the multicodec prefix, not the signature. See
-      // ASSUMPTIONS.md §"ecdsa-p256 revocation signers" before "fixing" this
-      // by widening the algorithm check; the naive fix regresses Ed25519.
+      // signature genuinely verifies) and is dropped below for an unrelated
+      // reason — the multicodec prefix, not the signature. See issue #170 /
+      // ASSUMPTIONS.md §"ecdsa-p256 revocation signers" for why this is
+      // classified `'unsupported'` (a capability gap, not a rejection):
+      // making it `'invalid'` would misreport a genuinely-verified signature
+      // as malformed, and making it `'unavailable'` instead would abort the
+      // ENTIRE §7 lineage walk (Rule 3) on any lineage containing a P-256
+      // member — fail-open for every Ed25519 fact sharing that lineage.
       const decoded = decodeEd25519Multibase(agentId);
       if (!decoded.ok) {
+        if (decoded.unsupportedAlgorithm) {
+          return {
+            status: 'unsupported',
+            trustClass: 'unknown',
+            reason:
+              `producer signing algorithm '${decoded.unsupportedAlgorithm}' has no SDK fingerprint ` +
+              'helper for revocation verification (signature independently verified offline; ' +
+              'dropped for capability, not authenticity)',
+          };
+        }
         return { status: 'invalid', trustClass: 'unknown', reason: `undecodable did:key agent_id: ${decoded.reason}` };
       }
       signerFingerprint = fingerprintEd25519B64(decoded.publicKey.toString('base64'));
@@ -648,16 +704,19 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
       // No P-256 fingerprint helper exists in the SDK (same gap
       // receipt-audit.service.ts documents) — a revocation body has no
       // independent claimed fingerprint to fall back on the way a receipt
-      // does, so an ecdsa-p256 signer cannot be verified at all here. Fail
-      // closed as unavailable (a capability gap, not a rejection) rather
-      // than silently skipping. This is only HALF of the P-256 story — a
-      // did:key P-256 signer never reaches this branch at all (it is
-      // rejected earlier, as `invalid`, by decodeEd25519Multibase's
-      // multicodec check) — see ASSUMPTIONS.md §"ecdsa-p256 revocation
-      // signers are inconsistently, and only partially, handled".
+      // does, so an ecdsa-p256 signer cannot be verified at all here.
+      // Classified `'unsupported'` (a capability gap, not a rejection) —
+      // NOT `'unavailable'`: this branch runs BEFORE any signature
+      // verification is attempted (`resolveKey`/`verifySignatureB64` below),
+      // so `'unavailable'`'s "could not ask, retry later" framing would be
+      // wrong, and — the load-bearing reason — `'unavailable'` ABORTS the
+      // entire §7 lineage walk (Rule 3), so a single did:web P-256 member
+      // anywhere in a lineage would permanently block every Ed25519 fact
+      // sharing it. See issue #170 / ASSUMPTIONS.md §"ecdsa-p256 revocation
+      // signers".
       if (algorithm && algorithm !== 'ed25519') {
         return {
-          status: 'unavailable',
+          status: 'unsupported',
           trustClass: 'unknown',
           reason: `producer algorithm '${algorithm}' has no SDK fingerprint helper for revocation verification`,
         };
@@ -719,10 +778,12 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
 }
 
 /**
- * Collapse `classifyLineageFailure`'s three-way result to this file's
- * two-way `Outcome.status` — see the file header for why `'hard'` folds
- * into `'invalid'` here (unlike the lineage walk, which treats it as its
- * own abort-and-record-nothing case).
+ * Collapse `classifyLineageFailure`'s three-way result to two of this
+ * file's four `Outcome.status` values (never `'unsupported'`, which is a
+ * capability gap distinct from any fetch/DID-resolution failure this
+ * classifies) — see the file header for why `'hard'` folds into `'invalid'`
+ * here (unlike the lineage walk, which treats it as its own
+ * abort-and-record-nothing case).
  */
 function toStatus(cls: LineageFailureClass): 'unavailable' | 'invalid' {
   return cls === 'transient' ? 'unavailable' : 'invalid';

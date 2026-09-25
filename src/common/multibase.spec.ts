@@ -55,14 +55,29 @@ describe('multibase (Ed25519 did:key encode/decode)', () => {
     expect(decoded).toEqual({ ok: false, reason: expect.stringMatching(/invalid base58 character/) });
   });
 
-  it('rejects a non-Ed25519 multicodec prefix with a named "unsupported algorithm" reason', () => {
-    // multicodec 0x1200 (P-256) is legal per RFC-ACDP-0001 §5.10 but unsupported here.
-    const p256Prefixed = Buffer.concat([Buffer.from([0x12, 0x00]), randomBytes(33)]);
+  it('rejects a real P-256 multicodec prefix, named as unsupportedAlgorithm: ecdsa-p256', () => {
+    // Multicodec CODE 0x1200 (P-256, RFC-ACDP-0001 §5.10) varint-ENCODES as
+    // 0x80 0x24 — NOT the raw code bytes — the unsigned-varint form a real
+    // did:key actually carries. Confirmed empirically by minting a real
+    // AcdpP256Producer did:key and base58-decoding it by hand.
+    const p256Prefixed = Buffer.concat([Buffer.from([0x80, 0x24]), randomBytes(33)]);
     const multibase = 'z' + encodeRaw58(p256Prefixed);
     const decoded = decodeEd25519Multibase(multibase);
     expect(decoded.ok).toBe(false);
     if (!decoded.ok) {
       expect(decoded.reason).toMatch(/unsupported key algorithm/);
+      expect(decoded.unsupportedAlgorithm).toBe('ecdsa-p256');
+    }
+  });
+
+  it('leaves unsupportedAlgorithm unset for a genuinely unrecognized (non-P-256) prefix', () => {
+    const garbagePrefixed = Buffer.concat([Buffer.from([0xff, 0xff]), randomBytes(32)]);
+    const multibase = 'z' + encodeRaw58(garbagePrefixed);
+    const decoded = decodeEd25519Multibase(multibase);
+    expect(decoded.ok).toBe(false);
+    if (!decoded.ok) {
+      expect(decoded.reason).toMatch(/unsupported key algorithm/);
+      expect(decoded.unsupportedAlgorithm).toBeUndefined();
     }
   });
 

@@ -23,9 +23,20 @@ const BASE58_INDEX: Record<string, number> = Object.fromEntries(
 const ED25519_MULTICODEC_PREFIX = Buffer.from([0xed, 0x01]);
 const ED25519_RAW_KEY_LENGTH = 32;
 
+/**
+ * P-256 multicodec prefix — the unsigned-varint ENCODING of multicodec code
+ * `0x1200` (RFC-ACDP-0001 §5.10), NOT the raw code bytes. A multicodec code
+ * this size varint-encodes to `0x80 0x24` (7 low bits per byte,
+ * continuation-bit-first): empirically confirmed by minting a real
+ * `AcdpP256Producer` did:key and base58-decoding it. Used only to recognize
+ * "a known-but-unsupported algorithm" (see `unsupportedAlgorithm` below) —
+ * never to decode a P-256 key, which this module does not support.
+ */
+const P256_MULTICODEC_PREFIX = Buffer.from([0x80, 0x24]);
+
 export type MultibaseDecodeOutcome =
   | { ok: true; publicKey: Buffer }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; unsupportedAlgorithm?: 'ecdsa-p256' };
 
 /**
  * Encode a raw 32-byte Ed25519 public key as a `z`-prefixed base58btc
@@ -71,9 +82,16 @@ export function decodeEd25519Multibase(input: string): MultibaseDecodeOutcome {
   }
   const prefix = decoded.subarray(0, ED25519_MULTICODEC_PREFIX.length);
   if (!prefix.equals(ED25519_MULTICODEC_PREFIX)) {
+    // A P-256 prefix is a RECOGNIZED algorithm this module deliberately does
+    // not decode (no consumer of this function can verify a P-256 signature
+    // from raw multibase key bytes alone) — distinguished from a genuinely
+    // malformed/adversarial prefix so a caller (revocation-audit.service.ts)
+    // can classify the two differently: "capability gap" vs. "invalid body".
+    const unsupportedAlgorithm = prefix.equals(P256_MULTICODEC_PREFIX) ? 'ecdsa-p256' as const : undefined;
     return {
       ok: false,
       reason: `unsupported key algorithm (multicodec prefix 0x${prefix.toString('hex')}, want 0xed01/Ed25519): '${input}'`,
+      ...(unsupportedAlgorithm ? { unsupportedAlgorithm } : {}),
     };
   }
   const publicKey = decoded.subarray(ED25519_MULTICODEC_PREFIX.length);

@@ -102,7 +102,9 @@ export class InstrumentationService implements OnModuleInit {
   // RFC-ACDP-0014 §7 consumer classification (Phase 14) — a DISTINCT metric
   // from the one above, deliberately not folded into it: that counter is
   // the revocation-AUDIT sweep's own body-verification outcomes ('verified'
-  // | 'invalid' | 'unavailable' over a revocation CONTEXT'S signature), this
+  // | 'invalid' | 'unavailable' | 'unsupported' — the last a capability gap,
+  // e.g. an ecdsa-p256 signer, never a verification failure — over a
+  // revocation CONTEXT'S signature), this
   // one is the receipt-audit sweep's §7 boundary classification of an
   // ORDINARY audited event ('none' | 'pre_compromise' |
   // 'revoked_at_or_after' | 'revoked_time_unverifiable'). Sharing one
