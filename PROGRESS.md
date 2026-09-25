@@ -3341,3 +3341,26 @@ Files: `src/dashboard/dashboard.service.ts`, `src/dashboard/dashboard.controller
 No new `ASSUMPTIONS.md` entries — the plan's one design decision (null +
 `features`, landed on `/dashboard/overview`) was already decided and
 recorded directly in the plan itself, not left `UNCONFIRMED`.
+
+pushed feat/dashboard-feature-flags-signal b2d3b74
+
+Ship-gate verification: PASS (fresh Opus agent, independent full-diff review
+against `origin/main...HEAD` — re-ran tsc both tsconfigs/lint/conventions/
+unit suite/check:build, confirmed all 6 acceptance criteria met by file:line,
+confirmed `AppConfigService`'s 6 flags are `readonly` fields on a true
+`@Global()` singleton so the new per-request `Promise.all` ternary has no
+concurrency hazard, confirmed zero `ASSUMPTIONS.md` entries for this plan,
+confirmed `docs/API.md`/`CLAUDE.md` have no remaining drift). Two
+non-blocking findings, neither fixed: no test exercises exactly one of the
+two gating flags true with the other false (both specs flip them together
+or both off — code inspection confirms the two ternaries are fully
+independent, so judged low-risk); `features.logWitness`/`.keyRevocationCheck`
+re-read `this.config.*` directly instead of reusing the local
+`logWitnessEnabled`/`keyRevocationEnabled` consts computed earlier in the
+method — harmless, same readonly value either way.
+
+PR #178 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/178
+
+All 3 required checks green (docker build, jest integration, lint+tsc+jest
+unit). merged #178 (squash commit 4a50761), branch deleted, local main
+fast-forwarded.
