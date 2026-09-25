@@ -3138,3 +3138,5 @@ deliberately-unextended lineage-walk metric coverage per the plan's
 own Open Questions item 2; `DECISIONS.md` appended).
 
 PR strategy: single PR (one-phase plan, no natural seams).
+
+pushed fix/revocation-lineage-p256-status bcba082
