@@ -489,6 +489,15 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
         expectCtxId: item.expectCtxId,
       },
     );
+    // Counted regardless of outcome — an aborted walk (Rule 3) still leaves
+    // memberVerdictCounts holding every member evaluated before the abort,
+    // and an observed tally must never be lost to a later failure (see
+    // Approach step 3, plans/revocation-lineage-member-metric.md). Placed
+    // ahead of the persistence loop below too, for the same reason:
+    // revocationRepo.record can reject and this drain loop has no try/catch.
+    for (const [status, count] of Object.entries(result.memberVerdictCounts) as [Status, number][]) {
+      if (count > 0) this.instrumentation.keyRevocationLineageMembersTotal.inc({ status }, count);
+    }
     if (!result.ok) {
       this.logger.warn(
         `key-revocation lineage walk failed lineage=${item.lineageId} registry=${item.registryAuthority} ` +

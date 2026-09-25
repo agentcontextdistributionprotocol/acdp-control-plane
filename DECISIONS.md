@@ -491,3 +491,41 @@ because it sets an internal API shape that later code will copy.
 - **Status:** NEEDS-CHANGE — not blocking (Low blast radius, nothing currently
   shipping depends on the gap), but the entry's original "confirm as permanently
   uncounted" framing did not hold up under analysis. Resolves when issue #173 ships.
+
+## 2026-09-25 — Lineage-walk member verdicts now counted: issue #173 implemented and verified
+
+- **Plan:** `plans/revocation-lineage-member-metric.md`.
+- **Original assumption entry:** "Lineage-walk member verdicts stay uncounted by
+  any metric" (above, corrected 2026-09-25) — tracked as follow-up issue #173,
+  `Status: NEEDS-CHANGE`, "Resolves when issue #173 ships."
+- **What shipped:** `LineageWalkOutcome` gains a `memberVerdictCounts` tally,
+  non-optional on both the `ok: true` and `ok: false` branches — accumulated
+  once per member ahead of the routing `switch` in `walkRevocationLineage`
+  (`src/audit/revocation-lineage.ts`), so a Rule-3 `'unavailable'` abort never
+  discards tallies already computed for earlier members in the same call. A new
+  counter, `acdp_key_revocation_lineage_members_total{status}`
+  (`src/telemetry/instrumentation.service.ts`) — a genuinely new Counter, never
+  a reused label on `acdp_key_revocation_checks_total` — is incremented by
+  `RevocationAuditService.walkAndPersistLineage` from that tally, placed ahead
+  of the `if (!result.ok)` early return so a partial tally survives an aborted
+  walk.
+- **Verification:** plan review round 1 (REVISE, factual corrections applied —
+  a wrong integration-test expected tally, a needed delta-based assertion, a
+  self-contradicting docs justification, corrected line citations). Implementation
+  verification: 3 rounds (round 1 GAPS — 3 test-coverage gaps, no runtime
+  defects: AC10 lineage-dedup untested, AC7's `?? 0`-guard test didn't actually
+  exercise the guard, AC4's all-zero pre-loop-failure tally had no assertion;
+  round 2 GAPS — AC7/AC4 fixes confirmed closed, but the AC10 fix was a false
+  proof caught by the reviewer mutation-testing the dedup key; round 3 PASS,
+  the AC10 fix re-verified with a genuinely mutation-distinguishing two-member
+  lineage stub). Full local gate green throughout: both tsconfigs, lint,
+  conventions, unit suite (1124 passed), integration suite (212 passed,
+  including a real prom-client delta assertion on the new counter).
+- **Files:** `src/audit/revocation-lineage.ts`, `src/audit/revocation-lineage.spec.ts`,
+  `src/telemetry/instrumentation.service.ts`, `src/audit/revocation-audit.service.ts`,
+  `src/audit/revocation-audit.service.spec.ts`, `test/integration/revocation.integration.spec.ts`,
+  `docs/ARCHITECTURE.md`, `CLAUDE.md` (gitignored, local-only).
+- **Status:** CONFIRMED (2026-09-25) — the originating `ASSUMPTIONS.md` entry
+  flipped from `NEEDS-CHANGE` to `CONFIRMED` in the same pass. No new
+  `ASSUMPTIONS.md` entries logged — the plan's one Open Question (tally on both
+  outcome branches) was decided directly by Opus in the plan itself.

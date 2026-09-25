@@ -99,6 +99,26 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['status', 'trust_class'] as const,
   });
 
+  // RFC-ACDP-0014 §7 lineage walk (issue #173) — a DISTINCT metric from the
+  // one above, deliberately not folded into it: that counter is the
+  // webhook-CANDIDATE verification sweep's own outcomes; this one is the
+  // per-MEMBER outcomes discovered only by walking a lineage
+  // (`walkRevocationLineage`). Both use the identical 'verified' | 'invalid'
+  // | 'unavailable' | 'unsupported' status vocabulary (so no conflation risk
+  // the way Phase 14's counter had to avoid — see ASSUMPTIONS.md), but a
+  // member found only via the lineage walk was never itself a webhook
+  // candidate, so folding the two into one counter would silently
+  // double-count exactly the members #173 exists to make visible, and would
+  // make "how many candidates did we see" and "how many lineage members did
+  // we see" impossible to tell apart from the metric alone. Counted per
+  // observation, re-counted on every re-walk of an unresolved lineage — read
+  // as a rate, not a census (see docs/ARCHITECTURE.md).
+  readonly keyRevocationLineageMembersTotal = new client.Counter({
+    name: 'acdp_key_revocation_lineage_members_total',
+    help: 'RFC-ACDP-0014 §7 lineage-walk per-member verification verdicts, by status',
+    labelNames: ['status'] as const,
+  });
+
   // RFC-ACDP-0014 §7 consumer classification (Phase 14) — a DISTINCT metric
   // from the one above, deliberately not folded into it: that counter is
   // the revocation-AUDIT sweep's own body-verification outcomes ('verified'
