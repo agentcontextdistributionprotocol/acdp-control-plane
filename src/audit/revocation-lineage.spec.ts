@@ -175,7 +175,11 @@ describe('walkRevocationLineage', () => {
     const d = deps(async () => ({ status: 200, contentType: 'application/json', body: '[]' }), verify);
     const result = await walkRevocationLineage(d, params());
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.kind).toBe('empty');
+    if (!result.ok) {
+      expect(result.kind).toBe('empty');
+      // AC4: a failure before the member loop starts reports all-zero, since no member was ever evaluated.
+      expect(result.memberVerdictCounts).toEqual({ verified: 0, invalid: 0, unavailable: 0, unsupported: 0 });
+    }
     expect(verify).not.toHaveBeenCalled();
   });
 
@@ -188,7 +192,11 @@ describe('walkRevocationLineage', () => {
     }));
     const result = await walkRevocationLineage(d, params({ expectCtxId: 'ctx-1' }));
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.kind).toBe('missing_named_ctx');
+    if (!result.ok) {
+      expect(result.kind).toBe('missing_named_ctx');
+      // AC4: rejected before the member loop starts — all-zero.
+      expect(result.memberVerdictCounts).toEqual({ verified: 0, invalid: 0, unavailable: 0, unsupported: 0 });
+    }
   });
 
   // ── AC3 ──────────────────────────────────────────────────────────────
@@ -213,6 +221,7 @@ describe('walkRevocationLineage', () => {
       expect(result.members).toHaveLength(1);
       expect(result.members[0].ctxId).toBe('ctx-2');
       expect(result.members[0].revocation).toEqual(good);
+      expect(result.memberVerdictCounts).toEqual({ verified: 1, invalid: 1, unavailable: 0, unsupported: 0 });
     }
     expect(d.logger.warn).toHaveBeenCalledWith(expect.stringContaining('ctx-1'));
     void bad;
@@ -243,11 +252,40 @@ describe('walkRevocationLineage', () => {
         expect(result.members).toHaveLength(1);
         expect(result.members[0].ctxId).toBe('ctx-2');
         expect(result.members[0].revocation).toEqual(good);
+        expect(result.memberVerdictCounts).toEqual({ verified: 1, invalid: 0, unavailable: 0, unsupported: 1 });
       }
       // Both members were reached — proving the walk did not abort on ctx-1,
       // the exact contrast with the 'unavailable' case in AC4 below.
       expect(verify).toHaveBeenCalledTimes(2);
       expect(d.logger.warn).toHaveBeenCalledWith(expect.stringContaining('ctx-1'));
+    },
+  );
+
+  // ── Acceptance Criterion 3: an abort must still report tallies from every
+  // member evaluated BEFORE it, not just zeros or just the aborting member ──
+  it(
+    'an unsupported member followed by an unavailable member still reports the unsupported ' +
+      'count when the walk aborts',
+    async () => {
+      const verify = jest.fn(async (_a: string, _b: string, _c: string, body: Record<string, unknown>): Promise<LineageMemberVerdict> => {
+        if (body['ctx_id'] === 'ctx-1') return { status: 'unsupported', reason: 'ecdsa-p256' };
+        return { status: 'unavailable', reason: 'DID host unreachable' };
+      });
+      const d = deps(
+        async () => ({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([fullContext('ctx-1'), fullContext('ctx-2')]),
+        }),
+        verify,
+      );
+      const result = await walkRevocationLineage(d, params({ expectCtxId: 'ctx-1' }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.kind).toBe('transient');
+        expect(result.memberVerdictCounts).toEqual({ verified: 0, invalid: 0, unavailable: 1, unsupported: 1 });
+      }
+      expect(verify).toHaveBeenCalledTimes(2);
     },
   );
 
@@ -271,6 +309,19 @@ describe('walkRevocationLineage', () => {
     if (result.ok) {
       expect(result.members).toHaveLength(1);
       expect(result.members[0].ctxId).toBe('ctx-2');
+      // Key-by-key, NOT a whole-object toEqual: the out-of-union 'bogus'
+      // status also mints a dynamic `bogus: 1` key on memberVerdictCounts
+      // (see Edge cases, plans/revocation-lineage-member-metric.md), which a
+      // strict toEqual would reject. The four KNOWN keys are unaffected
+      // either way — they are pre-initialized to 0, so `?? 0` is never
+      // exercised for them. It's the DYNAMIC 'bogus' key below that proves
+      // the guard: without `?? 0`, `memberVerdictCounts['bogus']` starts
+      // `undefined`, and `undefined + 1` is `NaN`, not `1`.
+      expect(result.memberVerdictCounts.verified).toBe(1);
+      expect(result.memberVerdictCounts.invalid).toBe(0);
+      expect(result.memberVerdictCounts.unavailable).toBe(0);
+      expect(result.memberVerdictCounts.unsupported).toBe(0);
+      expect((result.memberVerdictCounts as Record<string, number>)['bogus']).toBe(1);
     }
     expect(verify).toHaveBeenCalledTimes(2);
   });
@@ -291,7 +342,10 @@ describe('walkRevocationLineage', () => {
     );
     const result = await walkRevocationLineage(d, params({ expectCtxId: 'ctx-1' }));
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.kind).toBe('transient');
+    if (!result.ok) {
+      expect(result.kind).toBe('transient');
+      expect(result.memberVerdictCounts).toEqual({ verified: 0, invalid: 0, unavailable: 1, unsupported: 0 });
+    }
     // ctx-2 (which would have verified fine) must never be reached/recorded once ctx-1 aborts the walk.
     expect(verify).toHaveBeenCalledTimes(1);
     expect(verify.mock.calls[0][3]['ctx_id']).toBe('ctx-1');
@@ -325,7 +379,11 @@ describe('walkRevocationLineage', () => {
     const d = deps(async () => ({ status: 503, contentType: 'application/json', body: '' }));
     const result = await walkRevocationLineage(d, params());
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.kind).toBe('transient');
+    if (!result.ok) {
+      expect(result.kind).toBe('transient');
+      // AC4: a non-2xx fetch status fails before the member loop starts — all-zero.
+      expect(result.memberVerdictCounts).toEqual({ verified: 0, invalid: 0, unavailable: 0, unsupported: 0 });
+    }
   });
 
   it('a 404 lineage-fetch status classifies as permanent', async () => {
@@ -350,7 +408,11 @@ describe('walkRevocationLineage', () => {
     });
     const result = await walkRevocationLineage(d, params());
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.kind).toBe('transient');
+    if (!result.ok) {
+      expect(result.kind).toBe('transient');
+      // AC4: a thrown fetch error fails before the member loop starts — all-zero.
+      expect(result.memberVerdictCounts).toEqual({ verified: 0, invalid: 0, unavailable: 0, unsupported: 0 });
+    }
   });
 
   it('a malformed (non-array) lineage response is a permanent failure', async () => {

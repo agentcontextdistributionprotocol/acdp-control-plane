@@ -957,8 +957,15 @@
   confuses more than it clarifies. A follow-up must add a genuinely new counter (e.g.
   `acdp_key_revocation_lineage_members_total{status}`), never a label on the existing
   one.
-- **Status:** NEEDS-CHANGE (2026-09-25) — not a blocker (Low blast radius; nothing
-  currently shipping depends on or is broken by the gap), but the "confirm as
-  permanently uncounted" framing this entry originally proposed does not hold up.
-  Tracked as follow-up issue
-  [#173](https://github.com/agentcontextdistributionprotocol/acdp-control-plane/issues/173).
+- **Status:** CONFIRMED (2026-09-25) — the follow-up shipped. Issue
+  [#173](https://github.com/agentcontextdistributionprotocol/acdp-control-plane/issues/173)
+  is implemented per `plans/revocation-lineage-member-metric.md`:
+  `walkRevocationLineage` now returns a `memberVerdictCounts` tally on every
+  outcome (present and non-optional on both branches, so an `'unavailable'`
+  abort never silently discards a partial tally), and
+  `RevocationAuditService.walkAndPersistLineage` increments a genuinely new
+  counter, `acdp_key_revocation_lineage_members_total{status}` — never a
+  reused label on `acdp_key_revocation_checks_total`, matching this entry's
+  own correction above and the Phase 14 precedent it cites. See
+  `DECISIONS.md` and `PROGRESS.md`'s matching 2026-09-25 entries for the
+  full implementation/verification record.

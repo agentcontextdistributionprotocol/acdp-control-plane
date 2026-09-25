@@ -3151,3 +3151,98 @@ doesn't explicitly name 'unsupported' among the classes sharing it —
 factually accurate as written, just slightly under-stated; not fixed).
 
 PR #172 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/172
+
+## Plan: revocation-lineage-member-metric (issue #173) — 2026-09-25 — PASS (round 3, fresh Opus verifier)
+
+Follow-up to issue #170: the §7 lineage walk (`walkRevocationLineage`,
+`src/audit/revocation-lineage.ts`) verified each lineage member but never
+counted any verdict on a metric — surfaced and analyzed during `/reconcile`'s
+pass over #170's own follow-on `ASSUMPTIONS.md` entry, which concluded the
+gap was real and filed this issue.
+
+Plan written to `plans/revocation-lineage-member-metric.md` (gitignored,
+local-only), grounded in direct reads of the current code (not the issue
+body's paraphrase — caught and corrected one naming error: the issue said
+`LineageWalkResult`, the actual type is `LineageWalkOutcome`). Single phase:
+`LineageWalkOutcome` gains a `memberVerdictCounts` tally, non-optional on
+BOTH outcome branches (an `'unavailable'`-triggered abort must not silently
+discard verdicts already computed for earlier members in the same call); a
+new counter `acdp_key_revocation_lineage_members_total{status}` — genuinely
+distinct from `acdp_key_revocation_checks_total`, never a reused label, per
+the Phase 14 precedent against conflating status vocabularies under one
+metric name — incremented by `RevocationAuditService.walkAndPersistLineage`
+from that tally, placed ahead of the `if (!result.ok)` early return so a
+partial tally from an aborted walk is still counted.
+
+Plan review: round 1, verdict REVISE, corrections applied in place. The core
+design call (tally present on both branches) was confirmed correct against
+the actual code; the corrections were factual — a wrong integration-test
+expected tally (`{verified: 1, unsupported: 1}` → the real fixture has 3
+members, `{verified: 2, unsupported: 1}`), a needed delta-based (not
+absolute) integration assertion (prom-client counters are process-global for
+the spec file), missing edge cases (cross-registry double-counting is
+correct not a bug; re-counting across sweep passes is expected — read the
+counter as a rate, not a census), a self-contradicting docs justification
+(the plan said to mirror Phase 14's "disjoint vocabularies" reasoning, which
+does not apply here since this counter shares the identical vocabulary —
+corrected to the real reason, a different population), and ~8 corrected line
+citations inherited from the issue body's approximate references.
+
+Implementation: `src/audit/revocation-lineage.ts` (type + all 9 return sites
+threaded + single accumulation point ahead of the switch),
+`src/telemetry/instrumentation.service.ts` (new counter),
+`src/audit/revocation-audit.service.ts` (increment loop before the early
+return), plus matching test extensions in `revocation-lineage.spec.ts`,
+`revocation-audit.service.spec.ts`, and
+`test/integration/revocation.integration.spec.ts` (real prom-client delta
+assertion), and doc updates to `docs/ARCHITECTURE.md` + `CLAUDE.md`
+(gitignored, local-only).
+
+Local gate: both tsconfigs, lint, conventions all green throughout; unit
+suite 1124 passed (`test:cov` intermittently flakes on ONE pre-existing,
+diff-unrelated test — `pino-logger.spec.ts`'s pino-pretty transport-flush
+timing race, only under coverage-instrumentation load, confirmed untouched
+by this diff and passing reliably under plain `npx jest`); integration suite
+212 passed, disposable Postgres port 5435 (5433/5434 occupied by foreign
+containers this session must not touch), torn down after each run.
+
+Verified by a fresh Opus subagent across 3 rounds:
+- **Round 1: GAPS** (test-coverage only, no runtime defects) — AC10 (lineage
+  dedup within one sweep pass) had no test; AC7's runtime-exhaustiveness test
+  claimed to prove the `?? 0` guard's necessity but didn't (mutation-verified
+  by the reviewer: deleting the guard left the test green); AC4 (all-zero
+  tally on a pre-member-loop failure) had no assertion anywhere, including a
+  missing negative counter assertion on the existing walk-failure test.
+- **Round 2: GAPS** (1 of 3) — AC7 and AC4 fixes confirmed closed
+  (mutation-verified independently by the reviewer). The AC10 fix was found
+  to be a false proof: its single-member lineage stub couldn't distinguish
+  correct dedup from broken dedup (a broken-dedup second walk would simply
+  fail Rule 1b and contribute nothing, so the test passed either way) —
+  caught by the reviewer mutating the dedup key and re-running.
+- **Round 3: PASS** — AC10 fixed with a two-member lineage stub (each
+  candidate's own ctx_id present), so a broken dedup produces a detectably
+  different (doubled) count; mutation-tested by both the implementer and the
+  round-3 verifier independently, each confirming the test fails under a
+  broken dedup key and passes on the reverted, correct code.
+
+No new `ASSUMPTIONS.md` entries — the plan's one Open Question (tally
+present on both outcome branches) was decided directly by Opus in the plan
+itself, not left `UNCONFIRMED`. The originating entry ("Lineage-walk member
+verdicts stay uncounted by any metric") flipped from `NEEDS-CHANGE` to
+`CONFIRMED` in this same finalization pass; `DECISIONS.md` appended.
+
+PR strategy: single PR (one-phase plan, no natural seams).
+
+pushed fix/revocation-lineage-member-metric f98df64
+
+Ship-gate verification: PASS (fresh Opus agent, independent full-diff
+review — re-ran the two touched spec files, tsc, lint; confirmed all 9
+return sites threaded, the increment loop ordered ahead of the early
+return and the persistence loop, no plan/doc drift, zero UNCONFIRMED
+ASSUMPTIONS.md entries). Two non-blocking nits noted, not fixed: a
+`Status` cast in the `.inc()` loop that would be a lie only for an
+unreachable-in-shipped-code dynamic key; one doc sentence that slightly
+undersells the triggering member being counted on both counters
+(covered by the adjacent rate-not-census caveat).
+
+PR #175 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/175

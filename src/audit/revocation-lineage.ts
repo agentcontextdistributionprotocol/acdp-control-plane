@@ -201,9 +201,17 @@ export interface LineageWalkParams {
   expectCtxId: string;
 }
 
+/** Per-`Status` member-verdict tally, returned on every outcome of a walk — see Approach step 1 in `plans/revocation-lineage-member-metric.md`. */
+export type LineageMemberVerdictCounts = Record<LineageMemberVerdict['status'], number>;
+
 export type LineageWalkOutcome =
-  | { ok: true; members: LineageMember[] }
-  | { ok: false; kind: 'empty' | 'missing_named_ctx' | LineageFailureClass; reason: string };
+  | { ok: true; members: LineageMember[]; memberVerdictCounts: LineageMemberVerdictCounts }
+  | {
+      ok: false;
+      kind: 'empty' | 'missing_named_ctx' | LineageFailureClass;
+      reason: string;
+      memberVerdictCounts: LineageMemberVerdictCounts;
+    };
 
 /** Walk one lineage. See the file header for the full rule set. */
 export async function walkRevocationLineage(
@@ -211,6 +219,15 @@ export async function walkRevocationLineage(
   params: LineageWalkParams,
 ): Promise<LineageWalkOutcome> {
   const url = `${params.baseUrl.replace(/\/$/, '')}/lineages/${encodeURIComponent(params.lineageId)}`;
+  // Present on every return below, including every early failure — an
+  // abort mid-walk (Rule 3) must not silently discard verdicts already
+  // computed for earlier members in this same call. See Approach step 1.
+  const memberVerdictCounts: LineageMemberVerdictCounts = {
+    verified: 0,
+    invalid: 0,
+    unavailable: 0,
+    unsupported: 0,
+  };
 
   let resp;
   try {
@@ -221,12 +238,14 @@ export async function walkRevocationLineage(
         ok: false,
         kind: classifyLineageFailure(err),
         reason: `lineage fetch failed (${err.code}): ${err.message}`,
+        memberVerdictCounts,
       };
     }
     return {
       ok: false,
       kind: 'transient',
       reason: `lineage fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      memberVerdictCounts,
     };
   }
   if (resp.status < 200 || resp.status >= 300) {
@@ -234,6 +253,7 @@ export async function walkRevocationLineage(
       ok: false,
       kind: classifyLineageFailure(resp.status),
       reason: `lineage fetch returned HTTP ${resp.status}`,
+      memberVerdictCounts,
     };
   }
 
@@ -245,16 +265,22 @@ export async function walkRevocationLineage(
       ok: false,
       kind: 'permanent',
       reason: `lineage response is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      memberVerdictCounts,
     };
   }
   if (!Array.isArray(raw)) {
-    return { ok: false, kind: 'permanent', reason: 'lineage response is not a JSON array' };
+    return { ok: false, kind: 'permanent', reason: 'lineage response is not a JSON array', memberVerdictCounts };
   }
 
   // Rule 1: an empty response is never an honest "nothing here" for a
   // lineage a live context just named — see the file header.
   if (raw.length === 0) {
-    return { ok: false, kind: 'empty', reason: `lineage '${params.lineageId}' returned no members` };
+    return {
+      ok: false,
+      kind: 'empty',
+      reason: `lineage '${params.lineageId}' returned no members`,
+      memberVerdictCounts,
+    };
   }
 
   const rawMembers: { body: Record<string, unknown>; ctxId: string | undefined }[] = [];
@@ -281,6 +307,7 @@ export async function walkRevocationLineage(
       ok: false,
       kind: 'missing_named_ctx',
       reason: `lineage '${params.lineageId}' does not contain the naming ctx_id '${params.expectCtxId}'`,
+      memberVerdictCounts,
     };
   }
 
@@ -297,6 +324,15 @@ export async function walkRevocationLineage(
     }
     const bodyJson = JSON.stringify(m.body);
     const verdict = await deps.verifyMemberBody(params.registryAuthority, params.tenantId, bodyJson, m.body);
+    // Accumulated ONCE here, ahead of the switch below, rather than inside
+    // each case — keeps the tally correct regardless of which branch fires
+    // (including the 'unavailable' abort and the default exhaustiveness
+    // guard) without duplicating an increment in every branch. The `?? 0` is
+    // runtime-load-bearing (no noUncheckedIndexedAccess, no type-aware lint
+    // rule defends it) against an out-of-union status poisoning a dynamic key
+    // with NaN — see Approach step 2 in
+    // plans/revocation-lineage-member-metric.md.
+    memberVerdictCounts[verdict.status] = (memberVerdictCounts[verdict.status] ?? 0) + 1;
     // Exhaustive by construction (mirrors classifyLineageFailure's own
     // established pattern above) — a status value reaching neither an
     // explicit `case` nor `default` here would otherwise fall through to
@@ -311,10 +347,13 @@ export async function walkRevocationLineage(
     switch (verdict.status) {
       case 'unavailable':
         // Rule 3: a transient member failure aborts the whole walk.
+        // memberVerdictCounts already reflects every member evaluated
+        // before (and including) this abort — see Approach step 1.
         return {
           ok: false,
           kind: 'transient',
           reason: `lineage '${params.lineageId}' member '${m.ctxId}' unverifiable this pass: ${verdict.reason ?? ''}`,
+          memberVerdictCounts,
         };
       case 'invalid':
         // Rule 2: dropped with a warning, remaining members still fold.
@@ -349,7 +388,7 @@ export async function walkRevocationLineage(
     });
   }
 
-  return { ok: true, members };
+  return { ok: true, members, memberVerdictCounts };
 }
 
 function strOf(v: unknown): string | undefined {

@@ -20,7 +20,20 @@ import { RevocationAuditService } from '../../src/audit/revocation-audit.service
 import { fingerprintEd25519B64 } from '../../src/audit/receipt-verify';
 import { SafeFederationClient, FederationResponse } from '../../src/contexts/safe-federation-client';
 import { KeyRevocationRepository } from '../../src/storage/key-revocation.repository';
+import { InstrumentationService } from '../../src/telemetry/instrumentation.service';
 import { createTestApp, TestAppContext } from '../helpers/test-app';
+
+/**
+ * Reads one `{status}` label's current value off the real, process-global
+ * `keyRevocationLineageMembersTotal` counter. Callers must assert a DELTA
+ * (before/after a `sweep()` under test), never an absolute value — the
+ * counter is shared across every test in this file and is never reset
+ * between them (see the P-256 mixed-lineage test below).
+ */
+async function lineageMemberCount(instrumentation: InstrumentationService, status: string): Promise<number> {
+  const metric = await instrumentation.keyRevocationLineageMembersTotal.get();
+  return metric.values.find((v) => v.labels['status'] === status)?.value ?? 0;
+}
 
 const SECRET = 'integration-test-secret';
 const LINEAGE_ID = 'lin:sha256:' + '6'.repeat(64);
@@ -520,6 +533,14 @@ describe('producer key-revocation sweep (RFC-ACDP-0014, integration)', () => {
           throw new Error(`unexpected federation fetch in test: ${url}`);
         });
 
+        // issue #173: the lineage walk's per-member verdicts land on a real
+        // Prometheus counter. Delta-based — this counter is process-global
+        // for the whole spec file and several earlier tests already drive
+        // lineage walks, so an absolute assertion would already be wrong.
+        const instrumentation = ctx.module.get(InstrumentationService);
+        const verifiedBefore = await lineageMemberCount(instrumentation, 'verified');
+        const unsupportedBefore = await lineageMemberCount(instrumentation, 'unsupported');
+
         const n = await revocationSvc.sweep();
         expect(n).toBe(1);
 
@@ -536,9 +557,20 @@ describe('producer key-revocation sweep (RFC-ACDP-0014, integration)', () => {
         const facts = await revocationRepo.findByFingerprint(revokedFp, 'default');
         expect(facts.map((f) => f.ctxId).sort()).toEqual([r1CtxId, fixture.ctxId].sort());
 
+        // The lineage has three key-revocation-typed members (r1, p256Member,
+        // r2 — the type filter drops none of them), so the walk's tally is
+        // two 'verified' (r1, r2 — r2 is re-verified by the walk even though
+        // its own fact was already recorded by the webhook-candidate path;
+        // revocationRepo.record's onConflictDoNothing is what makes that
+        // re-observation idempotent) and one 'unsupported' (the P-256 member).
+        expect((await lineageMemberCount(instrumentation, 'verified')) - verifiedBefore).toBe(2);
+        expect((await lineageMemberCount(instrumentation, 'unsupported')) - unsupportedBefore).toBe(1);
+
         // A cursor still marks this lineage as freshly walked despite the
         // dropped P-256 member — same idempotency guarantee as the
-        // all-Ed25519 lineage-walk test above.
+        // all-Ed25519 lineage-walk test above. Reading the "after" values
+        // above BEFORE this second sweep is deliberate — it asserts 0
+        // candidates and no federation calls, so the tally must not move.
         federationGetSpy.mockClear();
         expect(await revocationSvc.sweep()).toBe(0);
         expect(federationGetSpy).not.toHaveBeenCalled();

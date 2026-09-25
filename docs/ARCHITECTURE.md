@@ -243,7 +243,7 @@ recording verdicts in its own table so the signals stay independent:
 | `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs); when enabled, ALSO classifies the signer against verified revocations (RFC-ACDP-0014 §7, below) and retroactively AMENDS already-sealed verdicts a later-discovered revocation predates (Phase 15, below) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; `acdp_receipt_audit_key_revocation_total{status}`; `acdp_receipt_audit_revocation_reaudits_total{status}`; dashboard `receiptCoverage`, `keyRevocation` |
 | `CheckpointWitnessPollerService` | Fetches each log-advertising registry's `GET /log/checkpoint` and runs the RFC-ACDP-0012 checkpoint + consistency checks against the head it retains | `log_witness_checkpoints` + `log_witness_cursors` | `GET /registries/:authority/log-witness`; `log_witness_alert` SSE/webhook on state transition; `acdp_log_witness_alerts_total{reason}` |
 | `LogInclusionAuditService` | Rebuilds the leaf from OUR stored receipt, fetches `/log/proof?ctx_id=`, runs the RFC-ACDP-0012 inclusion check, and cross-binds against witnessed heads | `log_inclusion_audits` | verdicts `included` \| `invalid_proof` \| `not_logged` \| `no_log` \| `error` |
-| `RevocationAuditService` | Discovers `key-revocation` contexts by `context_type`, recomputes `content_hash`, verifies the body signature, then `AcdpVerifier.parseKeyRevocation` for the RFC-ACDP-0014 §4/§5 shape + not-self-signed checks; a `registry_attested` result additionally requires the §6 registry-binding cross-check; then walks the revocation's full lineage (RFC-ACDP-0014 §7, below); every pass, also triggers `ReceiptAuditService`'s retroactive re-audit fan-out (Phase 15, below) for every known-revoked fingerprint | `key_revocations` (permanent, retention-exempt) + `key_revocation_lineage_cursors` (TTL freshness markers) | `acdp_key_revocation_checks_total{status, trust_class}` |
+| `RevocationAuditService` | Discovers `key-revocation` contexts by `context_type`, recomputes `content_hash`, verifies the body signature, then `AcdpVerifier.parseKeyRevocation` for the RFC-ACDP-0014 §4/§5 shape + not-self-signed checks; a `registry_attested` result additionally requires the §6 registry-binding cross-check; then walks the revocation's full lineage (RFC-ACDP-0014 §7, below); every pass, also triggers `ReceiptAuditService`'s retroactive re-audit fan-out (Phase 15, below) for every known-revoked fingerprint | `key_revocations` (permanent, retention-exempt) + `key_revocation_lineage_cursors` (TTL freshness markers) | `acdp_key_revocation_checks_total{status, trust_class}`; `acdp_key_revocation_lineage_members_total{status}` |
 
 **The §7 lineage walk.** A single webhook-delivered revocation only proves
 one context exists; RFC-ACDP-0014 §4's earliest-`compromised_since` rule is
@@ -277,6 +277,17 @@ retries — and its presence alone is never sufficient to skip a walk: if
 `key_revocations` currently holds zero facts for a lineage, the walk runs
 regardless of cursor freshness, because a cached "walked, found nothing"
 marker suppressing a walk is precisely how a revocation gets missed.
+Every member verdict the walk computes — including on an aborted walk, for
+whichever members were evaluated before the abort — is counted on
+`acdp_key_revocation_lineage_members_total{status}` (issue #173), a metric
+kept genuinely distinct from `acdp_key_revocation_checks_total` above despite
+sharing the identical status vocabulary: that counter is the webhook-CANDIDATE
+sweep's own outcomes, this one is the PER-MEMBER outcomes a lineage walk
+discovers on its own, and folding them would both double-count and make
+"how many candidates" vs. "how many lineage members" unrecoverable from the
+metric. A failed walk leaves no cursor, so an unresolved lineage's members
+are re-counted every sweep — read this counter as a rate of observations,
+not a census of affected members.
 
 **§7 consumer classification (Phase 14).** The revocation FACTS above are
 inert until something CONSUMES them against actual receipt-audited traffic —

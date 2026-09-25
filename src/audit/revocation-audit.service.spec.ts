@@ -150,7 +150,10 @@ describe('RevocationAuditService', () => {
     profiles = { registryCapabilities: jest.fn() };
     federationClient = { get: jest.fn() };
     didResolver = { resolveKey: jest.fn() };
-    instrumentation = { keyRevocationChecksTotal: { inc: jest.fn() } };
+    instrumentation = {
+      keyRevocationChecksTotal: { inc: jest.fn() },
+      keyRevocationLineageMembersTotal: { inc: jest.fn() },
+    };
     receiptAuditService = { reauditForFingerprint: jest.fn().mockResolvedValue(0) };
 
     mockVerifyCtxIdBinding.mockReturnValue({ ok: true });
@@ -568,6 +571,75 @@ describe('RevocationAuditService', () => {
         expect(revocationRepo.record).toHaveBeenCalledTimes(3);
         expect(revocationRepo.record).toHaveBeenCalledWith(expect.objectContaining({ ctxId: OTHER_CTX, lineageId: LINEAGE }));
         expect(revocationRepo.recordLineageWalk).toHaveBeenCalledWith('default', LINEAGE, AUTHORITY);
+        // Both lineage members (the triggering ctx and OTHER_CTX) verify —
+        // one .inc() call for the 'verified' status, count 2.
+        expect(instrumentation.keyRevocationLineageMembersTotal.inc).toHaveBeenCalledTimes(1);
+        expect(instrumentation.keyRevocationLineageMembersTotal.inc).toHaveBeenCalledWith({ status: 'verified' }, 2);
+      });
+
+      it('counts the lineage-walk tally even when the walk aborts, before the failure log', async () => {
+        revocationRepo.findCandidates.mockResolvedValue([makeEvent()]);
+        const unavailableMember = makeBody({ ctx_id: OTHER_CTX, lineage_id: LINEAGE });
+        // First member (ctx_id === CTX, the triggering event — required by
+        // Rule 1b) verifies fine; second member (OTHER_CTX) is registry_attested
+        // with unreadable capabilities, which is 'unavailable' and aborts the
+        // walk (Rule 3) — same mechanism as the 'registry_attested trust
+        // class' describe block above.
+        mockFetch(makeBody({ lineage_id: LINEAGE }), [makeBody({ lineage_id: LINEAGE }), unavailableMember]);
+        mockParseKeyRevocation.mockImplementation((bodyJson: string) => {
+          const parsed = JSON.parse(bodyJson) as Record<string, unknown>;
+          return parsed['ctx_id'] === OTHER_CTX
+            ? { ok: true, revocation: { ...PARSED_REVOCATION, trustClass: 'registry_attested' } }
+            : { ok: true, revocation: PARSED_REVOCATION };
+        });
+        profiles.registryCapabilities.mockResolvedValue({ registryDid: null, acdpVersion: null });
+
+        await svc.sweep();
+
+        expect(revocationRepo.recordLineageWalk).not.toHaveBeenCalled();
+        // Only the triggering event's own (webhook-candidate) fact is
+        // recorded; the aborted lineage walk records nothing.
+        expect(revocationRepo.record).toHaveBeenCalledTimes(1);
+        // The tally is still counted for both members evaluated before (and
+        // including) the abort — an aborted walk must never lose an observed
+        // verdict.
+        expect(instrumentation.keyRevocationLineageMembersTotal.inc).toHaveBeenCalledTimes(2);
+        expect(instrumentation.keyRevocationLineageMembersTotal.inc).toHaveBeenCalledWith({ status: 'verified' }, 1);
+        expect(instrumentation.keyRevocationLineageMembersTotal.inc).toHaveBeenCalledWith({ status: 'unavailable' }, 1);
+      });
+
+      // AC10: two candidates naming the SAME (tenant, lineage, registry)
+      // triple must collapse to ONE walk via the lineageQueue dedup — not
+      // double-count the tally. The lineage deliberately has TWO members
+      // (CTX and OTHER_CTX), so a broken dedup is actually detectable: if it
+      // keyed by ctxId instead of lineageId, BOTH events would each
+      // satisfy Rule 1b (their own ctx_id is present in the 2-member
+      // lineage) and each would run its own full walk, doubling every
+      // count below. A single-member lineage would NOT catch that mutation
+      // — the second (broken-dedup) walk would fail closed on Rule 1b
+      // instead, leaving the counts looking identical either way.
+      it('does not double-count when two candidate events share one lineage in the same pass', async () => {
+        const event1 = makeEvent();
+        const event2 = makeEvent({
+          id: '22222222-2222-4222-8222-222222222222',
+          ctxId: OTHER_CTX,
+          lineageId: LINEAGE,
+        });
+        revocationRepo.findCandidates.mockResolvedValue([event1, event2]);
+        mockFetch(makeBody({ lineage_id: LINEAGE }), [
+          makeBody({ lineage_id: LINEAGE }),
+          makeBody({ ctx_id: OTHER_CTX, lineage_id: LINEAGE }),
+        ]);
+
+        await svc.sweep();
+
+        // event1's own fact + event2's own fact + the ONE walk's two members.
+        expect(revocationRepo.record).toHaveBeenCalledTimes(4);
+        // The lineageQueue dedup (keyed tenantId::lineageId::registryAuthority)
+        // collapses the two candidates to exactly ONE walk, not two.
+        expect(revocationRepo.recordLineageWalk).toHaveBeenCalledTimes(1);
+        expect(instrumentation.keyRevocationLineageMembersTotal.inc).toHaveBeenCalledTimes(1);
+        expect(instrumentation.keyRevocationLineageMembersTotal.inc).toHaveBeenCalledWith({ status: 'verified' }, 2);
       });
 
       it('does not walk when the lineage already has facts and a fresh cursor', async () => {
@@ -649,6 +721,9 @@ describe('RevocationAuditService', () => {
         expect(revocationRepo.recordLineageWalk).not.toHaveBeenCalled();
         // The triggering event's own fact is still recorded — only the walk failed.
         expect(revocationRepo.record).toHaveBeenCalledTimes(1);
+        // The 503 fails before the member loop starts, so memberVerdictCounts
+        // is all-zero (AC4) and the zero-count-skip rule means no .inc() call at all.
+        expect(instrumentation.keyRevocationLineageMembersTotal.inc).not.toHaveBeenCalled();
       });
 
       it('skips ALL lineage walks this pass when distinct lineages exceed MAX_LINEAGE_WALKS', async () => {
@@ -678,6 +753,8 @@ describe('RevocationAuditService', () => {
         expect(revocationRepo.recordLineageWalk).not.toHaveBeenCalled();
         // The 101 triggering events' own facts are still recorded independently.
         expect(revocationRepo.record).toHaveBeenCalledTimes(101);
+        // No lineage walk ran at all this pass, so the new counter must see zero calls.
+        expect(instrumentation.keyRevocationLineageMembersTotal.inc).not.toHaveBeenCalled();
       });
     });
 
