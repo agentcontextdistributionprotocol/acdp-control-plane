@@ -446,3 +446,48 @@ because it sets an internal API shape that later code will copy.
   Questions), `CLAUDE.md` (one-line doc update).
 - **Status:** CONFIRMED (2026-09-25) — shipped, tested (unit + integration against a
   disposable Postgres; full local gate green), and independently verified.
+
+## 2026-09-25 — Lineage-walk member verdicts stay uncounted: rationale corrected, follow-up tracked (Phase 1 assumption, issue #170)
+- **Plan:** `plans/revocation-lineage-p256-status.md`
+- **Original assumption:** leave `walkRevocationLineage`'s per-member verdicts
+  permanently uncounted by any metric — issue #170's own metric ask scopes only to
+  the webhook-candidate path (now fully covered), and `revocation-lineage.ts`'s file
+  header states the module "stays free of the SDK/DID-resolution machinery... by
+  extension of `InstrumentationService`." Framed as low blast radius and "reversible
+  any time as a pure metric addition."
+- **Recommendation (Opus, low-blast-radius lane, via `/reconcile`):** CHANGE the
+  rationale; do not write code in this pass; track a scoped follow-up instead.
+  Independent re-analysis found: (1) the "by extension of `InstrumentationService`"
+  clause is an unsupported extrapolation — the file-header quote it leans on
+  (`revocation-lineage.ts:172-180`) is scoped to SDK/DID-resolution/crypto
+  machinery, and `LineageWalkDeps` (`revocation-lineage.ts:187-191`) already
+  injects side-effecting dependencies of the same shape a metrics callback would
+  need (`federationClient`, `verifyMemberBody`, `logger`). (2) The repo's real,
+  narrower convention — metrics incremented only inside `@Injectable()` service
+  classes, never a pure helper module — does argue against injecting a counter
+  into `walkRevocationLineage` itself, but not against counting member verdicts at
+  all: a per-status tally returned on `LineageWalkResult` and incremented by
+  `RevocationAuditService.walkAndPersistLineage` (`revocation-audit.service.ts:469-489`,
+  which already holds `this.instrumentation`) fits the established pattern cleanly.
+  (3) There is a genuine, previously understated signal gap: an `'unsupported'`
+  (or `'invalid'`) lineage member is dropped with no fact recorded in
+  `key_revocations` — Phase 14/15 boundary-tightening never sees it — and the only
+  operator-visible trace is a single `warn` log line from a background sweep,
+  unlike every other verification sweep in this repo, which all have a matching
+  counter. (4) The "reversible any time" framing holds only for a genuinely NEW
+  counter — reusing `acdp_key_revocation_checks_total` with an added label (e.g.
+  `stage`) would repeat the exact move the Phase 14 "A separate metric for §7
+  classification" entry already rejected for a different pair of paths (conflating
+  two status vocabularies under one label domain).
+- **Verdict:** Correction applied to the `ASSUMPTIONS.md` entry (rationale fixed,
+  the two follow-on facts above added). Code not written in this pass — this is a
+  new, small feature (a returned tally + a new counter + tests), not a doc-only
+  fix, so it's tracked as its own task rather than folded into a reconcile pass.
+  Filed as [issue #173](https://github.com/agentcontextdistributionprotocol/acdp-control-plane/issues/173),
+  with the exact proposed shape (new counter name, never a label on the existing
+  one) specified in the issue body so a future implementer doesn't have to
+  re-derive it.
+- **Files:** `ASSUMPTIONS.md`.
+- **Status:** NEEDS-CHANGE — not blocking (Low blast radius, nothing currently
+  shipping depends on the gap), but the entry's original "confirm as permanently
+  uncounted" framing did not hold up under analysis. Resolves when issue #173 ships.
