@@ -24,7 +24,7 @@
     "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config test/jest.integration.config.ts --runInBand"
   },
   "dependencies": {
-    "@agentcontextdistributionprotocol/acdp": "^0.14.1",
+    "@agentcontextdistributionprotocol/acdp": "^0.14.2",
     "@nestjs/common": "^12.1.2",
     "@nestjs/core": "^12.1.2",
     "@nestjs/platform-express": "^12.1.2",
