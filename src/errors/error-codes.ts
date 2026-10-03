@@ -1,9 +1,9 @@
 export enum ErrorCode {
-  RUN_NOT_FOUND = 'RUN_NOT_FOUND',
-  REGISTRY_NOT_FOUND = 'REGISTRY_NOT_FOUND',
-  AGENT_NOT_FOUND = 'AGENT_NOT_FOUND',
-  CONTEXT_NOT_FOUND = 'CONTEXT_NOT_FOUND',
-  FEDERATION_UPSTREAM_RATE_LIMITED = 'FEDERATION_UPSTREAM_RATE_LIMITED',
+  RUN_NOT_FOUND = "RUN_NOT_FOUND",
+  REGISTRY_NOT_FOUND = "REGISTRY_NOT_FOUND",
+  AGENT_NOT_FOUND = "AGENT_NOT_FOUND",
+  CONTEXT_NOT_FOUND = "CONTEXT_NOT_FOUND",
+  FEDERATION_UPSTREAM_RATE_LIMITED = "FEDERATION_UPSTREAM_RATE_LIMITED",
   // RFC-ACDP-0006 §4.1 step 7 (NORMATIVE): the federation proxy compares the
   // `ctx_id` a registry SERVED against the `ctx_id` that was REQUESTED.
   // `ctx_id` is registry-assigned and excluded from both `content_hash` and
@@ -29,10 +29,10 @@ export enum ErrorCode {
   // closed: a substitution the proxy detected and forwarded anyway is worse
   // than one it never looked for, because downstream consumers then hold a
   // false assurance that the proxy checked.
-  CONTEXT_ID_MISMATCH = 'CONTEXT_ID_MISMATCH',
-  CONTEXT_BINDING_UNVERIFIABLE = 'CONTEXT_BINDING_UNVERIFIABLE',
-  INVALID_PAYLOAD = 'INVALID_PAYLOAD',
-  INVALID_SIGNATURE = 'INVALID_SIGNATURE',
+  CONTEXT_ID_MISMATCH = "CONTEXT_ID_MISMATCH",
+  CONTEXT_BINDING_UNVERIFIABLE = "CONTEXT_BINDING_UNVERIFIABLE",
+  INVALID_PAYLOAD = "INVALID_PAYLOAD",
+  INVALID_SIGNATURE = "INVALID_SIGNATURE",
   // ACDP 0.3.0 Tier 3 (RFC-ACDP-0012 §11): an inclusion proof, consistency
   // proof, or checkpoint failed the §9 verification procedures. Deliberately
   // distinct from INVALID_SIGNATURE / receipt failures — the log verdict is
@@ -40,7 +40,7 @@ export enum ErrorCode {
   // receipt↔log inclusion cross-check (src/audit/) as the verdict/alert
   // category for locally failing proofs — the RFC's consumer-side use of the
   // `invalid_log_proof` semantic.
-  INVALID_LOG_PROOF = 'INVALID_LOG_PROOF',
+  INVALID_LOG_PROOF = "INVALID_LOG_PROOF",
   // RFC-ACDP-0015 §10 registers `invalid_witness_cosignature` as its own wire
   // code (HTTP 502) and is emphatic it must not collapse into
   // `invalid_log_proof`: "an `invalid_log_proof` indicts the LOG … an
@@ -52,7 +52,7 @@ export enum ErrorCode {
   // category for a locally failing cosignature (mirrors INVALID_LOG_PROOF's
   // "verdict/alert category for locally failing proofs" role), never a new
   // `WitnessAlertReason`.
-  INVALID_WITNESS_COSIGNATURE = 'INVALID_WITNESS_COSIGNATURE',
-  VALIDATION_ERROR = 'VALIDATION_ERROR',
-  INTERNAL_ERROR = 'INTERNAL_ERROR',
+  INVALID_WITNESS_COSIGNATURE = "INVALID_WITNESS_COSIGNATURE",
+  VALIDATION_ERROR = "VALIDATION_ERROR",
+  INTERNAL_ERROR = "INTERNAL_ERROR",
 }
