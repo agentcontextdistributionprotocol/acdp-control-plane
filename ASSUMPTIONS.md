@@ -1160,3 +1160,15 @@
   hide unrelated experimental-feature warnings, so it is not added.
 - **Blast radius if wrong:** Low — log noise only.
 - **Status:** UNCONFIRMED
+
+## `engines.node` is ">=24.15", and Dependabot excludes `@nestjs/*` from catch-alls (issue #155)
+- **Plan:** `plans/nestjs-12-155.md` (Phase 5, Open questions 4 and 5)
+- **Assumed:** `>=24.15` (tightest real tooling floor; Node 25 passes it but
+  `@nestjs/schematics` still warns) is advisory only (no `engine-strict`). For
+  Dependabot, excluding `@nestjs/*` from `minor-and-patch`/`major-updates` keeps
+  framework majors and plugin minors in the `nestjs` group regardless of how
+  Dependabot actually resolves multi-group matches (#166 contradicted the
+  documented first-match rule). `reflect-metadata` stays outside the group.
+- **Blast radius if wrong:** Low — a mis-grouped Dependabot PR (observable on
+  the next monthly run) or an install warning.
+- **Status:** UNCONFIRMED

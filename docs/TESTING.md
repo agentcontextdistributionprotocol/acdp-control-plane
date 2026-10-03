@@ -140,7 +140,7 @@ npm run test:integration -- ingest.integration # single spec (regex against path
 - Clears the `prom-client` registry to avoid duplicate-metric errors across suites.
 - Runs `runMigrations(TEST_DB_URL)` against the test DB before booting.
 - Boots the real `AppModule` with `rawBody: true`, the global `ValidationPipe`,
-  and `GlobalExceptionFilter` — same wiring as `main.ts` minus helmet and swagger.
+  and `GlobalExceptionFilter` — same wiring as `src/bootstrap.ts` minus helmet and swagger.
 - Listens on a random port (`app.listen(0)`); reach it via `ctx.url` or the typed
   `ctx.client` (`TestClient`).
 - `createTestApp(opts)` returns `{ app, url, client, module, cleanup }`.

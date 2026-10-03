@@ -4,6 +4,9 @@
   "description": "ACDP Control Plane — ingests registry webhooks, correlates runs, broadcasts SSE.",
   "license": "Apache-2.0",
   "private": true,
+  "engines": {
+    "node": ">=24.15"
+  },
   "scripts": {
     "build": "nest build",
     "start": "nest start",

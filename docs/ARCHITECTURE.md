@@ -69,7 +69,10 @@ registries (which authoritatively store contexts and emit lifecycle webhooks) an
 
 ```
 src/
-├── main.ts                    # Bootstrap: pino, helmet, swagger, OTel, migrations, rawBody
+├── main.ts                    # Entry: .env preload, then bootstrap()
+├── bootstrap.ts               # Boot wiring: pino, helmet, swagger, OTel, migrations, rawBody, shutdown
+├── shutdown.ts                # Signal handler: idempotent close, deadline, exit code
+├── shutdown-failures.ts       # Destroy-hook failure collector (exit 1 under Nest 12)
 ├── app.module.ts              # Wiring + the four APP_GUARDs + StreamHub strategy factory
 │
 ├── config/                    # AppConfigService (single home for all process.env reads)
@@ -392,7 +395,15 @@ only on full success.
   connections, so one in-flight request would otherwise hold shutdown open until
   the orchestrator SIGKILLed the process. On overrun the handler drops lingering
   sockets and exits **1**, because a shutdown that dropped live requests is not a
-  clean one.
+  clean one. A failed destroy hook also exits **1**. NestJS 12 runs destroy
+  hooks under `Promise.allSettled` and only *logs* a rejection, so `app.close()`
+  resolves even when `pool.end()` throws. To catch this, every hook that releases
+  an external resource (`DatabaseService`, `IssuanceLedgerService`, `QuotaModule`,
+  `StreamHubService`) runs its teardown through `ShutdownFailures.track()`
+  (`src/shutdown-failures.ts`). The handler reads the collector after the close
+  (issue #155). A new resource-owning hook must do the same. The boot wiring lives
+  in `src/bootstrap.ts`. `main.ts` only preloads `.env` and calls it, so
+  `test/fixtures/faulty-teardown.main.ts` can drive a real failing teardown.
   `enableShutdownHooks()` is deliberately **not** called: it would register Nest's
   own signal listeners *in addition* to ours, running the destroy hooks twice
   (`pool.end()` throws "Called end on pool more than once", the process exits 1 and
