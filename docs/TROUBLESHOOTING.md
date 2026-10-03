@@ -359,12 +359,25 @@ npm run check:build      # builds TWICE and asserts the emit shape
 sits at the repo root, and that `dist/main.js` actually loads. It builds twice because a
 single build cannot detect this failure mode.
 
-### `error TS5107: Option 'moduleResolution=node10' is deprecated`
+### `error TS5107` / `TS5108`: `Option 'moduleResolution=node10' is deprecated` / `has been removed`
 
-Expected under TypeScript 6 and silenced by `ignoreDeprecations: "6.0"` in
-`tsconfig.json`. If you removed that line, put it back. Note TS 7.0 **removes** both the
-option and the escape hatch (`TS5108`) — see the TODO in `tsconfig.json` for the
-migration options.
+`tsconfig.json` uses `moduleResolution: "bundler"` (issue #156), which TypeScript 6 and 7
+both accept with `module: "commonjs"`. Seeing either error means someone reintroduced
+`moduleResolution: "node"` (node10): TS 6 rejects it as deprecated (`TS5107`) and TS 7
+removed it (`TS5108`). Put `bundler` back — do **not** add `ignoreDeprecations` to
+silence it; that only works on 6.x and would also swallow the next deprecation.
+
+### `dist/main.js` crashes with `ERR_PACKAGE_PATH_NOT_EXPORTED` / `ERR_REQUIRE_ESM`, but typecheck passed
+
+`bundler` resolution matches a package's `types` export condition, so an import of a
+package whose `exports` only offers `import` (ESM-only, no `require`/`default`) typechecks
+cleanly — yet the emitted CommonJS `require()` throws at runtime. `npm run check:build`
+boots `dist/main.js` and fails on these codes; any spec that imports the module fails
+too, via jest's CJS resolver. Fix by using a CJS-compatible version of the package
+(a dynamic `import()` does not help: with `module: "commonjs"` it is emitted as
+`require()` too). Neither the `check:build` boot nor `release.yml`'s image boot
+exercises lazily `import()`ed modules (`ioredis` under `STREAM_HUB_STRATEGY=redis`) or
+`dist/db/migrate.js`.
 
 ### Which TypeScript does `nest build` actually use?
 

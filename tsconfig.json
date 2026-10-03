@@ -18,21 +18,19 @@
     "noFallthroughCasesInSwitch": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "moduleResolution": "node",
-    // TODO(TS 7.0, issue #137): `moduleResolution: "node"` is the legacy
-    // node10 algorithm. TS 6.0 made it a DEPRECATION ERROR (TS5107) and TS
-    // 7.0 REMOVES it -- measured against typescript@7.0.2, this exact config
-    // yields one error: `TS5108: Option 'moduleResolution=node10' has been
-    // removed.` `ignoreDeprecations` only silences it through 6.x; the option
-    // itself stops working in 7.0, so there is no second reprieve.
-    //   Migration note: TS 6.0 newly allows `module: "commonjs"` together
-    //   with `moduleResolution: "bundler"`, which 5.9 rejected (TS5095). That
-    //   makes `bundler` a materially smaller migration than the `node16`/
-    //   `nodenext` move Phase 8 rejected -- it needs no `.js` import
-    //   extensions. Re-evaluate both before adopting TS 7.
-    // Deleting `baseUrl` (also TS5101-deprecated) is already done; this is
-    // the last remaining option keeping `ignoreDeprecations` necessary.
-    "ignoreDeprecations": "6.0",
+    "moduleResolution": "bundler",
+    // Why `bundler` (issue #156): the legacy `node` (node10) algorithm is a
+    // deprecation error in TS 6 and REMOVED in TS 7 (TS5108). `bundler` with
+    // `module: "commonjs"` is accepted by both, resolves package `exports`
+    // under the `require` condition (e.g. drizzle-orm -> `.d.cts`, matching
+    // what Node's `require` actually loads), and emits byte-identical JS to
+    // node10. Set explicitly: both compilers default to it for commonjs, but
+    // an implicit default can move. Do not reintroduce `node`/node10 or an
+    // `ignoreDeprecations` escape hatch. `node16`/`nodenext` were rejected:
+    // they change emit (native `import()` inside CJS output, ioredis interop).
+    // Known gap: `bundler` typechecks an import of an `import`-only (ESM-only)
+    // package that `require()` rejects at runtime -- `npm run check:build`'s
+    // boot check matches ERR_PACKAGE_PATH_NOT_EXPORTED/ERR_REQUIRE_ESM for it.
     "strict": true,
     "strictPropertyInitialization": false,
     "types": ["node", "jest"]

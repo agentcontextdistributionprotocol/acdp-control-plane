@@ -108,7 +108,12 @@ fi
 # dist/main.js must actually load -- catches a broken module graph that a
 # file-existence check would pass. Nest reaches bootstrap and fails on the
 # absent DB; that is success for this check. A missing//corrupt module graph
-# raises MODULE_NOT_FOUND or a syntax error instead.
+# raises MODULE_NOT_FOUND or a syntax error instead. The ERR_* codes cover
+# what `moduleResolution: "bundler"` (issue #156) typechecks but Node's CJS
+# `require()` rejects at runtime -- e.g. an `import`-only `exports` map
+# (ERR_PACKAGE_PATH_NOT_EXPORTED) or an ESM-only package (ERR_REQUIRE_ESM /
+# ERR_REQUIRE_ASYNC_MODULE). Without them this check printed `ok` on exactly
+# that failure class.
 # Bounded in the background rather than run to completion: if a database
 # happens to be reachable the process boots and stays up forever.
 log=$(mktemp)
@@ -118,7 +123,7 @@ sleep 12
 kill "$boot_pid" 2>/dev/null || true
 wait "$boot_pid" 2>/dev/null || true
 out=$(cat "$log"); rm -f "$log"
-if grep -qE "MODULE_NOT_FOUND|SyntaxError|Cannot find module" <<<"$out"; then
+if grep -qE "MODULE_NOT_FOUND|SyntaxError|Cannot find module|ERR_PACKAGE_PATH_NOT_EXPORTED|ERR_REQUIRE_ESM|ERR_REQUIRE_ASYNC_MODULE|ERR_UNSUPPORTED_DIR_IMPORT" <<<"$out"; then
   printf 'FAIL dist/main.js does not load\n'
   note "$(head -5 <<<"$out")"
   fail=1

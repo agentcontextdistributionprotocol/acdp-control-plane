@@ -3512,3 +3512,21 @@ PR B merged: #185 (squash e83ac9c), all 3 required checks green, branch
 deleted, local main fast-forwarded. Issue #182 CLOSED. 10 ASSUMPTIONS.md
 entries tagged `Plan: plans/error-codes-4xx-182.md`, all UNCONFIRMED, for
 `/reconcile`.
+
+## TypeScript 7 runway — issue #156 (`plans/typescript-7-156.md`)
+
+### Phase 1 — `moduleResolution` node10 → `bundler`, drop `ignoreDeprecations` — 2026-10-03
+
+DONE, gate PASS round 1 (fresh Opus; nits applied: TROUBLESHOOTING wording/wrap).
+`tsconfig.json` now `module: commonjs` + `moduleResolution: bundler`, no
+`ignoreDeprecations`; TODO block replaced by a why-bundler comment.
+`scripts/check-build-emit.sh` boot-check grep widened to
+`ERR_PACKAGE_PATH_NOT_EXPORTED|ERR_REQUIRE_ESM|ERR_REQUIRE_ASYNC_MODULE|ERR_UNSUPPORTED_DIR_IMPORT`
+(bundler typechecks import-only packages that `require()` rejects; scratch probe:
+widened → FAIL exit 1, unwidened → ok). TS 6.0.3 and TS 7.0.2 (one-off `npx`) both
+0 errors on both tsconfigs (main's config → TS5108 on 7). Emit byte-identical vs
+main (`diff -r -q` empty, 144 `.js`). Gate: lint, conventions 7/7, check:build 11 ok,
+unit 81 suites/1176 passed, integration 31 suites/218 passed. Docs:
+`docs/TROUBLESHOOTING.md` (TS5107/TS5108 entry + ERR_PACKAGE_PATH_NOT_EXPORTED entry),
+CLAUDE.md (gitignored, local). Phase 2 (TS 7 typecheck gate, decision-gated) and
+Phase 3 (typescript → 7.x, gated on the 7.1 compiler API) remain TODO; #156 stays open.
