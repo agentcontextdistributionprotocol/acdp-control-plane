@@ -1090,3 +1090,24 @@
   mints a code aligned with RFC-ACDP-0007 `cross_registry_resolution_failed`.
 - **Blast radius if wrong:** Low — retryable code on a retryable status.
 - **Status:** UNCONFIRMED
+
+## `moduleResolution: "bundler"` is the resting point for the CJS build (issue #156)
+- **Plan:** `plans/typescript-7-156.md` (Phase 1)
+- **Assumed:** `commonjs` + `bundler` (not `node16`/`nodenext`) is the right
+  long-term setting for this `require()`-run app: byte-identical emit, accepted by
+  TS 6 and 7, and resolves `exports` under the `require` condition. Its one gap
+  (typechecks `import`-only packages that `require()` rejects) is covered by the
+  widened `check:build` boot grep plus jest's CJS resolver; lazily `import()`ed
+  modules and `dist/db/migrate.js` remain unbooted residuals.
+- **Alternatives:** `node16`/`nodenext` (4 errors, changes emit — native
+  `import()` in CJS); omit the option (implicit default could move).
+- **Blast radius if wrong:** Low — one config line, reversible; emit unchanged.
+- **Status:** UNCONFIRMED
+
+## Phase 2 (TS 7 typecheck gate) deferred, not rejected (issue #156)
+- **Plan:** `plans/typescript-7-156.md` (Open question 1)
+- **Assumed:** shipping only Phase 1 now; the side-by-side TS 7 typecheck gate
+  (npm alias `@typescript/native`) awaits a human call. Until then a TS-7-only
+  divergence is caught only by re-running Phase 1 criterion 3 by hand.
+- **Blast radius if wrong:** Low — late discovery of TS-7-only type errors.
+- **Status:** UNCONFIRMED
