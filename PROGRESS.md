@@ -3623,3 +3623,11 @@ first post-merge npm run (an `@nestjs/*` entry in `major-updates` re-opens
 Phase 5); #155 ASSUMPTIONS entries UNCONFIRMED for `/reconcile`. Gate: lint,
 conventions 7/7, tsc both, check:build ok, unit 83 suites/1200, integration
 31 suites/219, built-dist smoke green (Nest 12.1.2).
+
+PRs merged (all 3 required checks green, branches deleted, local main
+fast-forwarded): #188 (squash 90b108a, Phase 1), #189 (f6a9edf, Phases 2-3),
+#190 (931bf06, Phase 4), #194 (8b8468e, Phase 5, `Closes #155`). Final
+cumulative verify PASS round 2 (fresh Opus). Issue #155 CLOSED. #137/#156
+untouched. Pending observation: Dependabot config validation and the first
+post-merge npm run grouping; 6 ASSUMPTIONS.md entries tagged
+`Plan: plans/nestjs-12-155.md`, UNCONFIRMED, for `/reconcile`.
