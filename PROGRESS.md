@@ -3530,3 +3530,9 @@ unit 81 suites/1176 passed, integration 31 suites/218 passed. Docs:
 `docs/TROUBLESHOOTING.md` (TS5107/TS5108 entry + ERR_PACKAGE_PATH_NOT_EXPORTED entry),
 CLAUDE.md (gitignored, local). Phase 2 (TS 7 typecheck gate, decision-gated) and
 Phase 3 (typescript → 7.x, gated on the 7.1 compiler API) remain TODO; #156 stays open.
+
+PR merged: #186 (squash 062a129), all 3 required checks green, branch deleted,
+local main fast-forwarded. Cumulative verify PASS (fresh Opus). Issue #156 left
+OPEN with a progress comment (Phase 1 shipped; Phase 2 decision-gated, Phase 3
+gated on the TS 7.1 compiler API). 2 ASSUMPTIONS.md entries tagged
+`Plan: plans/typescript-7-156.md`, UNCONFIRMED.
