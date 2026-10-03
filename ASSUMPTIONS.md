@@ -1070,3 +1070,23 @@
   generic `FORBIDDEN`).
 - **Blast radius if wrong:** Low — a CI rule, reversible.
 - **Status:** UNCONFIRMED
+
+## Reserved-tenant assertion stays 403, diverging from the registry's 400 (issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md` (Open question 2)
+- **Assumed:** keeping the CP's existing `403` for an explicit `default`
+  tenant assertion (now `TENANT_RESERVED`) is preferable to parity with the
+  registry's `schema_violation`/400, because the status is pinned by
+  `tenancy-isolation.integration.spec.ts` and console copy. Fixed decision
+  from the requester for #182; parity is a separate decision.
+- **Blast radius if wrong:** Medium — changing the status later is a
+  client-visible break.
+- **Status:** UNCONFIRMED
+
+## The federation proxy's 502 still reports INTERNAL_ERROR (issue #182 scope)
+- **Plan:** `plans/error-codes-4xx-182.md` (Open question 5)
+- **Assumed:** #182 is scoped to 4xx; `contexts.controller.ts`'s
+  `BadGatewayException` (502, upstream unreachable) keeps the 5xx fallback
+  `INTERNAL_ERROR` (retryable, which is not wrong for a 502) until a follow-up
+  mints a code aligned with RFC-ACDP-0007 `cross_registry_resolution_failed`.
+- **Blast radius if wrong:** Low — retryable code on a retryable status.
+- **Status:** UNCONFIRMED

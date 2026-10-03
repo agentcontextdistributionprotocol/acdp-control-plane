@@ -57,7 +57,7 @@ wherever one exists. `INTERNAL_ERROR` is reserved for genuine server faults
 | `REQUEST_REJECTED` | other 4xx | fallback | Any other client error (405, 409, 415, 422, …). |
 | `INTERNAL_ERROR` | 5xx | fallback | Genuine server fault; retryable. Never on a 4xx. |
 | `RUN_NOT_FOUND` | 404 | specific | No such run in the caller's tenant (also the cross-tenant SSE guard). |
-| `REGISTRY_NOT_FOUND` | 404 | specific | Registry authority unknown in the caller's tenant. |
+| `REGISTRY_NOT_FOUND` | 404 | specific | Registry authority unknown in the caller's tenant, or no witness/cosigning state for it. |
 | `AGENT_NOT_FOUND` | 404 | specific | No such agent DID in the caller's tenant. |
 | `CONTEXT_NOT_FOUND` | 404 | specific | Declared for a missing context body; reserved. |
 | `ADMIN_REQUIRED` | 403 | specific | Admin-only route; use a key in `AUTH_ADMIN_API_KEYS`. |
@@ -184,7 +184,7 @@ fields also appear as `error.details`.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET`  | `/runs` | List runs with optional filters and pagination. |
-| `GET`  | `/runs/:runId` | Fetch a single run. `404` if not found. |
+| `GET`  | `/runs/:runId` | Fetch a single run. `404 RUN_NOT_FOUND` if not found. |
 | `GET`  | `/runs/:runId/lineage` | Lineage DAG: `{ runId, nodes[], edges[] }`. |
 | `GET`  | `/runs/:runId/events` | Context events for the run, ordered by `event_ts`. |
 | `GET`  | `/runs/:runId/events/stream` | **SSE** — live events for this run. |
@@ -358,7 +358,7 @@ Status mapping:
 | Upstream `2xx`, served `ctx_id` **differs** | `502` `CONTEXT_ID_MISMATCH` — the upstream body is discarded. |
 | Upstream `2xx` that is not JSON, has no `body` member, or names a `ctx_id` the protocol grammar refuses | `502` `CONTEXT_BINDING_UNVERIFIABLE` — the binding could not be established, so nothing is relayed. |
 | Upstream `429` | `503` `FEDERATION_UPSTREAM_RATE_LIMITED` (upstream `Retry-After` logged). |
-| Unknown / unenrolled authority | `404` |
+| Unknown / unenrolled authority | `404 REGISTRY_NOT_FOUND` |
 | Malformed / non-canonical `ctxId` | `400` |
 | SSRF / transport / oversized / cross-authority redirect | `502` |
 
@@ -374,7 +374,7 @@ context (it may be hostile), the second that the proxy could not check at all
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET`  | `/agents` | List known agents (tenant-scoped, ordered by `last_seen`). |
-| `GET`  | `/agents/*did` | Agent detail by DID. `404` if not seen. |
+| `GET`  | `/agents/*did` | Agent detail by DID. `404 AGENT_NOT_FOUND` if not seen. |
 
 ---
 
@@ -690,7 +690,7 @@ canonical claims; anything that fails verification collapses to `{ "active": fal
 
 Body: `{ "token": "<jwt>", "reason"?: "user_logout" | "admin_revoke" | "key_rotation" | "security_incident" | "unspecified" }`.
 Allowed for an **admin** key or the **token's own subject** (self-revoke); else
-`403`. Always returns `200 { "revoked": <bool> }` (no oracle).
+`403 FORBIDDEN`. Always returns `200 { "revoked": <bool> }` (no oracle).
 
 ### `GET /auth/revocations` — cross-issuer revocation feed (admin-only)
 
