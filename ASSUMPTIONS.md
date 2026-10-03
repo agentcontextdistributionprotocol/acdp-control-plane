@@ -1057,3 +1057,16 @@
   token path were NOT added (Open question 3: an oracle for attackers).
 - **Blast radius if wrong:** Low — purely additive fields.
 - **Status:** UNCONFIRMED
+
+## CI rule 7 bans only NotFound/Forbidden, not every Nest built-in (Phase 4, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md` (Open question 6)
+- **Assumed:** 400/401 built-ins stay acceptable at the HTTP boundary because
+  their fallbacks (`INVALID_PAYLOAD`, `UNAUTHORIZED`) are accurate, while a bare
+  403/404 erases a distinction clients need (admin vs tenant vs policy).
+- **Chose:** rule 7 forbids `new NotFoundException(` / `new ForbiddenException(`
+  with no file exemptions; the docs table is mechanically checked by a unit spec.
+- **Alternatives:** ban every non-AppException built-in (~30 accurate sites
+  churn); spec-only coverage (cannot stop a new admin route from returning
+  generic `FORBIDDEN`).
+- **Blast radius if wrong:** Low — a CI rule, reversible.
+- **Status:** UNCONFIRMED

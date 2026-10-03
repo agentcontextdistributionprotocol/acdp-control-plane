@@ -3493,3 +3493,15 @@ zero `new (NotFound|Forbidden)Exception(` left in non-spec src. Docs: POLICY,
 API (ingest status table incl. new 413/429 rows), TROUBLESHOOTING, INGEST.
 Gate: tsc both, lint, conventions 6/6, unit 81 suites/1172 passed, integration
 31 suites/218 passed.
+
+### Phase 4 — docs table + CI rule 7 — 2026-10-03
+
+DONE, gate PASS round 1 (fresh Opus). `scripts/ci-conventions.sh` rule 7 (BRE
+`new \(NotFound\|Forbidden\)Exception(`, no file exemptions, comments/specs
+exempt) — spec proves it fires per class name; seven ✓. `docs/API.md` inline
+list replaced by a 29-row table; `error-codes.spec.ts` asserts every code has
+a row (verified it fails when a row is deleted). CLAUDE.md Errors convention +
+"Seven checks" (gitignored, local). Gate: tsc both, lint, conventions 7/7,
+unit 81 suites/1176 passed, integration 31 suites/218 passed, check:build ok.
+Follow-ups not done (outside this repo): console issue to key copy on the new
+codes; 502 federation code (plan Open question 5).

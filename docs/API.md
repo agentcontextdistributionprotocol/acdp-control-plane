@@ -34,21 +34,48 @@ All non-`2xx` responses use a consistent shape (normalized by
 { "statusCode": 404, "errorCode": "RUN_NOT_FOUND", "message": "run X not found" }
 ```
 
-`errorCode` is one of (`src/errors/error-codes.ts`):
-`RUN_NOT_FOUND`, `REGISTRY_NOT_FOUND`, `AGENT_NOT_FOUND`, `CONTEXT_NOT_FOUND`,
-`FEDERATION_UPSTREAM_RATE_LIMITED`, `CONTEXT_ID_MISMATCH`,
-`CONTEXT_BINDING_UNVERIFIABLE`, `INVALID_PAYLOAD`, `INVALID_SIGNATURE`,
-`INVALID_LOG_PROOF`, `INVALID_WITNESS_COSIGNATURE`, `VALIDATION_ERROR`,
-`INTERNAL_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`,
-`PAYLOAD_TOO_LARGE`, `RATE_LIMITED`, `REQUEST_REJECTED`, `ADMIN_REQUIRED`,
-`TENANT_RESERVED`, `TENANT_MISMATCH`, `TENANT_REQUIRED`.
+`errorCode` (mirrored as `error.code`) is one of the values below
+(`src/errors/error-codes.ts`; the set is pinned by `src/errors/error-codes.spec.ts`,
+which also checks that every code appears in this table). Codes are
+SCREAMING_SNAKE so they never collide with a registry's lowercase
+RFC-ACDP-0007 `error.code` vocabulary.
 
-`UNAUTHORIZED` … `REQUEST_REJECTED` are **generic fallbacks**, keyed on the HTTP status (401, 403,
-404, 413, 429, and any other 4xx respectively) for an error whose producer set
-no code; a specific code is used where one exists. An unlabelled `400` falls
-back to `INVALID_PAYLOAD`. `INTERNAL_ERROR` is reserved for genuine server
-faults (5xx) — it is in RFC-ACDP-0007 §5's retryable set, so no `4xx` ever
-carries it (#182).
+**Generic fallbacks** are assigned by `GlobalExceptionFilter`, keyed on the HTTP
+status, when the error's producer set no code; a **specific** code is used
+wherever one exists. `INTERNAL_ERROR` is reserved for genuine server faults
+(5xx) — it is in RFC-ACDP-0007 §5's retryable set, so no `4xx` ever carries it
+(#182).
+
+| Code | HTTP | Kind | Meaning |
+|------|------|------|---------|
+| `INVALID_PAYLOAD` | 400 | fallback | Request body/query failed validation or parsing (ValidationPipe, ingest checks). |
+| `UNAUTHORIZED` | 401 | fallback | Credentials missing or rejected (API key, bearer JWT, challenge/token checks). |
+| `FORBIDDEN` | 403 | fallback | Authenticated but not permitted (e.g. revoking a token that is not yours). |
+| `NOT_FOUND` | 404 | fallback | No such route or resource. |
+| `PAYLOAD_TOO_LARGE` | 413 | fallback | Body over the configured limit (`INGEST_MAX_BODY_BYTES`). |
+| `RATE_LIMITED` | 429 | fallback | Coarse per-principal throttle (`THROTTLE_LIMIT`); see `Retry-After`. |
+| `REQUEST_REJECTED` | other 4xx | fallback | Any other client error (405, 409, 415, 422, …). |
+| `INTERNAL_ERROR` | 5xx | fallback | Genuine server fault; retryable. Never on a 4xx. |
+| `RUN_NOT_FOUND` | 404 | specific | No such run in the caller's tenant (also the cross-tenant SSE guard). |
+| `REGISTRY_NOT_FOUND` | 404 | specific | Registry authority unknown in the caller's tenant. |
+| `AGENT_NOT_FOUND` | 404 | specific | No such agent DID in the caller's tenant. |
+| `CONTEXT_NOT_FOUND` | 404 | specific | Declared for a missing context body; reserved. |
+| `ADMIN_REQUIRED` | 403 | specific | Admin-only route; use a key in `AUTH_ADMIN_API_KEYS`. |
+| `TENANT_RESERVED` | 403 | specific | The reserved `default` tenant was explicitly asserted. |
+| `TENANT_MISMATCH` | 403 | specific | `X-Tenant-Id` disagrees with the JWT claim / key-bound tenant. |
+| `TENANT_REQUIRED` | 403 | specific | `AUTH_REQUIRE_TENANT` and no bound tenant. |
+| `POLICY_DENIED` | 403 | specific | `PolicyGuard` denied (legacy top-level `code` names the rule; `indeterminate` = could not decide). |
+| `QUOTA_EXCEEDED` | 429 | specific | Per-tenant per-action `TENANT_QUOTAS` limit; see `Retry-After`. |
+| `REGISTRY_NOT_ENROLLED` | 403 | specific | Ingest from an unenrolled authority under `INGEST_REQUIRE_ENROLLMENT`. |
+| `REGISTRY_DISABLED` | 403 | specific | Ingest from an enrolled but disabled registry. |
+| `INVALID_WEBHOOK_SIGNATURE` | 401 | specific | HMAC `X-ACDP-Signature` failed on `/ingest/acdp` or `/runs/*` notify. |
+| `INVALID_SIGNATURE` | 401 | specific | Ed25519/ECDSA-P256 signature over a challenge or capability assertion failed. |
+| `VALIDATION_ERROR` | 400 | specific | Malformed witness query parameter (`schema_violation`). |
+| `FEDERATION_UPSTREAM_RATE_LIMITED` | 503 | specific | The federated registry answered 429. |
+| `CONTEXT_ID_MISMATCH` | 502 | specific | The registry served a different `ctx_id` than requested. |
+| `CONTEXT_BINDING_UNVERIFIABLE` | 502 | specific | The served body's `ctx_id` could not be checked. |
+| `INVALID_LOG_PROOF` | — | verdict | Transparency-log proof/checkpoint failed (audit verdict/alert category). |
+| `INVALID_WITNESS_COSIGNATURE` | — | verdict | A witness cosignature failed (diagnostic category). |
 
 `INVALID_LOG_PROOF` and `INVALID_WITNESS_COSIGNATURE` are deliberately
 distinct (RFC-ACDP-0015 §10): the former indicts a transparency-log proof or

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { ErrorCode } from "./error-codes";
 
 /**
@@ -59,6 +61,17 @@ describe("ErrorCode public surface", () => {
   it("every value equals its key", () => {
     for (const [k, v] of Object.entries(ErrorCode)) {
       expect(v).toBe(k);
+    }
+  });
+
+  it("every code has a row in the docs/API.md error-code table", () => {
+    const doc = readFileSync(
+      resolve(__dirname, "..", "..", "docs", "API.md"),
+      "utf8",
+    );
+    for (const v of values) {
+      expect({ code: v, inTable: new RegExp("^\\| `" + v + "` \\|", "m").test(doc) })
+        .toEqual({ code: v, inTable: true });
     }
   });
 
