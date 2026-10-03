@@ -9,9 +9,10 @@
  * and the guard short-circuits on every request — no Redis traffic
  * even when a Redis URL is configured.
  */
-import { Global, Inject, Logger, Module, type OnModuleDestroy } from '@nestjs/common';
+import { Global, Inject, Logger, Module, Optional, type OnModuleDestroy } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { ConfigModule } from '../config/config.module';
+import { ShutdownFailures } from '../shutdown-failures';
 import { parseQuotaConfig, type ParsedQuotaConfig } from './quota-config';
 import {
   QUOTA_CONFIG,
@@ -88,7 +89,10 @@ import {
   exports: [QUOTA_CONFIG, QUOTA_STORE, QuotaGuard],
 })
 export class QuotaModule implements OnModuleDestroy {
-  constructor(@Inject(QUOTA_STORE) private readonly store: QuotaStore) {}
+  constructor(
+    @Inject(QUOTA_STORE) private readonly store: QuotaStore,
+    @Optional() private readonly shutdownFailures?: ShutdownFailures,
+  ) {}
 
   /**
    * Close the quota store on shutdown. `RedisQuotaStore` holds a long-lived
@@ -99,8 +103,14 @@ export class QuotaModule implements OnModuleDestroy {
    */
   async onModuleDestroy(): Promise<void> {
     const closable = this.store as QuotaStore & { close?: () => Promise<void> };
-    if (typeof closable.close === 'function') {
-      await closable.close();
+    if (typeof closable.close !== 'function') return;
+    const close = closable.close.bind(closable);
+    // Tracked so a failing close fails the exit code (#155). RedisQuotaStore's
+    // close() swallows quit() errors by design; this guards future stores.
+    if (this.shutdownFailures) {
+      await this.shutdownFailures.track('quota store', close);
+    } else {
+      await close();
     }
   }
 }

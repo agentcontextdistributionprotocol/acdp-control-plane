@@ -111,6 +111,55 @@ describe('createShutdownHandler', () => {
       expect(deps.exit).toHaveBeenCalledWith(1);
     });
 
+    // Issue #155: NestJS 12 swallows destroy-hook rejections, so close()
+    // RESOLVES on a failed teardown. hookFailed is how the handler still knows.
+    it('exits 1 when close() resolves but a destroy hook failed (NestJS 12 semantics)', async () => {
+      const { handler, calls, deps } = build(() => ({ hookFailed: () => true }));
+
+      await expect(handler('SIGTERM')).resolves.toBeUndefined();
+
+      expect(calls).toEqual(['close', 'stopTelemetry', 'exit:1']);
+      expect(deps.logger?.error).toHaveBeenCalledWith(
+        expect.stringContaining('destroy hooks failed'),
+      );
+    });
+
+    it('reads hookFailed only after close() has settled', async () => {
+      const order: string[] = [];
+      const { handler } = build((recorded) => ({
+        close: jest.fn(async () => {
+          recorded.push('close');
+          order.push('close');
+        }),
+        hookFailed: jest.fn(() => {
+          order.push('hookFailed');
+          return false;
+        }),
+      }));
+
+      await handler('SIGTERM');
+
+      expect(order).toEqual(['close', 'hookFailed']);
+    });
+
+    it('exits 0 when hookFailed reports no failures', async () => {
+      const { handler, calls } = build(() => ({ hookFailed: () => false }));
+      await handler('SIGTERM');
+      expect(calls).toEqual(['close', 'stopTelemetry', 'exit:0']);
+    });
+
+    it('treats a throwing hookFailed probe as a failure, and still flushes telemetry', async () => {
+      const { handler, calls } = build(() => ({
+        hookFailed: () => {
+          throw new Error('collector unavailable');
+        },
+      }));
+
+      await expect(handler('SIGTERM')).resolves.toBeUndefined();
+
+      expect(calls).toEqual(['close', 'stopTelemetry', 'exit:1']);
+    });
+
     it('never rethrows — an unhandled rejection here would kill the process', async () => {
       const { handler } = build(() => ({
         close: jest.fn(async () => {

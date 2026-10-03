@@ -56,6 +56,16 @@ export interface ShutdownDeps {
    * and usable without an HTTP server.
    */
   forceCloseConnections?: () => void;
+  /**
+   * Reports whether any destroy hook failed during `close()`. Wired to
+   * `ShutdownFailures.any()` (`src/shutdown-failures.ts`).
+   *
+   * NestJS 12 runs destroy hooks under `Promise.allSettled` and only LOGS a
+   * rejection, so `close()` resolves even when e.g. `pool.end()` throws. Without
+   * this input, a failed teardown would exit 0 (issue #155). Optional so the
+   * handler stays usable without a Nest app.
+   */
+  hookFailed?: () => boolean;
   /** Defaults to {@link DEFAULT_SHUTDOWN_TIMEOUT_MS}. */
   timeoutMs?: number;
   logger?: Pick<Logger, 'error' | 'log'>;
@@ -95,7 +105,9 @@ export interface ShutdownDeps {
  *      `stopTelemetry()` runs even if `close()` rejects, because a failed shutdown
  *      is precisely when you want the traces flushed.
  *   3. **Deterministic exit** — an intentional stop exits 0, so an orchestrator can
- *      tell a clean shutdown from a crash.
+ *      tell a clean shutdown from a crash; a failed teardown (a rejected close, a
+ *      failed destroy hook reported via `hookFailed`, an overrun, or a telemetry
+ *      flush error) exits 1.
  */
 export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => Promise<void> {
   const logger = deps.logger ?? new Logger('Shutdown');
@@ -151,6 +163,24 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
         deps.forceCloseConnections?.();
       } catch {
         // Best effort: we are already on the forced path.
+      }
+    }
+
+    // A hook that failed inside close() but did not reject it (NestJS 12
+    // semantics). Read after the race, so a hook that failed before an overrun
+    // is still counted. A throwing probe counts as a failure: we cannot vouch
+    // for a clean teardown we were unable to check.
+    try {
+      if (deps.hookFailed?.()) {
+        failed = true;
+        logger.error('one or more destroy hooks failed during close — exiting 1');
+      }
+    } catch {
+      failed = true;
+      try {
+        logger.error('could not check destroy-hook failures — exiting 1');
+      } catch {
+        // A throwing logger must not abort the shutdown.
       }
     }
 
