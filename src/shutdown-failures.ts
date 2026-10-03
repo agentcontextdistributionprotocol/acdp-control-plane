@@ -22,7 +22,7 @@ export interface ShutdownFailure {
  * client, a durable write queue) runs its teardown through {@link track}.
  * `track` records the failure here and rethrows it, so Nest's own logging, and
  * a `close()` rejection on frameworks that still propagate one, are unchanged.
- * `main.ts` reads {@link any} after `close()` settles. Hooks that only clear
+ * `src/bootstrap.ts` reads {@link any} after `close()` settles. Hooks that only clear
  * in-process timers or caches are not tracked: they cannot fail in a way an
  * operator needs to see in the exit code.
  *

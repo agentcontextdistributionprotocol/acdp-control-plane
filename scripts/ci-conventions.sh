@@ -65,7 +65,7 @@ check "no process.env outside AppConfigService" \
   '(app-config|main\.ts|telemetry/telemetry\.ts|db/migrate\.ts|\.spec\.ts|auth/pinned-keys\.service|auth/pinned-keys-admin\.controller|auth/auth\.module|domain-packs/domain-packs\.module)'
 
 # The exemption skips COMMENT lines (`// ...` and ` * ...` in a docblock), because
-# main.ts and shutdown.ts both explain at length why this call must not come back
+# bootstrap.ts and shutdown.ts both explain at length why this call must not come back
 # — naming it is the point. An actual statement is never a comment line, so a real
 # re-introduction still trips the check.
 check "no enableShutdownHooks (see #158)" \

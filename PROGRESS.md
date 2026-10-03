@@ -3608,3 +3608,18 @@ ExperimentalWarnings — kept visible), integration 31 suites/219 passed. Built
 `dist/main.js` smoke: /healthz 200, /docs 200, `/docs-json` openapi 3.0.0 +
 `next_cursor` nullable, SSE 200 `text/event-stream`, `THROTTLE_LIMIT=5` → 5×200
 then 429 `RATE_LIMITED` + `Retry-After: 60`, SIGTERM exit 0, no double pool end.
+
+### Phase 5 — docs, engines, Dependabot — 2026-10-03
+
+DONE, gate PASS round 1 (fresh Opus; nit applied: Node 25 note). Cumulative
+verify round 1 GAPS → fixed: stale `main.ts` references after the
+`bootstrap.ts` split (ARCHITECTURE tree, README, CONFIGURATION, TESTING,
+`ci-conventions.sh` rule-4 comment, `shutdown-failures.ts`, CLAUDE.md), and the
+plan's promised follow-ups filed: #191 (jest vm-modules debt), #192
+(`return503OnClosing`), #193 (`process.loadEnvFile`). `engines.node: ">=24.15"`;
+Dependabot `nestjs` group explicit `update-types` + `@nestjs/*` excluded from
+both catch-alls. Pending observation: Dependabot config validation and the
+first post-merge npm run (an `@nestjs/*` entry in `major-updates` re-opens
+Phase 5); #155 ASSUMPTIONS entries UNCONFIRMED for `/reconcile`. Gate: lint,
+conventions 7/7, tsc both, check:build ok, unit 83 suites/1200, integration
+31 suites/219, built-dist smoke green (Nest 12.1.2).

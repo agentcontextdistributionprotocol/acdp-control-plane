@@ -14,9 +14,15 @@ updates:
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
     # Pattern groups stay (they collapse their own churn); the two
-    # update-type groups catch everything else. Dependabot assigns a dep
-    # to the first matching group, so the specific patterns are listed
-    # before the catch-all minor/major split.
+    # update-type groups catch everything else. GitHub's docs say a dep
+    # matching several groups lands in the FIRST one, so the specific
+    # patterns are listed before the catch-all minor/major split -- but that
+    # did NOT hold for @nestjs/* majors: PR #166 put the Nest 12 majors in
+    # `major-updates` (without the @nestjs/throttler minor that peers ^12, so
+    # every job ERESOLVEd at `npm ci`), and no `nestjs`-group PR was opened
+    # for the throttler minor at all. So `nestjs` now names all three update
+    # types explicitly AND both catch-alls exclude `@nestjs/*`: a framework
+    # major and its plugin minors can only ever travel together (issue #155).
     groups:
       opentelemetry:
         patterns:
@@ -24,6 +30,7 @@ updates:
       nestjs:
         patterns:
           - "@nestjs/*"
+        update-types: [major, minor, patch]
       drizzle:
         patterns:
           - drizzle-orm
@@ -42,8 +49,12 @@ updates:
           - '@agentcontextdistributionprotocol/acdp'
       minor-and-patch:
         update-types: [minor, patch]
+        exclude-patterns:
+          - "@nestjs/*"
       major-updates:
         update-types: [major]
+        exclude-patterns:
+          - "@nestjs/*"
   # Node runtime pin (node:26-bookworm-slim in the Dockerfile).
   - package-ecosystem: docker
     directory: /
