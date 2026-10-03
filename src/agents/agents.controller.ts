@@ -1,5 +1,7 @@
-import { Controller, Get, NotFoundException, Param, Req } from '@nestjs/common';
+import { Controller, Get, HttpStatus, Param, Req } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { AppException } from '../errors/app-exception';
+import { ErrorCode } from '../errors/error-codes';
 import { AgentRepository } from '../storage/agent.repository';
 import { tenantOf, TenantedRequest } from '../tenant/request-tenant';
 
@@ -25,7 +27,13 @@ export class AgentsController {
   ) {
     const did = Array.isArray(didParts) ? didParts.join('/') : didParts;
     const agent = await this.agentRepo.findByDid(did, tenantOf(req));
-    if (!agent) throw new NotFoundException(`agent ${did} not found`);
+    if (!agent) {
+      throw new AppException(
+        ErrorCode.AGENT_NOT_FOUND,
+        `agent ${did} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
     return agent;
   }
 }

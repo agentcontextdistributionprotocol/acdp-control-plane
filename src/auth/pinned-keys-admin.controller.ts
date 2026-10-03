@@ -18,7 +18,6 @@
  */
 import {
   Controller,
-  ForbiddenException,
   HttpCode,
   HttpStatus,
   Logger,
@@ -34,6 +33,7 @@ import {
 } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { PinnedKeysService } from './pinned-keys.service';
+import { assertAdmin } from './admin';
 
 class PinnedKeysReloadResponseDto {
   @ApiProperty({ description: 'True when the reload succeeded.' })
@@ -67,9 +67,7 @@ export class PinnedKeysAdminController {
   reload(
     @Req() req: Request & { actorIsAdmin?: boolean },
   ): PinnedKeysReloadResponseDto {
-    if (!req.actorIsAdmin) {
-      throw new ForbiddenException('pinned-keys reload is admin-only');
-    }
+    assertAdmin(req, 'pinned-keys reload is admin-only');
     const raw = process.env.CONTROL_PLANE_PINNED_KEYS ?? '';
     const count = this.pinned.load(raw);
     this.logger.log(`pinned-keys reloaded; count=${count}`);

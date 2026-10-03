@@ -969,3 +969,56 @@
   own correction above and the Phase 14 precedent it cites. See
   `DECISIONS.md` and `PROGRESS.md`'s matching 2026-09-25 entries for the
   full implementation/verification record.
+
+## Any exposed `http-errors` 4xx is answered with its own status and message (Phase 1, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md`
+- **Assumed:** a non-`HttpException` error carrying an integer `status` in
+  400..499 and `expose === true` (the `http-errors` contract body-parser uses)
+  is a genuine client error whose `message` is safe to return verbatim.
+- **Chose:** `GlobalExceptionFilter` answers it with that status,
+  `defaultErrorCode(status)` and its message, logged at `warn` (structured).
+  Not restricted to body-parser's `type` values — any dependency producing an
+  exposed `http-errors` 4xx gets the same treatment. `expose:false`, 5xx, and
+  non-integer statuses keep the generic 500 with no message.
+- **Alternatives:** whitelist only body-parser `type`s (`entity.too.large`,
+  `charset.unsupported`, …) — rejected as brittle; `http-errors` sets `expose`
+  true only for 4xx by design, which is exactly the leak boundary needed.
+- **Blast radius if wrong:** Low. Worst case a dependency's exposed 4xx message
+  reaches a client — the producer already declared it client-safe.
+- **Status:** UNCONFIRMED
+
+## Generic 4xx fallback codes are CP-local SCREAMING_SNAKE names (Phase 1, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md`
+- **Assumed:** the CP's `errorCode`/`error.code` stays a CP-local vocabulary
+  (not RFC-ACDP-0007 §5 lowercase codes); names are aligned with the RFC word
+  where one exists (`NOT_FOUND`, `RATE_LIMITED`, `PAYLOAD_TOO_LARGE`), and the
+  "any other 4xx" fallback is `REQUEST_REJECTED` (decided by the user).
+- **Chose:** six fallbacks keyed by an explicit status table — never
+  `HttpStatus[status]`, which would silently mint public names.
+- **Alternatives:** lowercase RFC codes (would collide with the registry
+  vocabulary in the console's exact-match lookup); `BAD_REQUEST`/`CLIENT_ERROR`.
+- **Blast radius if wrong:** Medium — `ErrorCode` values are a one-way public
+  surface; renaming later is a breaking change.
+- **Status:** UNCONFIRMED
+
+## Revoke 403 uses generic FORBIDDEN, not ADMIN_REQUIRED (Phase 2, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md`
+- **Assumed:** `POST /auth/revoke`'s gate is admin-OR-self, so naming it
+  "admin required" would misdirect a JWT caller who could legitimately
+  self-revoke their own token.
+- **Chose:** `AppException(ErrorCode.FORBIDDEN, 'caller is not authorized to revoke this token', 403)`.
+- **Alternatives:** `ADMIN_REQUIRED` (wrong remedy for the self path); a new
+  `REVOKE_FORBIDDEN` (another permanent name for one route).
+- **Blast radius if wrong:** Low — a specific code can be added later; the
+  generic one stays accurate.
+- **Status:** UNCONFIRMED
+
+## Admin-gate helper takes the full client-visible message (Phase 2, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md`
+- **Assumed:** keeping every pre-#182 message byte-identical outranks a uniform
+  `${what} is admin-only` template (one site reads "routing stats are admin-only").
+- **Chose:** `assertAdmin(req, message)`; refuses unless `actorIsAdmin === true`.
+- **Alternatives:** template + change the routing message (a message change the
+  plan forbids); template with an override parameter (two ways to call it).
+- **Blast radius if wrong:** Low — internal helper signature.
+- **Status:** UNCONFIRMED

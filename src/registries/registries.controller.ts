@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   Get,
   HttpStatus,
   Param,
@@ -12,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { EnrollRegistryDto } from '../dto/enroll-registry.dto';
+import { assertAdmin } from '../auth/admin';
 import { AppException } from '../errors/app-exception';
 import { ErrorCode } from '../errors/error-codes';
 import { LogWitnessRepository } from '../storage/log-witness.repository';
@@ -92,9 +92,7 @@ export class RegistriesController {
     @Param('authority') authority: string,
     @Req() req: TenantedRequest & { actorId?: string; actorIsAdmin?: boolean },
   ) {
-    if (!req.actorIsAdmin) {
-      throw new ForbiddenException('acknowledging a witness alert is admin-only');
-    }
+    assertAdmin(req, 'acknowledging a witness alert is admin-only');
     const tenantId = tenantOf(req);
     const acknowledgedBy = req.actorId ?? 'admin';
     const row = await this.logWitnessRepo.acknowledgeAlert(tenantId, authority, acknowledgedBy);
@@ -165,9 +163,7 @@ export class RegistriesController {
     body: EnrollRegistryDto,
     @Req() req: TenantedRequest & { actorIsAdmin?: boolean },
   ) {
-    if (!req.actorIsAdmin) {
-      throw new ForbiddenException('registry enrollment is admin-only');
-    }
+    assertAdmin(req, 'registry enrollment is admin-only');
     // An admin may bind an enrollment to an explicit tenant, but `default` is
     // the reserved untenanted sentinel — it can never be named explicitly
     // (parity with the AuthGuard's reserved-tenant rejection).

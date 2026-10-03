@@ -1,7 +1,7 @@
 import {
   CanActivate,
   ExecutionContext,
-  ForbiddenException,
+  HttpStatus,
   Inject,
   Injectable,
   Logger,
@@ -11,6 +11,8 @@ import {
 import { Reflector } from '@nestjs/core';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { AppConfigService } from '../config/app-config.service';
+import { AppException } from '../errors/app-exception';
+import { ErrorCode } from '../errors/error-codes';
 import {
   buildTenantLookup,
   DEFAULT_TENANT_ID,
@@ -120,8 +122,10 @@ export class AuthGuard implements CanActivate {
         this.logger.warn(
           `tenant assertion mismatch: claim=${claimTenant} header=${headerTenant} sub=${claims.sub}`,
         );
-        throw new ForbiddenException(
+        throw new AppException(
+          ErrorCode.TENANT_MISMATCH,
           'X-Tenant-Id does not match the tenant the token was issued under',
+          HttpStatus.FORBIDDEN,
         );
       }
       // Strict mode (AUTH_REQUIRE_TENANT): an unbound token — one with no
@@ -129,8 +133,10 @@ export class AuthGuard implements CanActivate {
       // so default-deny it. Mirrors the registry's `require_tenant`.
       if (this.config.requireTenant && !claimTenant) {
         this.logger.warn(`strict tenant: token has no tenant claim (sub=${claims.sub})`);
-        throw new ForbiddenException(
+        throw new AppException(
+          ErrorCode.TENANT_REQUIRED,
           'tenant required: token carries no tenant claim (AUTH_REQUIRE_TENANT)',
+          HttpStatus.FORBIDDEN,
         );
       }
       request.tenantId = claimTenant ?? headerTenant ?? DEFAULT_TENANT_ID;
@@ -142,8 +148,10 @@ export class AuthGuard implements CanActivate {
       if (this.config.requireTenant) {
         // Strict mode can't resolve a tenant for an unauthenticated
         // request, so default-deny rather than silently using `default`.
-        throw new ForbiddenException(
+        throw new AppException(
+          ErrorCode.TENANT_REQUIRED,
           'tenant required but no AUTH_API_KEYS configured (AUTH_REQUIRE_TENANT)',
+          HttpStatus.FORBIDDEN,
         );
       }
       this.logger.warn('No AUTH_API_KEYS configured; allowing request');
@@ -176,14 +184,18 @@ export class AuthGuard implements CanActivate {
       this.logger.warn(
         `tenant assertion mismatch: key-bound=${keyTenant} header=${apiKeyHeaderTenant}`,
       );
-      throw new ForbiddenException(
+      throw new AppException(
+        ErrorCode.TENANT_MISMATCH,
         'X-Tenant-Id does not match the tenant this API key is bound to',
+        HttpStatus.FORBIDDEN,
       );
     }
     // Strict mode: a bare (unbound) API key can't assert a tenant.
     if (this.config.requireTenant && keyTenant === DEFAULT_TENANT_ID) {
-      throw new ForbiddenException(
+      throw new AppException(
+        ErrorCode.TENANT_REQUIRED,
         'tenant required: API key is not bound to a tenant (AUTH_REQUIRE_TENANT)',
+        HttpStatus.FORBIDDEN,
       );
     }
     request.tenantId = keyTenant;

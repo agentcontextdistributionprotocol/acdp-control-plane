@@ -5,7 +5,6 @@ import {
   Get,
   HttpStatus,
   Logger,
-  NotFoundException,
   Param,
   Req,
   Res,
@@ -64,7 +63,13 @@ export class ContextsController {
     // Resolve the registry within the caller's tenant only.
     const registry = await this.registryRepo.findByAuthority(parsed.authority, tenantId);
     if (!registry?.baseUrl) {
-      throw new NotFoundException(`Unknown registry authority: ${parsed.authority}`);
+      // REGISTRY_NOT_FOUND, not CONTEXT_NOT_FOUND: no context was looked up —
+      // the authority is unknown in the caller's tenant (#182).
+      throw new AppException(
+        ErrorCode.REGISTRY_NOT_FOUND,
+        `Unknown registry authority: ${parsed.authority}`,
+        HttpStatus.NOT_FOUND,
+      );
     }
 
     const upstream = `${registry.baseUrl.replace(/\/$/, '')}/contexts/${encodeURIComponent(ctxId)}`;

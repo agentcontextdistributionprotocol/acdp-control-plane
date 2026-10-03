@@ -8,6 +8,7 @@
  */
  
 import { ExecutionContext } from '@nestjs/common';
+import { ErrorCode } from '../errors/error-codes';
 import { Reflector } from '@nestjs/core';
 import { AppConfigService } from '../config/app-config.service';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
@@ -94,6 +95,10 @@ describe('AuthGuard — tenant extraction', () => {
       await expect(guard.canActivate(ctx(request))).rejects.toThrow(
         /reserved tenant sentinel/,
       );
+      await expect(guard.canActivate(ctx(request))).rejects.toMatchObject({
+        errorCode: ErrorCode.TENANT_RESERVED,
+        status: 403,
+      });
     });
 
     it('rejects an explicit X-Tenant-Id: default assertion (bare key)', async () => {
@@ -103,6 +108,10 @@ describe('AuthGuard — tenant extraction', () => {
       await expect(guard.canActivate(ctx(request))).rejects.toThrow(
         /reserved tenant sentinel/,
       );
+      await expect(guard.canActivate(ctx(request))).rejects.toMatchObject({
+        errorCode: ErrorCode.TENANT_RESERVED,
+        status: 403,
+      });
     });
 
     it('still allows resolving to default via the ABSENCE of an assertion', async () => {

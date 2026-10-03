@@ -115,6 +115,7 @@ describe('Cross-tenant isolation (integration)', () => {
     const clientB = new TestClient(ctx.url, 'key-b');
     const resp = await clientB.requestRaw('GET', '/runs/run-only-a');
     expect(resp.status).toBe(404);
+    expect((resp.body as { errorCode: string }).errorCode).toBe('RUN_NOT_FOUND');
   });
 
   it('GET /events is tenant-scoped: each tenant sees only its own events', async () => {
@@ -201,6 +202,59 @@ describe('Cross-tenant isolation (integration)', () => {
       /HTTP 404/,
     );
     sseB.close();
+
+    // #182: the SSE leak guard answers with the SAME code a genuinely missing
+    // run gets — a distinct code would itself leak cross-tenant existence.
+    const clientB = new TestClient(ctx.url, 'key-b');
+    const leak = await clientB.requestRaw('GET', '/runs/run-sse-owned-a/events/stream');
+    const missing = await clientB.requestRaw('GET', '/runs/run-never-existed');
+    expect(leak.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect((leak.body as { errorCode: string }).errorCode).toBe('RUN_NOT_FOUND');
+    expect((leak.body as { errorCode: string }).errorCode).toBe(
+      (missing.body as { errorCode: string }).errorCode,
+    );
+  });
+
+  it('federation proxy: another tenant\'s registry is REGISTRY_NOT_FOUND, same as an unknown one (#182)', async () => {
+    const authority = 'reg-tenant-a.example';
+    const ctxId = `acdp://${authority}/abcdef01-2345-4678-9abc-def012345678`;
+    const clientA = new TestClient(ctx.url, 'key-a');
+    const ingest = await clientA.requestRaw('POST', '/ingest/acdp', {
+      body: {
+        type: 'context_published',
+        run_id: 'run-fed-a',
+        agent_id: 'did:web:agent.example',
+        ctx_id: ctxId,
+        registry_authority: authority,
+        // Loopback: tenant A's proxy attempt is SSRF-blocked (502), which
+        // proves the registry row exists for A without any network egress.
+        registry_base_url: 'https://localhost:9',
+        context_type: 'data_snapshot',
+        visibility: 'public',
+        event_ts: new Date().toISOString(),
+      },
+      headers: { 'X-ACDP-Event': 'context_published', 'X-Tenant-Id': 'tenant-a' },
+    });
+    expect(ingest.status).toBeLessThan(300);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const path = `/contexts/${encodeURIComponent(ctxId)}`;
+    const asA = await clientA.requestRaw('GET', path);
+    expect(asA.status).toBe(502); // registry known to A
+
+    const clientB = new TestClient(ctx.url, 'key-b');
+    const asB = await clientB.requestRaw('GET', path);
+    const unknown = await clientB.requestRaw(
+      'GET',
+      `/contexts/${encodeURIComponent('acdp://never-enrolled.example/abcdef01-2345-4678-9abc-def012345678')}`,
+    );
+    expect(asB.status).toBe(404);
+    expect(unknown.status).toBe(404);
+    expect((asB.body as { errorCode: string }).errorCode).toBe('REGISTRY_NOT_FOUND');
+    expect((asB.body as { errorCode: string }).errorCode).toBe(
+      (unknown.body as { errorCode: string }).errorCode,
+    );
   });
 
   describe('transparency-log witness evidence (B7)', () => {
@@ -322,6 +376,7 @@ describe('Cross-tenant isolation (integration)', () => {
         headers: { 'X-Tenant-Id': 'tenant-b' },
       });
       expect(res.status).toBe(403);
+      expect((res.body as { errorCode: string }).errorCode).toBe('TENANT_MISMATCH');
     });
 
     it('rejects an explicit assertion of the reserved `default` tenant (403)', async () => {
@@ -332,6 +387,7 @@ describe('Cross-tenant isolation (integration)', () => {
         headers: { 'X-Tenant-Id': 'default' },
       });
       expect(res.status).toBe(403);
+      expect((res.body as { errorCode: string }).errorCode).toBe('TENANT_RESERVED');
     });
 
     it('allows a header that agrees with the key-bound tenant (200)', async () => {

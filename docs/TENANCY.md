@@ -37,10 +37,10 @@ to make that impossible to reach by accident.
 Two hard rules protect the boundary:
 
 - **Mismatch is hostile.** If a signed/bound tenant and an `X-Tenant-Id` header
-  both exist and disagree, the request is rejected (`403`). A spoofed header
+  both exist and disagree, the request is rejected (`403 TENANT_MISMATCH`). A spoofed header
   never wins over a signed claim.
 - **Reserved-`default` rejection.** Any *explicit* assertion of `default` (via
-  `X-Tenant-Id` or a signed `tenant` claim) is rejected. `default` is reachable
+  `X-Tenant-Id` or a signed `tenant` claim) is rejected (`403 TENANT_RESERVED`). `default` is reachable
   only through the **absence** of an assertion — never by asserting it (parity
   with the registry's `reject_reserved_tenant`).
 
@@ -48,8 +48,8 @@ Two hard rules protect the boundary:
 
 Default-deny anything that resolves only to the silent `default`:
 
-- A JWT with no `tenant` claim → `403`.
-- A bare (unbound) or absent API key → `403`.
+- A JWT with no `tenant` claim → `403 TENANT_REQUIRED`.
+- A bare (unbound) or absent API key → `403 TENANT_REQUIRED`.
 - An `X-Tenant-Id` header alone never satisfies strict mode (it's spoofable).
 
 This is the mirror of the registry's `auth.require_tenant`. Use it whenever more

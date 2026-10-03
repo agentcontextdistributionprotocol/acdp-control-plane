@@ -88,11 +88,16 @@ one isn't seen by another. Set `AUTH_PERSISTENCE=postgres`.
 
 ### `403` with a valid credential
 
-Likely a tenancy rejection (see [TENANCY.md](./TENANCY.md)):
-- `X-Tenant-Id` disagrees with the JWT `tenant` claim or the API key's bound tenant.
-- An explicit assertion of the reserved `default` tenant (header or claim).
-- Strict mode (`AUTH_REQUIRE_TENANT=true`) and the request resolves only to `default`
-  (JWT without `tenant`, or a bare/absent API key).
+Read the body's `errorCode` — it names the cause. Likely a tenancy rejection
+(see [TENANCY.md](./TENANCY.md)):
+- `TENANT_MISMATCH` — `X-Tenant-Id` disagrees with the JWT `tenant` claim or the
+  API key's bound tenant.
+- `TENANT_RESERVED` — an explicit assertion of the reserved `default` tenant
+  (header or claim).
+- `TENANT_REQUIRED` — strict mode (`AUTH_REQUIRE_TENANT=true`) and the request
+  resolves only to `default` (JWT without `tenant`, or a bare/absent API key).
+- `ADMIN_REQUIRED` — the route is admin-only; use a key listed in
+  `AUTH_ADMIN_API_KEYS`.
 
 ### Boot fails: "Tenant bindings are configured … but `AUTH_REQUIRE_TENANT=false`"
 

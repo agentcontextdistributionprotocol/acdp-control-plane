@@ -39,7 +39,16 @@ All non-`2xx` responses use a consistent shape (normalized by
 `FEDERATION_UPSTREAM_RATE_LIMITED`, `CONTEXT_ID_MISMATCH`,
 `CONTEXT_BINDING_UNVERIFIABLE`, `INVALID_PAYLOAD`, `INVALID_SIGNATURE`,
 `INVALID_LOG_PROOF`, `INVALID_WITNESS_COSIGNATURE`, `VALIDATION_ERROR`,
-`INTERNAL_ERROR`.
+`INTERNAL_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`,
+`PAYLOAD_TOO_LARGE`, `RATE_LIMITED`, `REQUEST_REJECTED`, `ADMIN_REQUIRED`,
+`TENANT_RESERVED`, `TENANT_MISMATCH`, `TENANT_REQUIRED`.
+
+`UNAUTHORIZED` … `REQUEST_REJECTED` are **generic fallbacks**, keyed on the HTTP status (401, 403,
+404, 413, 429, and any other 4xx respectively) for an error whose producer set
+no code; a specific code is used where one exists. An unlabelled `400` falls
+back to `INVALID_PAYLOAD`. `INTERNAL_ERROR` is reserved for genuine server
+faults (5xx) — it is in RFC-ACDP-0007 §5's retryable set, so no `4xx` ever
+carries it (#182).
 
 `INVALID_LOG_PROOF` and `INVALID_WITNESS_COSIGNATURE` are deliberately
 distinct (RFC-ACDP-0015 §10): the former indicts a transparency-log proof or
@@ -412,7 +421,7 @@ Returns one agent's capabilities: `{ "data": [ … ], "total": N }`.
 ```
 - `authority` (required) — ACDP authority / hostname.
 - `tenantId` (optional) — defaults to the caller's tenant. Explicitly passing
-  `"default"` is rejected (`403`).
+  `"default"` is rejected (`403 TENANT_RESERVED`).
 - `baseUrl` (optional) — used by the federation proxy.
 - `webhookSecret` (optional, ≥16 chars) — per-registry HMAC secret; omit to use
   the global `WEBHOOK_SECRET`.

@@ -24,7 +24,6 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   HttpCode,
   HttpStatus,
   Logger,
@@ -47,6 +46,8 @@ import {
   RevocationReason,
   RevocationRepository,
 } from './revocation-repository';
+import { AppException } from '../errors/app-exception';
+import { ErrorCode } from '../errors/error-codes';
 import { TokenIssuer } from './token-issuer.service';
 
 const REASONS: RevocationReason[] = [
@@ -161,8 +162,12 @@ export class RevokeController {
         `revoke 403: actor=${req.actorId ?? 'unknown'} ` +
           `actorType=${req.actorType ?? '?'} target_sub=${claims.sub}`,
       );
-      throw new ForbiddenException(
+      // Generic FORBIDDEN, not ADMIN_REQUIRED: a JWT self-revoke passes
+      // this gate without admin, so "admin-only" would misdirect (#182).
+      throw new AppException(
+        ErrorCode.FORBIDDEN,
         'caller is not authorized to revoke this token',
+        HttpStatus.FORBIDDEN,
       );
     }
 

@@ -110,5 +110,6 @@ describe('Agents route shapes (integration)', () => {
     expect((res.body as { message: string }).message).toBe(
       'agent did:web:never-seen.example not found',
     );
+    expect((res.body as { errorCode: string }).errorCode).toBe('AGENT_NOT_FOUND');
   });
 });

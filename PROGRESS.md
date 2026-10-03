@@ -3364,3 +3364,116 @@ PR #178 opened: https://github.com/agentcontextdistributionprotocol/acdp-control
 All 3 required checks green (docker build, jest integration, lint+tsc+jest
 unit). merged #178 (squash commit 4a50761), branch deleted, local main
 fast-forwarded.
+
+## Repo map — error-codes-4xx-182
+
+From `plans/error-codes-4xx-182.md` (issue #182) — reuse, don't re-scan.
+
+- `src/errors/error-codes.ts` — the public `ErrorCode` enum (one-way door).
+- `src/errors/exception.filter.ts` — `GlobalExceptionFilter`, `defaultErrorCode`,
+  `withAcdpEnvelope`; all three defects live here.
+- `src/errors/app-exception.ts` — `AppException(code, message, status, metadata)`;
+  `metadata` → envelope `details`.
+- `src/errors/exception.filter.spec.ts` — unit spec; `:146-159` pins today's bug.
+- `src/auth/auth.guard.ts` — 401s and tenant 403s; `src/tenant/request-tenant.ts` —
+  `assertNotReservedTenant`.
+- `src/auth/throttle-by-user.guard.ts` — library `ThrottlerException` (string body).
+- `src/quota/quota.guard.ts`, `src/policy/policy.guard.ts` — object bodies without
+  `statusCode`, documented legacy `code`.
+- Admin gates: `registries.controller.ts`, `pinned-keys-admin.controller.ts`,
+  `revocation-feed.controller.ts`, `routing.controller.ts`, `revoke.controller.ts`.
+- 404s: `agents.controller.ts`, `runs.controller.ts`, `contexts.controller.ts`.
+- Ingest gating/HMAC: `src/ingest/ingest.service.ts`; run-notify HMAC: `runs.controller.ts`.
+- `src/main.ts:41-45` — body-parser limits + filter registration.
+- `test/integration/error-envelope.integration.spec.ts` — wire-level envelope contract.
+- `scripts/ci-conventions.sh`, `src/ci-conventions.spec.ts` — CI grep rules.
+- Read-only references: `acdp-spec-pinned/rfcs/RFC-ACDP-0007-capabilities.md` §4-§5;
+  `acdp-registry-rs/crates/acdp-registry-types/src/error.rs`;
+  `acdp-ui-console/lib/api/fetcher.ts`, `lib/utils/api-error-messages.ts`.
+- `test/helpers/test-app.ts:203-208` — mirrors main.ts parser/filter wiring (keep in sync).
+
+## Repo map — typescript-7-156
+
+Plan: `plans/typescript-7-156.md` (reviewed 2026-10-03, SOUND after one revision).
+- `tsconfig.json:21` `moduleResolution: "node"` (TS 7 `TS5108`) → Phase 1 `bundler`;
+  `:22-34` TODO comment; `:35` `ignoreDeprecations` (delete); `:6-7` decorators (TS 7 OK).
+- `tsconfig.build.json:13` `tsBuildInfoFile` (still load-bearing under TS 7);
+  `test/tsconfig.test.json` inherits.
+- `scripts/check-build-emit.sh:121` boot-check failure grep (Phase 1 widens it to catch
+  `ERR_PACKAGE_PATH_NOT_EXPORTED` etc.); `:83,88` the double build.
+- `package.json` `typescript`/`ts-jest`/`ts-node`/typescript-eslint/`@nestjs/cli` (all
+  need the TS JS API TS 7.0 lacks); `:13` `migrate` via ts-node; `jest` block (ts-jest,
+  no `moduleNameMapper`).
+- `.github/workflows/ci.yml:55`, `release.yml:44` bare `npx tsc` typecheck (Phase 2);
+  `.github/dependabot.yml:9-15` `typescript` major ignore (Phase 3).
+- `test/integration/shutdown.integration.spec.ts:43-48` ts-node boot (Phase 3 blocker).
+- Cross-plan: lands before `plans/nestjs-12-155.md` Phase 2 (dotenv 18 then typechecks
+  as-is); Nest 12's `@nestjs/swagger` adds a TS<7 peer gate for Phase 3.
+
+## Repo map — nestjs-12-155
+
+From `plans/nestjs-12-155.md` (issue #155) + `plans/dep-migrations-137-closeout.md` — reuse, don't re-scan.
+
+- `package.json:25-29` `@nestjs/*` + throttler, `:39` dotenv, `:57` `@nestjs/testing`,
+  `:18-21` test scripts (Phase 3 adds `--experimental-vm-modules`), `:89-95` coverage gates.
+- `src/main.ts:1` `dotenv/config` (Phase 2 → `./load-env`); `:29-33` `NestFactory.create`;
+  `:83-104` shutdown wiring (`close` cast `:92-93`, forced close `:99-102`).
+- `src/shutdown.ts:114-124` close rejection → `failed`; `:171` `exit(failed ? 1 : 0)` —
+  Nest 12 swallows destroy-hook rejections, so this exits 0 on a failed teardown (OQ1).
+- `src/db/database.service.ts:29-30` `pool.end()`; 15 `OnModuleInit/OnModuleDestroy`
+  implementers (grep) are the collector's candidates.
+- `src/app.module.ts:84-90` `ThrottlerModule.forRootAsync`; `:116-124` four `APP_GUARD`s.
+- `src/auth/throttle-by-user.guard.ts:5-13` (overrides tracker → no IPv6 /64 fix);
+  `src/auth/auth.controller.ts:67,92` `@Throttle` 20/min; spec `auth.controller.spec.ts:107-122`.
+- `src/errors/app-exception.ts:5` `readonly errorCode` (overrides Nest 12's native
+  `HttpException.errorCode?`); `src/errors/exception.filter.ts:100` reads `b.errorCode`.
+- `test/integration/shutdown.integration.spec.ts:41-43` spawns `src/main.ts` via ts-node;
+  `:97-135` SIGTERM/SIGINT/in-flight cases. `test/integration/error-envelope.integration.spec.ts`
+  is the Phase 4 envelope guard (shared with #182).
+- `node_modules/jest-runtime/build/index.js:4442-4444` `supportsSyncEvaluate` gate.
+- `.github/workflows/ci.yml:47,134` Node 26, `:73` unit `npx jest` (Phase 3 → `npm test`),
+  `:138` integration; `.github/dependabot.yml:16-19` (comment wrong for majors), `:24-26`
+  `nestjs` group, `:45-46` `major-updates`; `Dockerfile:13,23` `node:26-bookworm-slim`.
+- Docs: `docs/CONFIGURATION.md:9-12`, `docs/TROUBLESHOOTING.md:388-406`, `docs/README.md:3`,
+  `docs/TESTING.md`, `CLAUDE.md:5,12` (gitignored).
+- Closeout: `plans/dep-migrations-137.md:23,93,259,1103`; `PROGRESS.md:499,1487-1490`.
+
+# Progress — error-codes-4xx-182
+
+Plan: `plans/error-codes-4xx-182.md` (issue #182). Risk: Phase 1-3 complex
+(public `ErrorCode` vocabulary), Phase 4 simple.
+
+PR strategy: two PRs — PR A = Phases 1-2 (fallback vocabulary + filter fixes,
+then admin/tenant/404 specific codes); PR B = Phases 3-4 (credentials/ingest/
+policy/quota codes, docs table + CI rule 7, `Closes #182`). One commit per phase.
+
+### Phase 1 — Status-keyed fallback vocabulary + filter fixes — 2026-10-03
+
+DONE, gate PASS round 1 (fresh Opus). New codes `UNAUTHORIZED`, `FORBIDDEN`,
+`NOT_FOUND`, `PAYLOAD_TOO_LARGE`, `RATE_LIMITED`, `REQUEST_REJECTED`;
+`defaultErrorCode(status)` total over 4xx and keyed on the REAL HTTP status
+(defect 1); string branch uses it (defect 2 — throttler 429 now `RATE_LIMITED`);
+exposed `http-errors` 4xx (body-parser 413/415/…) now answered with their own
+status + warn log instead of a 500 (defect 3 — confirmed test-first: 500 before
+the fix). New `src/errors/error-codes.spec.ts` set-equality pin (verified it
+fails when a code is deleted). Integration: 401/404 codes, over-limit 413,
+throttler 429 + `Retry-After` (own describe, `THROTTLE_LIMIT` restored).
+Gate: tsc both tsconfigs, lint, conventions 6/6, unit 80 suites/1167 passed,
+integration 31 suites/217 passed. Verifier nit applied (log msg wording).
+Files: `src/errors/{error-codes,exception.filter,exception.filter.spec,error-codes.spec}.ts`,
+`test/integration/error-envelope.integration.spec.ts`, `docs/API.md`.
+
+### Phase 2 — 404s + admin/tenant 403s → specific codes — 2026-10-03
+
+DONE, gate PASS round 1 (fresh Opus). New codes `ADMIN_REQUIRED`,
+`TENANT_RESERVED`, `TENANT_MISMATCH`, `TENANT_REQUIRED`; `AGENT_NOT_FOUND`
+minted for the first time; `RUN_NOT_FOUND` (SSE leak guard) and
+`REGISTRY_NOT_FOUND` (federation proxy unknown authority) reused. New
+`src/auth/admin.ts` `assertAdmin(req, message)` used by all five admin gates
+(full-message signature — divergence, see plan). `revoke.controller.ts` →
+generic `FORBIDDEN` (self-revoke passes without admin). All messages/statuses
+byte-identical. Grep AC holds (only policy.guard x2 + ingest.service x2 left).
+Integration: tenant mismatch/reserved, admin-required (pinned-keys, routing,
+enroll), agent 404, SSE leak == missing-run code, cross-tenant registry ==
+unknown-registry code. Gate: tsc both, lint, conventions 6/6, unit 81 suites/
+1171 passed, integration 31 suites/218 passed (217 + the new cross-tenant case).

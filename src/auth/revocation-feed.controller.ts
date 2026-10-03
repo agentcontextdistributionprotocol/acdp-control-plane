@@ -20,7 +20,6 @@
  */
 import {
   Controller,
-  ForbiddenException,
   Get,
   Header,
   HttpCode,
@@ -39,6 +38,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import type { Request } from 'express';
+import { assertAdmin } from './admin';
 import {
   REVOCATION_REPOSITORY,
   RevocationRepository,
@@ -113,9 +113,7 @@ export class RevocationFeedController {
     @Query('since') since?: string,
     @Query('limit') limit?: string,
   ): Promise<RevocationFeedResponseDto> {
-    if (!req.actorIsAdmin) {
-      throw new ForbiddenException('revocation feed is admin-only');
-    }
+    assertAdmin(req, 'revocation feed is admin-only');
     const sinceMs = Number.parseInt(since ?? '0', 10);
     const cap = Number.parseInt(limit ?? '200', 10);
     const { entries, nextCursor } = await this.revocations.listSince(

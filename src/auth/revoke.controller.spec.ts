@@ -1,5 +1,6 @@
  
 import { Test } from '@nestjs/testing';
+import { ErrorCode } from '../errors/error-codes';
 import jwt from 'jsonwebtoken';
 
 import {
@@ -149,6 +150,10 @@ describe('RevokeController', () => {
     await expect(
       controller.revoke({ token: tok, reason: 'admin_revoke' }, nonAdminReq()),
     ).rejects.toThrow(/not authorized/);
+    // Generic FORBIDDEN, never ADMIN_REQUIRED: self-revoke passes without admin.
+    await expect(
+      controller.revoke({ token: tok, reason: 'admin_revoke' }, nonAdminReq()),
+    ).rejects.toMatchObject({ errorCode: ErrorCode.FORBIDDEN, status: 403 });
     expect(await revocations.isRevoked('jti-gated')).toBe(false);
   });
 

@@ -4,8 +4,8 @@ import {
   Get,
   Headers,
   HttpCode,
+  HttpStatus,
   MessageEvent,
-  NotFoundException,
   Param,
   Post,
   Query,
@@ -21,6 +21,8 @@ import { Observable } from 'rxjs';
 import { Public } from '../auth/public.decorator';
 import { AppConfigService } from '../config/app-config.service';
 import { ACDP_EVENT_CONTEXT_PUBLISHED, LineageDag } from '../contracts/acdp';
+import { AppException } from '../errors/app-exception';
+import { ErrorCode } from '../errors/error-codes';
 import { ListEventsQueryDto } from '../dto/list-events-query.dto';
 import { ListRunsQueryDto } from '../dto/list-runs-query.dto';
 import { RunCompleteDto } from '../dto/run-complete.dto';
@@ -147,7 +149,13 @@ export class RunsController {
     // first event arrives); the per-run feed is itself tenant-scoped below,
     // so no cross-tenant events can ever reach this subscriber.
     if (await this.runsService.existsForOtherTenant(runId, tenantId)) {
-      throw new NotFoundException(`run ${runId} not found`);
+      // Same code a genuinely missing run gets (run.repository.ts) — a
+      // distinct code would itself leak cross-tenant existence (#182).
+      throw new AppException(
+        ErrorCode.RUN_NOT_FOUND,
+        `run ${runId} not found`,
+        HttpStatus.NOT_FOUND,
+      );
     }
     const heartbeatMs = this.config.streamSseHeartbeatMs;
 

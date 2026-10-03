@@ -32,6 +32,8 @@ describe('POST /admin/pinned-keys/reload (integration)', () => {
     // NOT in the admin list, so the guard sets actorIsAdmin=false.
     const res = await ctx.client.requestRaw('POST', '/admin/pinned-keys/reload');
     expect(res.status).toBe(403);
+    expect((res.body as { errorCode: string }).errorCode).toBe('ADMIN_REQUIRED');
+    expect((res.body as { message: string }).message).toBe('pinned-keys reload is admin-only');
   });
 
   it('rejects unauthenticated callers with 401', async () => {

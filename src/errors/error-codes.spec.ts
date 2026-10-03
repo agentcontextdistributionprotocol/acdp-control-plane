@@ -1,0 +1,64 @@
+import { ErrorCode } from "./error-codes";
+
+/**
+ * `ErrorCode` is a PUBLIC, one-way surface: clients (the console, the
+ * playground, third parties) branch on these strings, so a rename or removal
+ * is a breaking change and an addition is a permanent name. This spec makes
+ * that mechanical (#182):
+ *
+ *  - the shipped set is pinned by SET-EQUALITY, not superset — adding a code
+ *    without appending it to SHIPPED below fails too, so every new public
+ *    name is a deliberate, reviewed diff line;
+ *  - every value equals its key;
+ *  - every value is SCREAMING_SNAKE, so it can never collide with a
+ *    registry's lowercase RFC-ACDP-0007 §5.1 `error.code` (the console keys
+ *    on exact match across both vocabularies).
+ */
+const SHIPPED: readonly string[] = [
+  "RUN_NOT_FOUND",
+  "REGISTRY_NOT_FOUND",
+  "AGENT_NOT_FOUND",
+  "CONTEXT_NOT_FOUND",
+  "FEDERATION_UPSTREAM_RATE_LIMITED",
+  "CONTEXT_ID_MISMATCH",
+  "CONTEXT_BINDING_UNVERIFIABLE",
+  "INVALID_PAYLOAD",
+  "INVALID_SIGNATURE",
+  "INVALID_LOG_PROOF",
+  "INVALID_WITNESS_COSIGNATURE",
+  "VALIDATION_ERROR",
+  "INTERNAL_ERROR",
+  // #182 Phase 1 — generic status-keyed fallbacks.
+  "UNAUTHORIZED",
+  "FORBIDDEN",
+  "NOT_FOUND",
+  "PAYLOAD_TOO_LARGE",
+  "RATE_LIMITED",
+  "REQUEST_REJECTED",
+  // #182 Phase 2 — authorization / tenancy 403s.
+  "ADMIN_REQUIRED",
+  "TENANT_RESERVED",
+  "TENANT_MISMATCH",
+  "TENANT_REQUIRED",
+];
+
+describe("ErrorCode public surface", () => {
+  const values = Object.values(ErrorCode) as string[];
+
+  it("set-equals the shipped list (no silent rename, removal, or addition)", () => {
+    expect([...values].sort()).toEqual([...SHIPPED].sort());
+    expect(new Set(SHIPPED).size).toBe(SHIPPED.length);
+  });
+
+  it("every value equals its key", () => {
+    for (const [k, v] of Object.entries(ErrorCode)) {
+      expect(v).toBe(k);
+    }
+  });
+
+  it("every value is SCREAMING_SNAKE (never collides with RFC lowercase codes)", () => {
+    for (const v of values) {
+      expect(v).toMatch(/^[A-Z][A-Z0-9_]*$/);
+    }
+  });
+});

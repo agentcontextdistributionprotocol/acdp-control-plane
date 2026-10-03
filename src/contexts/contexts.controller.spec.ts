@@ -2,7 +2,6 @@ import {
   BadGatewayException,
   BadRequestException,
   HttpStatus,
-  NotFoundException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { AppException } from '../errors/app-exception';
@@ -192,7 +191,7 @@ describe('ContextsController', () => {
 
     await expect(
       controller.getContext(CTX_ID, req, fakeRes()),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    ).rejects.toMatchObject({ errorCode: ErrorCode.REGISTRY_NOT_FOUND, status: 404 });
     expect(federationClient.get).not.toHaveBeenCalled();
   });
 
@@ -201,7 +200,7 @@ describe('ContextsController', () => {
 
     await expect(
       controller.getContext(CTX_ID, req, fakeRes()),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    ).rejects.toMatchObject({ errorCode: ErrorCode.REGISTRY_NOT_FOUND, status: 404 });
   });
 
   it('relays upstream status, content-type, and body verbatim on a non-2xx', async () => {

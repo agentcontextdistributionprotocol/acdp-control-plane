@@ -146,6 +146,7 @@ describe('Ingest trust & reliability (integration)', () => {
       body: { authority: 'reg.local', tenantId: 'tenant-x' },
     });
     expect(denied.status).toBe(403);
+    expect((denied.body as { errorCode: string }).errorCode).toBe('ADMIN_REQUIRED');
   });
 
   it('admin can enroll a registry; the secret is never echoed back', async () => {
