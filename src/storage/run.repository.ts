@@ -1,8 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { and, count, desc, eq, inArray, lt, ne, sql, SQL } from 'drizzle-orm';
-import { DatabaseService } from '../db/database.service';
-import { Run, runs } from '../db/schema';
-import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
+import { HttpStatus, Injectable } from "@nestjs/common";
+import { and, count, desc, eq, inArray, lt, ne, sql, SQL } from "drizzle-orm";
+import { DatabaseService } from "../db/database.service";
+import { AppException } from "../errors/app-exception";
+import { ErrorCode } from "../errors/error-codes";
+import { Run, runs } from "../db/schema";
+import { DEFAULT_TENANT_ID } from "../tenant/tenant-context";
 
 export interface ListRunsOptions {
   status?: string;
@@ -43,7 +45,7 @@ export class RunRepository {
         runId,
         tenantId,
         scenarioId,
-        status: 'running',
+        status: "running",
         contextsCount: 1,
         registries: registryAuthority ? [registryAuthority] : [],
       });
@@ -94,7 +96,7 @@ export class RunRepository {
         runId,
         tenantId,
         scenarioId,
-        status: 'running',
+        status: "running",
         ...(startedAt ? { startedAt } : {}),
         ...(inputs ? { inputs } : {}),
       });
@@ -131,7 +133,10 @@ export class RunRepository {
     return this.findByIdOrThrow(runId, tenantId);
   }
 
-  async findById(runId: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Run | null> {
+  async findById(
+    runId: string,
+    tenantId: string = DEFAULT_TENANT_ID,
+  ): Promise<Run | null> {
     const rows = await this.database.db
       .select()
       .from(runs)
@@ -140,9 +145,17 @@ export class RunRepository {
     return rows[0] ?? null;
   }
 
-  async findByIdOrThrow(runId: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Run> {
+  async findByIdOrThrow(
+    runId: string,
+    tenantId: string = DEFAULT_TENANT_ID,
+  ): Promise<Run> {
     const row = await this.findById(runId, tenantId);
-    if (!row) throw new NotFoundException(`run ${runId} not found`);
+    if (!row)
+      throw new AppException(
+        ErrorCode.RUN_NOT_FOUND,
+        `run ${runId} not found`,
+        HttpStatus.NOT_FOUND,
+      );
     return row;
   }
 
@@ -156,7 +169,7 @@ export class RunRepository {
       .delete(runs)
       .where(
         and(
-          inArray(runs.status, ['completed', 'failed', 'cancelled']),
+          inArray(runs.status, ["completed", "failed", "cancelled"]),
           lt(runs.completedAt, cutoffIso),
         ),
       )
