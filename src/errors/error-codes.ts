@@ -54,5 +54,26 @@ export enum ErrorCode {
   // `WitnessAlertReason`.
   INVALID_WITNESS_COSIGNATURE = "INVALID_WITNESS_COSIGNATURE",
   VALIDATION_ERROR = "VALIDATION_ERROR",
+  // RESERVED for genuine server faults (5xx). RFC-ACDP-0007 §5 lists
+  // `internal_error` as RETRYABLE, so a 4xx carrying it makes a client retry a
+  // permanent refusal forever (#182) — the filter never assigns it to a 4xx.
   INTERNAL_ERROR = "INTERNAL_ERROR",
+
+  // Generic status-keyed FALLBACKS (#182), minted by GlobalExceptionFilter for
+  // a 4xx whose body carries no `errorCode`. A specific code always wins where
+  // one exists; these only guarantee no 4xx is ever labelled INTERNAL_ERROR.
+  // SCREAMING_SNAKE like every CP code, so they can never collide with a
+  // registry's lowercase RFC-ACDP-0007 `error.code` vocabulary.
+  /** 401 — generic fallback: credentials missing or rejected. */
+  UNAUTHORIZED = "UNAUTHORIZED",
+  /** 403 — generic fallback: authenticated but not permitted. */
+  FORBIDDEN = "FORBIDDEN",
+  /** 404 — generic fallback: no such route/resource (aligned with RFC `not_found`). */
+  NOT_FOUND = "NOT_FOUND",
+  /** 413 — generic fallback: request body over the configured limit (RFC `payload_too_large`). */
+  PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE",
+  /** 429 — generic fallback: coarse per-principal throttle (RFC `rate_limited`). */
+  RATE_LIMITED = "RATE_LIMITED",
+  /** Any other 4xx (405, 409, 415, 422, …) — generic fallback, never INTERNAL_ERROR. */
+  REQUEST_REJECTED = "REQUEST_REJECTED",
 }
