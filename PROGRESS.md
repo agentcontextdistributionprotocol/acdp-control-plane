@@ -3505,3 +3505,10 @@ a row (verified it fails when a row is deleted). CLAUDE.md Errors convention +
 unit 81 suites/1176 passed, integration 31 suites/218 passed, check:build ok.
 Follow-ups not done (outside this repo): console issue to key copy on the new
 codes; 502 federation code (plan Open question 5).
+
+Final cumulative verify: PASS (fresh Opus, `115606d..HEAD`); its nits applied
+(API.md codes on remaining 404/403 lines, OQ2/OQ5 assumptions logged).
+PR B merged: #185 (squash e83ac9c), all 3 required checks green, branch
+deleted, local main fast-forwarded. Issue #182 CLOSED. 10 ASSUMPTIONS.md
+entries tagged `Plan: plans/error-codes-4xx-182.md`, all UNCONFIRMED, for
+`/reconcile`.
