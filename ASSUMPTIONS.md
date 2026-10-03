@@ -1111,3 +1111,14 @@
   divergence is caught only by re-running Phase 1 criterion 3 by hand.
 - **Blast radius if wrong:** Low — late discovery of TS-7-only type errors.
 - **Status:** UNCONFIRMED
+
+## Throttler 6.7.x eviction/coercion is behaviour-neutral for our config (issue #155)
+- **Plan:** `plans/nestjs-12-155.md` (Phase 1)
+- **Assumed:** throttler 6.7's in-memory expiry eviction, numeric coercion and
+  explicit-`0` handling change nothing observable here: limits are always
+  numbers from `readNumber`, a throttler is always configured, and the tracker
+  is our own override (which also means the 6.7.0 IPv6 `/64` fix is NOT
+  inherited — tracked separately as #187).
+- **Blast radius if wrong:** Low — rate-limit tuning only; 429 contract pinned
+  by the shared integration case.
+- **Status:** UNCONFIRMED
