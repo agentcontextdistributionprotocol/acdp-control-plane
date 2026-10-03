@@ -42,7 +42,9 @@ jobs:
       - run: bash scripts/ci-conventions.sh
       - run: npm run lint -- --max-warnings 0
       - run: npx tsc --noEmit -p tsconfig.json
-      - run: npx jest --testPathIgnorePatterns='/test/integration/' --ci
+      # npm test, not a bare jest call: the script adds --experimental-vm-modules,
+      # which jest needs to require() the ESM-only @nestjs/* 12 packages (#155).
+      - run: npm test -- --testPathIgnorePatterns='/test/integration/' --ci
         env:
           NODE_ENV: test
 

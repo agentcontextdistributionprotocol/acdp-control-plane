@@ -19,6 +19,23 @@ npm run check:conventions         # CI grep rules (no console.*, process.env, ra
 npm run check:build               # build emit shape (builds twice; catches silent no-emit)
 ```
 
+### Why the test scripts run `node --experimental-vm-modules`
+
+Every jest script (`test`, `test:watch`, `test:cov`, `test:integration`) runs
+`node --experimental-vm-modules node_modules/jest/bin/jest.js …`, and CI calls
+`npm test` rather than jest directly, so CI and developers run the same command.
+NestJS 12 ships its packages as ES modules. The app consumes them from CommonJS
+through Node's `require(esm)`, but jest's runtime only takes that path when
+`vm.SourceTextModule` exists, which needs this flag. Without it every suite fails
+to load with `Must use import to load ES Module: …/@nestjs/common/index.js`. Node
+≥ 24.9 is also required. So **`npx jest` on its own will not work** on Nest ≥ 12;
+use the npm scripts. On Nest 12 each run also prints one `ExperimentalWarning: VM
+Modules is an experimental feature` line per worker. That noise is expected.
+
+IDE runners (the VS Code Jest extension, WebStorm's Jest run configs) call jest
+without going through npm. Set `NODE_OPTIONS=--experimental-vm-modules` in the
+runner's environment, or point it at `npm test --`.
+
 Coverage thresholds live in the `jest.coverageThreshold` block in `package.json`
 (statements 70 / branches 58 / functions 55 / lines 70). CI runs the unit suite
 with `--coverage`, so a regression below any threshold fails the build — raise

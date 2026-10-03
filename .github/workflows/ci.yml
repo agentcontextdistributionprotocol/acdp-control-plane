@@ -70,7 +70,12 @@ jobs:
         # loudly if the pinned spec checkout above is ever missing, instead
         # of silently `describe.skip`-ing them (the CP-7 fix — this suite was
         # skipping unnoticed on every CI run before this).
-        run: npx jest --testPathIgnorePatterns='/test/integration/' --ci --coverage
+        #
+        # Through `npm test` (not a bare jest call) so CI runs the exact command
+        # developers do: the script adds `--experimental-vm-modules`, without
+        # which jest cannot require() the ESM-only @nestjs/* 12 packages
+        # (issue #155; see docs/TESTING.md).
+        run: npm test -- --testPathIgnorePatterns='/test/integration/' --ci --coverage
         env:
           NODE_ENV: test
           ACDP_SPEC_DIR: ${{ github.workspace }}/acdp-spec
