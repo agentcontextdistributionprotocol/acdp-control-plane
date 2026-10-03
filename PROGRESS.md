@@ -3578,3 +3578,13 @@ docs, divergence recorded). Plain bump (lock delta = dotenv entry only); no
 New `src/dotenv-preload.spec.ts` (child-process run of the real preload: env
 precedence, missing file, quiet). Gate: tsc both, lint, conventions 7/7,
 check:build ok, unit 82 suites/1179 passed, integration 31 suites/218 passed.
+
+### Phase 3 — jest under `--experimental-vm-modules` — 2026-10-03
+
+DONE, gate PASS round 2 (fresh Opus; round 1 gap: `release.yml` still ran
+`npx jest` — switched to `npm test --`). All four jest scripts run `node
+--experimental-vm-modules node_modules/jest/bin/jest.js`; CI and release unit
+steps go through `npm test`; `grep -rn "npx jest" .github/` → 0.
+`docs/TESTING.md` explains the flag + IDE `NODE_OPTIONS`. Nest 11 baseline with
+the flag: unit 82 suites/1179 passed/4 skipped, 0 ExperimentalWarnings;
+integration 31 suites/218 passed.

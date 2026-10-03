@@ -1130,3 +1130,13 @@
   returned to node10 resolution the TS2882 would come back loudly in `tsc`.
 - **Blast radius if wrong:** Low — one import line; the preload spec pins behaviour.
 - **Status:** UNCONFIRMED
+
+## Jest runs under Node's experimental `--experimental-vm-modules` (issue #155)
+- **Plan:** `plans/nestjs-12-155.md` (Phase 3)
+- **Assumed:** tying the test harness to an experimental Node flag is acceptable
+  debt until jest supports `require(esm)` without it or the build moves to ESM;
+  alternatives (`transformIgnorePatterns` down-compiling `@nestjs/*`, Vitest)
+  diverge from production's `require(esm)` or migrate frameworks.
+- **Blast radius if wrong:** Medium — a Node release changing/removing the flag
+  breaks every test run (loudly).
+- **Status:** UNCONFIRMED

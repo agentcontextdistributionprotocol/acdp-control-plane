@@ -15,10 +15,10 @@
     "lint": "eslint \"{src,test}/**/*.ts\" --max-warnings 0",
     "check:conventions": "bash scripts/ci-conventions.sh",
     "check:build": "bash scripts/check-build-emit.sh",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:cov": "jest --coverage",
-    "test:integration": "jest --config test/jest.integration.config.ts --runInBand"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:cov": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config test/jest.integration.config.ts --runInBand"
   },
   "dependencies": {
     "@agentcontextdistributionprotocol/acdp": "^0.14.1",
