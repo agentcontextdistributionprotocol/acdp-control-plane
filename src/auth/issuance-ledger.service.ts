@@ -29,12 +29,13 @@
  * cannot break /auth/token. Operators monitor the warning logs
  * and the `verifyChain()` job for chain breaks.
  */
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { AppConfigService } from '../config/app-config.service';
 import { DatabaseService } from '../db/database.service';
 import { issuanceLedger } from '../db/schema';
+import { ShutdownFailures } from '../shutdown-failures';
 
 export type IssuanceDecision =
   | 'mint'
@@ -80,6 +81,7 @@ export class IssuanceLedgerService implements OnModuleDestroy {
   constructor(
     private readonly config: AppConfigService,
     private readonly db: DatabaseService,
+    @Optional() private readonly shutdownFailures?: ShutdownFailures,
   ) {}
 
   /**
@@ -114,7 +116,14 @@ export class IssuanceLedgerService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.drain();
+    // Tracked so a failed final drain (an unwritten audit-trail entry) fails
+    // the exit code (#155). drain() itself never rejects today — each queued
+    // write already catches and logs — so this guards future changes.
+    if (this.shutdownFailures) {
+      await this.shutdownFailures.track('issuance ledger drain', () => this.drain());
+    } else {
+      await this.drain();
+    }
   }
 
   /**

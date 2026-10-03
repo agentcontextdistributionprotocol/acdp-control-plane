@@ -1,8 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { AppConfigService } from '../config/app-config.service';
+import { ShutdownFailures } from '../shutdown-failures';
 import * as schema from './schema';
 
 @Injectable()
@@ -12,7 +13,12 @@ export class DatabaseService implements OnModuleDestroy {
   readonly db: NodePgDatabase<typeof schema>;
   hasFatalError = false;
 
-  constructor(config: AppConfigService) {
+  constructor(
+    config: AppConfigService,
+    // Optional so unit specs can construct the service bare; the app always
+    // provides it (ShutdownFailuresModule is global).
+    @Optional() private readonly shutdownFailures?: ShutdownFailures,
+  ) {
     this.pool = new Pool({
       connectionString: config.databaseUrl,
       max: config.dbPoolMax,
@@ -27,7 +33,13 @@ export class DatabaseService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.pool.end();
+    // Tracked: under NestJS 12 a rejection here no longer rejects app.close(),
+    // so without the collector a failed pool shutdown would exit 0 (#155).
+    if (this.shutdownFailures) {
+      await this.shutdownFailures.track('database pool', () => this.pool.end());
+    } else {
+      await this.pool.end();
+    }
   }
 
   async tryAdvisoryLock(key: string): Promise<boolean> {

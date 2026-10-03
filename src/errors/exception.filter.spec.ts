@@ -1,4 +1,4 @@
-import { ArgumentsHost, HttpException, HttpStatus } from "@nestjs/common";
+import { ArgumentsHost, HttpException, HttpStatus, NotFoundException } from "@nestjs/common";
 import { AppException } from "./app-exception";
 import { ErrorCode } from "./error-codes";
 import { defaultErrorCode, GlobalExceptionFilter } from "./exception.filter";
@@ -177,6 +177,30 @@ describe("GlobalExceptionFilter", () => {
       code: ErrorCode.INVALID_PAYLOAD,
       message: ["name must be a string"],
     });
+  });
+
+  it("honours a NestJS 12 framework-native errorCode on a built-in exception — #155", () => {
+    // Nest 12 added HttpExceptionOptions.errorCode: built-ins stamp it into
+    // their string-constructed body. The filter must keep it rather than
+    // overwrite it with the status-keyed fallback (NOT_FOUND).
+    filter.catch(
+      new NotFoundException("agent gone", { errorCode: ErrorCode.AGENT_NOT_FOUND }),
+      host(),
+    );
+    expect(res.status).toHaveBeenCalledWith(HttpStatus.NOT_FOUND);
+    const body = res.json.mock.calls[0][0];
+    expect(body.errorCode).toBe(ErrorCode.AGENT_NOT_FOUND);
+    expect(body.error).toEqual({
+      code: ErrorCode.AGENT_NOT_FOUND,
+      message: "agent gone",
+    });
+  });
+
+  it("keeps AppException's own errorCode despite the Nest 12 base-class field of the same name — #155", () => {
+    const ex = new AppException(ErrorCode.RUN_NOT_FOUND, "no such run", HttpStatus.NOT_FOUND);
+    expect(ex.errorCode).toBe(ErrorCode.RUN_NOT_FOUND);
+    filter.catch(ex, host());
+    expect(res.json.mock.calls[0][0].errorCode).toBe(ErrorCode.RUN_NOT_FOUND);
   });
 
   it("leaves an already-enveloped (object error) body untouched", () => {

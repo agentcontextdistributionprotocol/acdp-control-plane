@@ -36,6 +36,7 @@ import { IngestService } from './ingest/ingest.service';
 import { MetricsController } from './metrics/metrics.controller';
 import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware';
 import { RequestLoggerMiddleware } from './middleware/request-logger.middleware';
+import { ShutdownFailuresModule } from './shutdown-failures';
 import { PolicyModule } from './policy/policy.module';
 import { PolicyGuard } from './policy/policy.guard';
 import { QuotaModule } from './quota/quota.module';
@@ -69,6 +70,9 @@ import { WitnessSigningService } from './witness/witness-signing.service';
 
 @Module({
   imports: [
+    // Global, and first: every resource-owning destroy hook records its
+    // failures here so main.ts can exit 1 on a failed teardown (#155).
+    ShutdownFailuresModule,
     ConfigModule,
     DatabaseModule,
     // PinnedKeysModule is @Global() and must be imported before AuthModule so

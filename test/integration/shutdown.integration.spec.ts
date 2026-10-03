@@ -36,16 +36,22 @@ interface RunningApp {
   output: () => string;
 }
 
-async function startApp(env: Record<string, string> = {}): Promise<RunningApp> {
+/** The production entrypoint, compiled against the build tsconfig (see above). */
+const MAIN = { entry: join(REPO_ROOT, 'src', 'main.ts'), project: 'tsconfig.build.json' };
+
+async function startApp(
+  env: Record<string, string> = {},
+  target: { entry: string; project: string } = MAIN,
+): Promise<RunningApp> {
   let output = '';
   const child = spawn(
     process.execPath,
-    ['-r', 'ts-node/register/transpile-only', join(REPO_ROOT, 'src', 'main.ts')],
+    ['-r', 'ts-node/register/transpile-only', target.entry],
     {
       cwd: REPO_ROOT,
       env: {
         ...process.env,
-        TS_NODE_PROJECT: join(REPO_ROOT, 'tsconfig.build.json'),
+        TS_NODE_PROJECT: join(REPO_ROOT, target.project),
         NODE_ENV: 'development',
         HOST: '127.0.0.1',
         PORT: String(PORT),
@@ -124,6 +130,28 @@ describe('graceful shutdown (real process, real signal)', () => {
 
     expect(code).toBe(0);
     expect(app.output()).not.toContain('Called end on pool more than once');
+  });
+
+  it('exits 1 when a destroy hook fails, even though Nest 12 no longer rejects close()', async () => {
+    // Issue #155. NestJS 12 runs onModuleDestroy hooks under Promise.allSettled
+    // and only LOGS a rejection, so app.close() resolves even when pool.end()
+    // throws. Exit 0 would then be reported for a failed teardown. The fixture
+    // boots AppModule through the production bootstrap() and makes the REAL
+    // DatabaseService teardown fail (pool.end() closes the pool, then rejects).
+    // `test/tsconfig.test.json` because the fixture lives outside src/ (rootDir).
+    app = await startApp(
+      {},
+      {
+        entry: join(REPO_ROOT, 'test', 'fixtures', 'faulty-teardown.main.ts'),
+        project: join('test', 'tsconfig.test.json'),
+      },
+    );
+
+    app.child.kill('SIGTERM');
+    const code = await exitCodeWithin(app.child, 20_000);
+
+    expect(app.output()).toContain('injected teardown failure (test fixture)');
+    expect(code).toBe(1);
   });
 
   it('does not hang when a connection is still in flight — it forces the exit', async () => {

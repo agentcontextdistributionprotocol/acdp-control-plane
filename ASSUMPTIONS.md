@@ -1140,3 +1140,23 @@
 - **Blast radius if wrong:** Medium — a Node release changing/removing the flag
   breaks every test run (loudly).
 - **Status:** UNCONFIRMED
+
+## Only the four resource-owning destroy hooks feed the exit-code collector (issue #155)
+- **Plan:** `plans/nestjs-12-155.md` (Phase 4, Open question 1 option b)
+- **Assumed:** `DatabaseService`, `IssuanceLedgerService`, `QuotaModule` and
+  `StreamHubService` are the only hooks releasing external resources; the other
+  nine only clear timers/caches. Redis teardowns keep swallowing `quit()` errors
+  (a dead transport must not fail shutdown), so a Redis quit failure still exits
+  0. The collector is `@Optional()` in those classes so unit specs can construct
+  them bare; the shutdown integration case is the wiring guard.
+- **Blast radius if wrong:** Medium — a future resource-owning hook that skips
+  `ShutdownFailures.track()` exits 0 on a failed teardown under Nest 12.
+- **Status:** UNCONFIRMED
+
+## ExperimentalWarning lines stay visible in test output (issue #155)
+- **Plan:** `plans/nestjs-12-155.md` (Phase 3 → Phase 4 decision)
+- **Assumed:** 13 `VM Modules is an experimental feature` lines per unit run do
+  not obscure CI output, and `--disable-warning=ExperimentalWarning` would also
+  hide unrelated experimental-feature warnings, so it is not added.
+- **Blast radius if wrong:** Low — log noise only.
+- **Status:** UNCONFIRMED

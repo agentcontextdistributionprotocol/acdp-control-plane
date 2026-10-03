@@ -3588,3 +3588,23 @@ steps go through `npm test`; `grep -rn "npx jest" .github/` → 0.
 `docs/TESTING.md` explains the flag + IDE `NODE_OPTIONS`. Nest 11 baseline with
 the flag: unit 82 suites/1179 passed/4 skipped, 0 ExperimentalWarnings;
 integration 31 suites/218 passed.
+
+### Phase 4 — atomic Nest 12 bump + shutdown exit-code collector — 2026-10-03
+
+DONE, solo gate PASS round 1 (fresh Opus; nit applied: log on a throwing
+`hookFailed` probe). `@nestjs/{common,core,platform-express,testing}` 12.1.2 and
+swagger 12.0.2 in one edit; `npm ls` one copy each, throttler 6.7.1, express
+5.2.1 / path-to-regexp 8.4.2 unchanged. Nest 12 swallows destroy-hook
+rejections (`allSettled` + `Logger.error`), so `src/shutdown-failures.ts`
+collects them from the four resource-owning hooks and `src/bootstrap.ts` (main.ts
+body moved there) passes `hookFailed: () => failures.any()` into the shutdown
+handler → exit 1 on a failed teardown. Red-first: new integration case with
+`test/fixtures/faulty-teardown.main.ts` (real `pool.end()` made to reject)
+exited 0 on the bump alone, 1 after. Unit specs for the collector, each hook,
+the handler input, and the filter honouring Nest 12's native
+`HttpException` `errorCode`. Gate: tsc both, lint, conventions 7/7, check:build
+ok, unit 83 suites/1200 passed (coverage 76.81/69.71/64.53/77.57, 13
+ExperimentalWarnings — kept visible), integration 31 suites/219 passed. Built
+`dist/main.js` smoke: /healthz 200, /docs 200, `/docs-json` openapi 3.0.0 +
+`next_cursor` nullable, SSE 200 `text/event-stream`, `THROTTLE_LIMIT=5` → 5×200
+then 429 `RATE_LIMITED` + `Retry-After: 60`, SIGTERM exit 0, no double pool end.
