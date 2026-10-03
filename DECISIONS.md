@@ -529,3 +529,53 @@ because it sets an internal API shape that later code will copy.
   flipped from `NEEDS-CHANGE` to `CONFIRMED` in the same pass. No new
   `ASSUMPTIONS.md` entries logged — the plan's one Open Question (tally on both
   outcome branches) was decided directly by Opus in the plan itself.
+
+## Reconcile: plans #182 (error codes), #156 Phase 1 (bundler), #155 (NestJS 12) — 2026-10-03
+Scope: the 18 `UNCONFIRMED` `ASSUMPTIONS.md` entries tagged to those three plans.
+Analysis: Fable for the two genuine one-way doors; one Opus agent for the other 13;
+four were pre-decided by the user.
+
+### Decided by the user (after Fable analysis) — both CONFIRMED
+- **Generic 4xx fallback codes are CP-local SCREAMING_SNAKE names.** Fable: confirm.
+  The registry's vocabulary is lowercase snake_case by mandate (RFC-ACDP-0007 §5.1),
+  and the console reads `errorCode`/`error.code` into one field with an exact lookup
+  across both vocabularies, so upper-case is what keeps the sets disjoint; console
+  tests already key on `FORBIDDEN`/`NOT_FOUND`, so a rename is breaking. Wording fix:
+  alignment is to HTTP reason phrases (RFC 403 is `not_authorized`; CP chose
+  `FORBIDDEN` deliberately so the generic 403 does not inherit registry semantics).
+- **Ingest enrollment codes answered before HMAC.** Fable: confirm. The same 403s with
+  the same messages were returned pre-#182 before HMAC, so the codes add no
+  information; the bounded leak is the enabled/enrolled state of a NAMED authority
+  (no tenant, no secret). Deferring the throws until after HMAC would make
+  `REGISTRY_NOT_ENROLLED` effectively unreachable (an unenrolled authority has no
+  per-registry secret). Correction to the entry: "verify HMAC first" is ~10 lines,
+  not a redesign — it is rejected on the merits, not on cost.
+
+### Decided by the user earlier (recorded)
+`REQUEST_REJECTED` as the generic-4xx name; reserved-tenant stays 403 (registry
+returns 400); `engines.node >=24.15` (supersedes the older "no engines field" entry);
+TS 7 typecheck gate (#156 Phase 2) deferred — still `UNCONFIRMED`/deferred; note
+TypeScript 7.0.2 is now `latest`, so the gate is cheaper and worth revisiting.
+
+### Settled by Opus (reversible) — 12 CONFIRMED, 1 NEEDS-CHANGE
+CONFIRMED: http-errors exposed-4xx passthrough (`exception.filter.ts:134-150`);
+revoke 403 generic `FORBIDDEN` (admin-OR-self, `revoke.controller.ts:165-169`);
+`assertAdmin` takes the full message (6 call sites); `POLICY_DENIED` shared by deny
+and indeterminate (additive to split later); policy/quota bodies labelled in place
+(moving to `AppException` would break the legacy shape); CI rule 7 scoped to
+403/404; `moduleResolution: bundler` (`tsconfig.json:3,21`); throttler 6.7.x
+behaviour-neutral (IPv6 gap tracked as #187); keep `import 'dotenv/config'`
+(stands or falls with bundler); Jest `--experimental-vm-modules` kept (tracking issue
+#201 to drop it when Jest supports it natively); four resource-owning destroy hooks
+only feed the exit-code collector (guard comment added in `src/shutdown-failures.ts`:
+any new resource-owning hook must call `track()`); ExperimentalWarning noise kept
+visible (a blanket `--disable-warning` would hide unrelated warnings).
+NEEDS-CHANGE (non-blocking, reversible): federation proxy 502 reports
+`INTERNAL_ERROR` (`contexts.controller.ts:92`) — follow-up #200.
+
+### Summary
+12 confirmed by Opus + 2 by the user (this pass) + 2 pre-decided by the user
+(reserved-tenant 403, engines) + `REQUEST_REJECTED` folded into the generic-code entry;
+1 NEEDS-CHANGE (#200, not a ship blocker); 1 deferred (TS 7 gate). 12 of 18 were settled
+without the user's input. Code follow-up: the one-line guard comment in
+`src/shutdown-failures.ts` (PR below).

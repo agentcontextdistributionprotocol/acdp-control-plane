@@ -985,7 +985,7 @@
   true only for 4xx by design, which is exactly the leak boundary needed.
 - **Blast radius if wrong:** Low. Worst case a dependency's exposed 4xx message
   reaches a client — the producer already declared it client-safe.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus; see DECISIONS.md
 
 ## Generic 4xx fallback codes are CP-local SCREAMING_SNAKE names (Phase 1, issue #182)
 - **Plan:** `plans/error-codes-4xx-182.md`
@@ -999,7 +999,7 @@
   vocabulary in the console's exact-match lookup); `BAD_REQUEST`/`CLIENT_ERROR`.
 - **Blast radius if wrong:** Medium — `ErrorCode` values are a one-way public
   surface; renaming later is a breaking change.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by the user after Fable analysis; alignment is to HTTP reason phrases, not the RFC word (RFC 403 is `not_authorized`); see DECISIONS.md
 
 ## Revoke 403 uses generic FORBIDDEN, not ADMIN_REQUIRED (Phase 2, issue #182)
 - **Plan:** `plans/error-codes-4xx-182.md`
@@ -1011,7 +1011,7 @@
   `REVOKE_FORBIDDEN` (another permanent name for one route).
 - **Blast radius if wrong:** Low — a specific code can be added later; the
   generic one stays accurate.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Admin-gate helper takes the full client-visible message (Phase 2, issue #182)
 - **Plan:** `plans/error-codes-4xx-182.md`
@@ -1021,7 +1021,7 @@
 - **Alternatives:** template + change the routing message (a message change the
   plan forbids); template with an override parameter (two ways to call it).
 - **Blast radius if wrong:** Low — internal helper signature.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Ingest enrollment codes are answered before HMAC verification (Phase 3, issue #182)
 - **Plan:** `plans/error-codes-4xx-182.md`
@@ -1036,7 +1036,7 @@
   generic `FORBIDDEN` (loses the operator remedy).
 - **Blast radius if wrong:** Low — an enrollment-status oracle that already
   existed via the message.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by the user after Fable analysis; bounded leak (enabled/enrolled state of a named authority) predates #182; deferring the throws would make REGISTRY_NOT_ENROLLED unreachable; see DECISIONS.md
 
 ## Policy deny and indeterminate share POLICY_DENIED (Phase 3, issue #182)
 - **Plan:** `plans/error-codes-4xx-182.md` (Open question 4)
@@ -1045,7 +1045,7 @@
 - **Chose:** one `POLICY_DENIED`; a `POLICY_INDETERMINATE` can be added later
   without breaking anyone (removing one later would).
 - **Blast radius if wrong:** Low — additive fix.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Policy/quota bodies labelled in place, adding a top-level `metadata` (Phase 3, issue #182)
 - **Plan:** `plans/error-codes-4xx-182.md`
@@ -1056,7 +1056,7 @@
   fields under `metadata` — breaking). 401 per-reason codes on the challenge/
   token path were NOT added (Open question 3: an oracle for attackers).
 - **Blast radius if wrong:** Low — purely additive fields.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## CI rule 7 bans only NotFound/Forbidden, not every Nest built-in (Phase 4, issue #182)
 - **Plan:** `plans/error-codes-4xx-182.md` (Open question 6)
@@ -1069,7 +1069,7 @@
   churn); spec-only coverage (cannot stop a new admin route from returning
   generic `FORBIDDEN`).
 - **Blast radius if wrong:** Low — a CI rule, reversible.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Reserved-tenant assertion stays 403, diverging from the registry's 400 (issue #182)
 - **Plan:** `plans/error-codes-4xx-182.md` (Open question 2)
@@ -1080,7 +1080,7 @@
   from the requester for #182; parity is a separate decision.
 - **Blast radius if wrong:** Medium — changing the status later is a
   client-visible break.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by the user (pre-made decision)
 
 ## The federation proxy's 502 still reports INTERNAL_ERROR (issue #182 scope)
 - **Plan:** `plans/error-codes-4xx-182.md` (Open question 5)
@@ -1089,7 +1089,7 @@
   `INTERNAL_ERROR` (retryable, which is not wrong for a 502) until a follow-up
   mints a code aligned with RFC-ACDP-0007 `cross_registry_resolution_failed`.
 - **Blast radius if wrong:** Low — retryable code on a retryable status.
-- **Status:** UNCONFIRMED
+- **Status:** NEEDS-CHANGE — follow-up issue #200 (mint an upstream-failure code); not a ship blocker (reversible, additive)
 
 ## `moduleResolution: "bundler"` is the resting point for the CJS build (issue #156)
 - **Plan:** `plans/typescript-7-156.md` (Phase 1)
@@ -1102,7 +1102,7 @@
 - **Alternatives:** `node16`/`nodenext` (4 errors, changes emit — native
   `import()` in CJS); omit the option (implicit default could move).
 - **Blast radius if wrong:** Low — one config line, reversible; emit unchanged.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Phase 2 (TS 7 typecheck gate) deferred, not rejected (issue #156)
 - **Plan:** `plans/typescript-7-156.md` (Open question 1)
@@ -1110,7 +1110,7 @@
   (npm alias `@typescript/native`) awaits a human call. Until then a TS-7-only
   divergence is caught only by re-running Phase 1 criterion 3 by hand.
 - **Blast radius if wrong:** Low — late discovery of TS-7-only type errors.
-- **Status:** UNCONFIRMED
+- **Status:** UNCONFIRMED — DEFERRED (2026-10-03) by the user's scoping; TS 7.0.2 is now GA so the gate is cheaper; revisit when #156 resumes
 
 ## Throttler 6.7.x eviction/coercion is behaviour-neutral for our config (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 1)
@@ -1121,7 +1121,7 @@
   inherited — tracked separately as #187).
 - **Blast radius if wrong:** Low — rate-limit tuning only; 429 contract pinned
   by the shared integration case.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Keep `import 'dotenv/config'` instead of a `src/load-env.ts` loader (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 2)
@@ -1129,7 +1129,7 @@
   typings resolve, so the planned loader module adds nothing. If the repo ever
   returned to node10 resolution the TS2882 would come back loudly in `tsc`.
 - **Blast radius if wrong:** Low — one import line; the preload spec pins behaviour.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus; stands or falls with the bundler entry
 
 ## Jest runs under Node's experimental `--experimental-vm-modules` (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 3)
@@ -1139,7 +1139,7 @@
   diverge from production's `require(esm)` or migrate frameworks.
 - **Blast radius if wrong:** Medium — a Node release changing/removing the flag
   breaks every test run (loudly).
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus; tracking issue #201 to drop the flag
 
 ## Only the four resource-owning destroy hooks feed the exit-code collector (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 4, Open question 1 option b)
@@ -1151,7 +1151,7 @@
   them bare; the shutdown integration case is the wiring guard.
 - **Blast radius if wrong:** Medium — a future resource-owning hook that skips
   `ShutdownFailures.track()` exits 0 on a failed teardown under Nest 12.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus; guard comment added in src/shutdown-failures.ts
 
 ## ExperimentalWarning lines stay visible in test output (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 3 → Phase 4 decision)
@@ -1159,7 +1159,7 @@
   not obscure CI output, and `--disable-warning=ExperimentalWarning` would also
   hide unrelated experimental-feature warnings, so it is not added.
 - **Blast radius if wrong:** Low — log noise only.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## `engines.node` is ">=24.15", and Dependabot excludes `@nestjs/*` from catch-alls (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 5, Open questions 4 and 5)
@@ -1171,4 +1171,4 @@
   documented first-match rule). `reflect-metadata` stays outside the group.
 - **Blast radius if wrong:** Low — a mis-grouped Dependabot PR (observable on
   the next monthly run) or an install warning.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-03) — decided by the user (pre-made decision); supersedes the earlier "Not declaring an engines field" entry

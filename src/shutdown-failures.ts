@@ -18,6 +18,9 @@ export interface ShutdownFailure {
  * Nest 12 exited 0. Under Nest 11 it exited 1. An orchestrator could no longer
  * tell a broken shutdown from a clean one.
  *
+ * GUARD (reconcile 2026-10-03): any NEW `onModuleDestroy` that releases an external
+ * resource MUST route its teardown through {@link track}, or its failure exits 0.
+ *
  * Each destroy hook that releases an EXTERNAL resource (a pg pool, a Redis
  * client, a durable write queue) runs its teardown through {@link track}.
  * `track` records the failure here and rethrows it, so Nest's own logging, and
