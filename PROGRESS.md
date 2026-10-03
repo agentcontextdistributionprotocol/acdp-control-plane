@@ -496,7 +496,7 @@ across a mixed bump. Each PR goes through `/ship` in full before the next phase 
 | 7 | `ioredis` 5 → 6 | Medium-high runtime — RESP3 default; unit spec mocks client away |
 | 8 | `typescript` 5.7 → 6.0.3 | Highest — 4 config-level breaks, plus a genuinely silent second-build no-emit regression the mitigations themselves introduced |
 | 9 | `@nestjs/cli` + `@nestjs/schematics` 11 → 12 (build tooling only) | Medium — not throttler-blocked; dependency hygiene (drops a redundant nested `typescript`). *Originally "removes the TS compiler split" — that split never existed; see Phase 8.* |
-| — | **NestJS 12 (runtime)** | **BLOCKED upstream — no phase** |
+| — | **NestJS 12 (runtime)** | **BLOCKED upstream — no phase** → **DONE via #155** (`plans/nestjs-12-155.md`, PRs #188/#189/#190/#194) |
 
 **Corrections to issue #137 carried by this plan** (all verified empirically, not assumed):
 1. NestJS 12 is hard-blocked by `@nestjs/throttler` (no v7; peers cap at `@nestjs/common ^11`).
@@ -3631,3 +3631,47 @@ cumulative verify PASS round 2 (fresh Opus). Issue #155 CLOSED. #137/#156
 untouched. Pending observation: Dependabot config validation and the first
 post-merge npm run grouping; 6 ASSUMPTIONS.md entries tagged
 `Plan: plans/nestjs-12-155.md`, UNCONFIRMED, for `/reconcile`.
+
+## Issue #137 closeout (`plans/dep-migrations-137-closeout.md`) — 2026-10-03
+
+Issue #137 closed; #155 confirmed CLOSED (by #194); #156 left OPEN. Re-verified
+all 18 PR #133 packages on `main` @ 79057f5 after `npm ci` (scratch script, not
+committed), independently confirmed by a fresh Opus verifier:
+
+```
+PASS 1 @nestjs/common pkg=^12.1.2 lock=12.1.2
+PASS 2 @nestjs/core pkg=^12.1.2 lock=12.1.2
+PASS 3 @nestjs/platform-express pkg=^12.1.2 lock=12.1.2
+PASS 4 @nestjs/swagger pkg=^12.0.2 lock=12.0.2
+PASS 5 express pkg=5.2.1 lock=5.2.1
+PASS 6 ioredis pkg=^6.0.0 lock=6.0.0
+PASS 7 pino pkg=^10.3.1 lock=10.3.1
+PASS 8 pino-http pkg=absent lock=absent
+PASS 9 uuid pkg=absent lock=absent
+PASS 10 @nestjs/cli pkg=^12.0.0 lock=12.0.0 (dev)
+PASS 11 @nestjs/schematics pkg=^12.0.1 lock=12.0.1 (dev)
+PASS 12 @nestjs/testing pkg=^12.1.2 lock=12.1.2 (dev)
+PASS 13 @types/node pkg=^26.5.1 lock=26.5.1
+PASS 14 @types/supertest pkg=absent lock=absent
+PASS 15 eslint pkg=^10.10.0 lock=10.10.0 (dev)
+PASS 16 eslint-config-prettier pkg=^10.1.8 lock=10.1.8 (dev)
+PASS 17 jest pkg=^30.5.1 lock=30.5.1 (dev)
+PASS 18 @types/jest pkg=^30.0.0 lock=30.0.0 (dev)
+throttler ^6.7.1 6.7.1
+18 PASS, 0 FAIL
+```
+
+`npm ls --all` exit 0, `npm ci --dry-run` exit 0; dead-dep grep
+(`uuid`/`pino-http`/`nestjs-pino`/`supertest` in src+test) 0 hits;
+`tsconfig-paths@4.2.0` still present transitively via `@nestjs/cli` (direct
+declaration removed, as #137 meant). Checks: tsc both configs, lint,
+conventions, check:build ok; unit 83 suites/1200 passed (4 skipped);
+integration 31 suites/219 passed. Plan statuses marked (local, gitignored):
+`dep-migrations-137.md` blocker annotated as superseded,
+`nestjs-12-155.md` phases carry merge SHAs/PRs, closeout plan DONE.
+Re-run after rebasing onto f438d55 (#195, Dependabot `nestjs` group: `@nestjs/cli`
+12.0.0→12.0.8, `@nestjs/schematics` 12.0.1→12.0.6): still 18 PASS / 0 FAIL, `npm ci` +
+`npm ls --all` + check:build ok — and the first post-#194 Dependabot run landed `@nestjs/*`
+in the `nestjs` group, not `major-updates`, as Phase 5 of #155 intended.
+Bookkeeping: 18 ASSUMPTIONS.md entries UNCONFIRMED (#182: 10, #156: 2,
+#155: 6) — left for `/reconcile`.
