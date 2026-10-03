@@ -58,6 +58,8 @@ describe('Federation proxy (integration)', () => {
 
     const resp = await ctx.client.requestRaw('GET', CTX_PATH);
     expect(resp.status).toBe(404); // unknown base_url, nothing to proxy to
+    // #182: REGISTRY_NOT_FOUND, not CONTEXT_NOT_FOUND — no context was looked up.
+    expect((resp.body as { errorCode: string }).errorCode).toBe('REGISTRY_NOT_FOUND');
   });
 
   it('propagates registry_base_url from the payload, then SSRF-blocks loopback (502)', async () => {

@@ -76,4 +76,15 @@ export enum ErrorCode {
   RATE_LIMITED = "RATE_LIMITED",
   /** Any other 4xx (405, 409, 415, 422, …) — generic fallback, never INTERNAL_ERROR. */
   REQUEST_REJECTED = "REQUEST_REJECTED",
+
+  // Specific authorization / tenancy 403s (#182). Each names a distinct
+  // operator remedy, so they are deliberately NOT one TENANT_FORBIDDEN code.
+  /** 403 — the route requires an admin API key (`assertAdmin`). */
+  ADMIN_REQUIRED = "ADMIN_REQUIRED",
+  /** 403 — the reserved `default` tenant was explicitly asserted; stop naming it. */
+  TENANT_RESERVED = "TENANT_RESERVED",
+  /** 403 — `X-Tenant-Id` disagrees with the JWT claim / key-bound tenant; fix the header. */
+  TENANT_MISMATCH = "TENANT_MISMATCH",
+  /** 403 — AUTH_REQUIRE_TENANT strict mode and no bound tenant; bind the key or claim. */
+  TENANT_REQUIRED = "TENANT_REQUIRED",
 }

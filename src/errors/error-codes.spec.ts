@@ -35,6 +35,11 @@ const SHIPPED: readonly string[] = [
   "PAYLOAD_TOO_LARGE",
   "RATE_LIMITED",
   "REQUEST_REJECTED",
+  // #182 Phase 2 — authorization / tenancy 403s.
+  "ADMIN_REQUIRED",
+  "TENANT_RESERVED",
+  "TENANT_MISMATCH",
+  "TENANT_REQUIRED",
 ];
 
 describe("ErrorCode public surface", () => {

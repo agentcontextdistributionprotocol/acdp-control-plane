@@ -40,9 +40,10 @@ All non-`2xx` responses use a consistent shape (normalized by
 `CONTEXT_BINDING_UNVERIFIABLE`, `INVALID_PAYLOAD`, `INVALID_SIGNATURE`,
 `INVALID_LOG_PROOF`, `INVALID_WITNESS_COSIGNATURE`, `VALIDATION_ERROR`,
 `INTERNAL_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`,
-`PAYLOAD_TOO_LARGE`, `RATE_LIMITED`, `REQUEST_REJECTED`.
+`PAYLOAD_TOO_LARGE`, `RATE_LIMITED`, `REQUEST_REJECTED`, `ADMIN_REQUIRED`,
+`TENANT_RESERVED`, `TENANT_MISMATCH`, `TENANT_REQUIRED`.
 
-The last six are **generic fallbacks**, keyed on the HTTP status (401, 403,
+`UNAUTHORIZED` … `REQUEST_REJECTED` are **generic fallbacks**, keyed on the HTTP status (401, 403,
 404, 413, 429, and any other 4xx respectively) for an error whose producer set
 no code; a specific code is used where one exists. An unlabelled `400` falls
 back to `INVALID_PAYLOAD`. `INTERNAL_ERROR` is reserved for genuine server
@@ -420,7 +421,7 @@ Returns one agent's capabilities: `{ "data": [ … ], "total": N }`.
 ```
 - `authority` (required) — ACDP authority / hostname.
 - `tenantId` (optional) — defaults to the caller's tenant. Explicitly passing
-  `"default"` is rejected (`403`).
+  `"default"` is rejected (`403 TENANT_RESERVED`).
 - `baseUrl` (optional) — used by the federation proxy.
 - `webhookSecret` (optional, ≥16 chars) — per-registry HMAC secret; omit to use
   the global `WEBHOOK_SECRET`.

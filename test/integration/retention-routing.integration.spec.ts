@@ -58,6 +58,8 @@ describe('Retention & routing (integration)', () => {
     const nonAdmin = new TestClient(ctx.url, 'test-key');
     const denied = await nonAdmin.requestRaw('GET', '/routing/stats');
     expect(denied.status).toBe(403);
+    expect((denied.body as { errorCode: string }).errorCode).toBe('ADMIN_REQUIRED');
+    expect((denied.body as { message: string }).message).toBe('routing stats are admin-only');
 
     const admin = new TestClient(ctx.url, 'admin-key');
     const ok = await admin.requestRaw('GET', '/routing/stats');

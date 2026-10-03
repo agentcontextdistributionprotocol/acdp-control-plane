@@ -3462,3 +3462,18 @@ Gate: tsc both tsconfigs, lint, conventions 6/6, unit 80 suites/1167 passed,
 integration 31 suites/217 passed. Verifier nit applied (log msg wording).
 Files: `src/errors/{error-codes,exception.filter,exception.filter.spec,error-codes.spec}.ts`,
 `test/integration/error-envelope.integration.spec.ts`, `docs/API.md`.
+
+### Phase 2 — 404s + admin/tenant 403s → specific codes — 2026-10-03
+
+DONE, gate PASS round 1 (fresh Opus). New codes `ADMIN_REQUIRED`,
+`TENANT_RESERVED`, `TENANT_MISMATCH`, `TENANT_REQUIRED`; `AGENT_NOT_FOUND`
+minted for the first time; `RUN_NOT_FOUND` (SSE leak guard) and
+`REGISTRY_NOT_FOUND` (federation proxy unknown authority) reused. New
+`src/auth/admin.ts` `assertAdmin(req, message)` used by all five admin gates
+(full-message signature — divergence, see plan). `revoke.controller.ts` →
+generic `FORBIDDEN` (self-revoke passes without admin). All messages/statuses
+byte-identical. Grep AC holds (only policy.guard x2 + ingest.service x2 left).
+Integration: tenant mismatch/reserved, admin-required (pinned-keys, routing,
+enroll), agent 404, SSE leak == missing-run code, cross-tenant registry ==
+unknown-registry code. Gate: tsc both, lint, conventions 6/6, unit 81 suites/
+1171 passed, integration 31 suites/218 passed (217 + the new cross-tenant case).

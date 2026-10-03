@@ -1000,3 +1000,25 @@
 - **Blast radius if wrong:** Medium — `ErrorCode` values are a one-way public
   surface; renaming later is a breaking change.
 - **Status:** UNCONFIRMED
+
+## Revoke 403 uses generic FORBIDDEN, not ADMIN_REQUIRED (Phase 2, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md`
+- **Assumed:** `POST /auth/revoke`'s gate is admin-OR-self, so naming it
+  "admin required" would misdirect a JWT caller who could legitimately
+  self-revoke their own token.
+- **Chose:** `AppException(ErrorCode.FORBIDDEN, 'caller is not authorized to revoke this token', 403)`.
+- **Alternatives:** `ADMIN_REQUIRED` (wrong remedy for the self path); a new
+  `REVOKE_FORBIDDEN` (another permanent name for one route).
+- **Blast radius if wrong:** Low — a specific code can be added later; the
+  generic one stays accurate.
+- **Status:** UNCONFIRMED
+
+## Admin-gate helper takes the full client-visible message (Phase 2, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md`
+- **Assumed:** keeping every pre-#182 message byte-identical outranks a uniform
+  `${what} is admin-only` template (one site reads "routing stats are admin-only").
+- **Chose:** `assertAdmin(req, message)`; refuses unless `actorIsAdmin === true`.
+- **Alternatives:** template + change the routing message (a message change the
+  plan forbids); template with an override parameter (two ways to call it).
+- **Blast radius if wrong:** Low — internal helper signature.
+- **Status:** UNCONFIRMED

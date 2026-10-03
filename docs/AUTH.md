@@ -44,9 +44,9 @@ request it:
 - Constant-time membership test against `AUTH_API_KEYS`.
 - `req.actorIsAdmin` = key ∈ `AUTH_ADMIN_API_KEYS` (constant-time).
 - Tenant: a key bound in `TENANT_API_KEYS` resolves to its tenant; a bare key →
-  `default`. A mismatching `X-Tenant-Id` is rejected (`403`).
+  `default`. A mismatching `X-Tenant-Id` is rejected (`403 TENANT_MISMATCH`).
 - When `AUTH_API_KEYS` is empty and not in production, auth is bypassed (dev
-  convenience); with `AUTH_REQUIRE_TENANT=true` an unresolvable tenant is `403`.
+  convenience); with `AUTH_REQUIRE_TENANT=true` an unresolvable tenant is `403 TENANT_REQUIRED`.
 
 ### JWT path
 
@@ -144,7 +144,7 @@ issuing to that agent). Format (comma-separated entries):
 
 `algorithm` defaults to `ed25519`; the optional unix-seconds window bounds
 validity. Reload at runtime (no restart) via `POST /admin/pinned-keys/reload`
-(admin-only) — it re-reads the env and atomically swaps the in-memory directory.
+(admin-only; a non-admin key gets `403 ADMIN_REQUIRED`) — it re-reads the env and atomically swaps the in-memory directory.
 
 ## Federation (trusted external issuers)
 

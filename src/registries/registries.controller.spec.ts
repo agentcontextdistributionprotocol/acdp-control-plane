@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ErrorCode } from '../errors/error-codes';
 import { AppException } from '../errors/app-exception';
 import { RegistriesController } from './registries.controller';
 import { TenantedRequest } from '../tenant/request-tenant';
@@ -38,7 +38,7 @@ describe('RegistriesController.enroll', () => {
   it('rejects a non-admin caller', async () => {
     await expect(
       controller.enroll({ authority: 'reg.example' } as never, req({ actorIsAdmin: false })),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    ).rejects.toMatchObject({ errorCode: ErrorCode.ADMIN_REQUIRED, status: 403 });
     expect(enrollmentRepo.upsert).not.toHaveBeenCalled();
   });
 
@@ -48,7 +48,7 @@ describe('RegistriesController.enroll', () => {
         { authority: 'reg.example', tenantId: 'default' } as never,
         req(),
       ),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    ).rejects.toMatchObject({ errorCode: ErrorCode.TENANT_RESERVED, status: 403 });
     expect(enrollmentRepo.upsert).not.toHaveBeenCalled();
   });
 
@@ -107,7 +107,7 @@ describe('RegistriesController.enroll', () => {
   it('rejects a non-admin acknowledging an alert', async () => {
     await expect(
       controller.acknowledgeLogWitnessAlert('reg.example', req({ actorIsAdmin: false })),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    ).rejects.toMatchObject({ errorCode: ErrorCode.ADMIN_REQUIRED, status: 403 });
     expect(logWitnessRepo.acknowledgeAlert).not.toHaveBeenCalled();
   });
 

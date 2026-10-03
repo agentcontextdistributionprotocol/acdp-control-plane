@@ -1,4 +1,5 @@
-import { ExecutionContext, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { ErrorCode } from '../errors/error-codes';
 import { Reflector } from '@nestjs/core';
 import jwt from 'jsonwebtoken';
 import { AppConfigService } from '../config/app-config.service';
@@ -104,13 +105,13 @@ describe('AuthGuard', () => {
     (config as Record<string, unknown>).tenantApiKeysRaw = 'tenant-a:valid-token-12345678';
     request.headers.authorization = 'Bearer valid-token-12345678';
     request.headers['x-tenant-id'] = 'tenant-b';
-    await expect(guard.canActivate(ctx(request))).rejects.toThrow(ForbiddenException);
+    await expect(guard.canActivate(ctx(request))).rejects.toMatchObject({ errorCode: ErrorCode.TENANT_MISMATCH, status: 403 });
   });
 
   it('strict mode (AUTH_REQUIRE_TENANT): a bare (unbound) API key is denied', async () => {
     (config as Record<string, unknown>).requireTenant = true;
     request.headers.authorization = 'Bearer valid-token-12345678';
-    await expect(guard.canActivate(ctx(request))).rejects.toThrow(ForbiddenException);
+    await expect(guard.canActivate(ctx(request))).rejects.toMatchObject({ errorCode: ErrorCode.TENANT_REQUIRED, status: 403 });
   });
 
   it('strict mode: a tenant-bound API key is allowed', async () => {
@@ -125,7 +126,7 @@ describe('AuthGuard', () => {
     (config as Record<string, unknown>).requireTenant = true;
     config.authApiKeys = [];
     request.headers.authorization = 'Bearer anything';
-    await expect(guard.canActivate(ctx(request))).rejects.toThrow(ForbiddenException);
+    await expect(guard.canActivate(ctx(request))).rejects.toMatchObject({ errorCode: ErrorCode.TENANT_REQUIRED, status: 403 });
   });
 });
 
@@ -279,7 +280,7 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
     });
     request.headers.authorization = `Bearer ${tok}`;
     request.headers['x-tenant-id'] = 'tenant-b';
-    await expect(guard.canActivate(ctx(request))).rejects.toThrow(ForbiddenException);
+    await expect(guard.canActivate(ctx(request))).rejects.toMatchObject({ errorCode: ErrorCode.TENANT_MISMATCH, status: 403 });
   });
 
   it('strict mode (AUTH_REQUIRE_TENANT): JWT without a tenant claim is denied', async () => {
@@ -296,7 +297,7 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
     });
     request.headers.authorization = `Bearer ${tok}`;
     request.headers['x-tenant-id'] = 'tenant-spoof';
-    await expect(guard.canActivate(ctx(request))).rejects.toThrow(ForbiddenException);
+    await expect(guard.canActivate(ctx(request))).rejects.toMatchObject({ errorCode: ErrorCode.TENANT_REQUIRED, status: 403 });
   });
 
   it('strict mode: JWT carrying a tenant claim is allowed', async () => {

@@ -1,5 +1,5 @@
-import { ForbiddenException } from '@nestjs/common';
 import { InMemoryRevocationRepository } from './in-memory-revocation.repository';
+import { ErrorCode } from '../errors/error-codes';
 import { RevocationFeedController } from './revocation-feed.controller';
 import type { Request } from 'express';
 
@@ -51,7 +51,7 @@ describe('RevocationFeedController', () => {
   }
 
   it('403s non-admin callers (feed is admin-only)', async () => {
-    await expect(controller.feed(nonAdminReq())).rejects.toThrow(ForbiddenException);
+    await expect(controller.feed(nonAdminReq())).rejects.toMatchObject({ errorCode: ErrorCode.ADMIN_REQUIRED, status: 403 });
   });
 
   it('returns all entries when called with since=0 (admin)', async () => {

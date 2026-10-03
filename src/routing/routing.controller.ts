@@ -1,4 +1,5 @@
-import { Controller, ForbiddenException, Get, Req } from '@nestjs/common';
+import { Controller, Get, Req } from '@nestjs/common';
+import { assertAdmin } from '../auth/admin';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { BanditRouter } from './bandit-router.service';
@@ -16,9 +17,7 @@ export class RoutingController {
       'for a (taskClass, agentDid) pair; mean = alpha / (alpha + beta).',
   })
   stats(@Req() req: Request & { actorIsAdmin?: boolean }) {
-    if (!req.actorIsAdmin) {
-      throw new ForbiddenException('routing stats are admin-only');
-    }
+    assertAdmin(req, 'routing stats are admin-only');
     const arms = this.bandit.snapshot().map((a) => ({
       taskClass: a.taskClass,
       agentDid: a.agentDid,

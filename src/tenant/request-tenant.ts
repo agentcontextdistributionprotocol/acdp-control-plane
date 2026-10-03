@@ -9,8 +9,10 @@
  * V1 single-tenant deployments fall back to `DEFAULT_TENANT_ID` when no
  * tenant was resolved, matching the repository defaults.
  */
-import { ForbiddenException } from '@nestjs/common';
+import { HttpStatus } from '@nestjs/common';
 import type { Request } from 'express';
+import { AppException } from '../errors/app-exception';
+import { ErrorCode } from '../errors/error-codes';
 import { DEFAULT_TENANT_ID } from './tenant-context';
 
 /** An Express request carrying the AuthGuard-pinned tenant id. */
@@ -35,9 +37,11 @@ export function assertNotReservedTenant(
   source: string,
 ): void {
   if (tenant === DEFAULT_TENANT_ID) {
-    throw new ForbiddenException(
+    throw new AppException(
+      ErrorCode.TENANT_RESERVED,
       `'${DEFAULT_TENANT_ID}' is a reserved tenant sentinel and cannot be ` +
         `asserted via ${source}`,
+      HttpStatus.FORBIDDEN,
     );
   }
 }
