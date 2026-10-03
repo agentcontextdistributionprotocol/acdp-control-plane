@@ -3536,3 +3536,36 @@ local main fast-forwarded. Cumulative verify PASS (fresh Opus). Issue #156 left
 OPEN with a progress comment (Phase 1 shipped; Phase 2 decision-gated, Phase 3
 gated on the TS 7.1 compiler API). 2 ASSUMPTIONS.md entries tagged
 `Plan: plans/typescript-7-156.md`, UNCONFIRMED.
+
+## NestJS 11 → 12 — issue #155 (`plans/nestjs-12-155.md`)
+
+Risk: Phase 0 simple (scratch probe, non-committing), Phase 1 simple, Phase 2
+simple, Phase 3 simple, Phase 4 complex (solo gate: Nest 12 bump + shutdown
+exit-code collector), Phase 5 simple.
+
+PR strategy: four PRs — PR A = Phase 1 (throttler 6.7.1); PR B = Phases 2-3
+(dotenv 18 + jest `--experimental-vm-modules`, both on Nest 11); PR C = Phase 4
+(code-only Nest 12 bump, clean revert); PR D = Phase 5 (docs/engines/
+Dependabot, `Closes #155`). One commit per phase.
+
+### Phase 0 — scratch re-proof — 2026-10-03
+
+DONE (no commit). `npm view --prefer-online`: `@nestjs/{common,core,
+platform-express,testing}` 12.1.2, swagger 12.0.2, throttler 6.7.1, dotenv
+18.0.5 — unchanged since planning. `git archive` scratch: six-package edit →
+`npm install --package-lock-only` exit 0; split (without `@nestjs/testing`) →
+ERESOLVE. `tsc` both configs 0 errors, also with dotenv 18 (bundler resolution
+from #156 removed the TS2882). Plain jest → `Must use import to load ES
+Module`; flagged → 80 passed/1 skipped suites (conformance, no sibling spec
+checkout), 1152 passed/28 skipped, coverage 75.86/69.54/61.2/76.65.
+check:build passed. 13 ExperimentalWarning lines per unit run on Nest 12.
+
+### Phase 1 — `@nestjs/throttler` 6.5.0 → 6.7.1 — 2026-10-03
+
+DONE, gate PASS round 2 (fresh Opus; round 1 gap: refresh #182 plan's stale
+6.5.0 `throttler.guard.js` refs — done, local plan). Lock diff touches only the
+throttler entry; `npm ls` one 6.7.1. No new test: #182's throttler-429 case
+(`error-envelope.integration.spec.ts`) is the single shared one, green on 6.7.1.
+IPv6 `/64` tracker gap filed as #187. Gate: tsc both, lint, conventions 7/7,
+check:build ok, unit 81 suites/1176 passed/4 skipped, integration 31 suites/218
+passed, 0 "throttler not configured" warnings.
