@@ -1,5 +1,6 @@
  
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { ErrorCode } from '../errors/error-codes';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { CapabilityService } from './capability.service';
 import { CapabilityRepository, CapabilityRow } from './capability.repository';
@@ -165,7 +166,7 @@ describe('CapabilityService', () => {
         agentDid: DID, capabilityUri: URI, declaredAtIso: declaredAt,
         keyId: 'k', algorithm: 'ed25519', signature: otherSig,
       }),
-    ).rejects.toThrow(UnauthorizedException);
+    ).rejects.toMatchObject({ errorCode: ErrorCode.INVALID_SIGNATURE, status: 401 });
   });
 
   it('rejects a malformed capability URI', async () => {

@@ -1,11 +1,12 @@
 import {
   BadRequestException,
-  ForbiddenException,
+  HttpStatus,
   Injectable,
   Logger,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
+import { AppException } from '../errors/app-exception';
+import { ErrorCode } from '../errors/error-codes';
 import { AcdpWebhookEvent } from '../contracts/acdp';
 import { REVOCATION_CONTEXT_TYPES } from '../contracts/revocation';
 import { DomainPackRegistry } from '../domain-packs/domain-pack';
@@ -78,14 +79,20 @@ export class IngestService {
 
     if (enrollment) {
       if (!enrollment.enabled) {
-        throw new ForbiddenException(`Registry '${claimedAuthority}' is disabled`);
+        throw new AppException(
+          ErrorCode.REGISTRY_DISABLED,
+          `Registry '${claimedAuthority}' is disabled`,
+          HttpStatus.FORBIDDEN,
+        );
       }
       tenantId = enrollment.tenantId; // tenant comes from enrollment, not the header
       if (enrollment.webhookSecret) secret = enrollment.webhookSecret;
       enrolledBaseUrl = enrollment.baseUrl ?? undefined;
     } else if (this.config.ingestRequireEnrollment) {
-      throw new ForbiddenException(
+      throw new AppException(
+        ErrorCode.REGISTRY_NOT_ENROLLED,
         `Registry '${claimedAuthority ?? '(unknown)'}' is not enrolled`,
+        HttpStatus.FORBIDDEN,
       );
     } else if (this.config.ingestStrictTenant && tenantId !== DEFAULT_TENANT_ID) {
       // Strict mode: no enrollment binds this authority to a tenant, so a
@@ -102,7 +109,11 @@ export class IngestService {
     }
 
     if (!verifyWebhookSignature(body, signatureHeader ?? '', secret)) {
-      throw new UnauthorizedException('Invalid webhook signature');
+      throw new AppException(
+        ErrorCode.INVALID_WEBHOOK_SIGNATURE,
+        'Invalid webhook signature',
+        HttpStatus.UNAUTHORIZED,
+      );
     }
 
     if (!payload.type) {

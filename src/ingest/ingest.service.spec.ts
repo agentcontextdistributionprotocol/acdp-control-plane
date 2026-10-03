@@ -1,4 +1,5 @@
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
+import { ErrorCode } from '../errors/error-codes';
 import { createHmac } from 'node:crypto';
 import { AppConfigService } from '../config/app-config.service';
 import { DomainPackRegistry } from '../domain-packs/domain-pack';
@@ -241,9 +242,10 @@ describe('IngestService', () => {
 
   it('throws Unauthorized on bad signature', async () => {
     const body = Buffer.from(JSON.stringify(validPayload));
-    await expect(service.handle(body, 'sha256=deadbeef', undefined)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await expect(service.handle(body, 'sha256=deadbeef', undefined)).rejects.toMatchObject({
+      errorCode: ErrorCode.INVALID_WEBHOOK_SIGNATURE,
+      status: 401,
+    });
     expect(processor.process).not.toHaveBeenCalled();
   });
 
@@ -423,9 +425,10 @@ describe('IngestService', () => {
       });
       const body = Buffer.from(JSON.stringify(validPayload));
       // Signed with the GLOBAL secret, which no longer applies.
-      await expect(service.handle(body, sign(body), undefined)).rejects.toBeInstanceOf(
-        UnauthorizedException,
-      );
+      await expect(service.handle(body, sign(body), undefined)).rejects.toMatchObject({
+        errorCode: ErrorCode.INVALID_WEBHOOK_SIGNATURE,
+        status: 401,
+      });
       expect(processor.process).not.toHaveBeenCalled();
     });
 
@@ -439,6 +442,8 @@ describe('IngestService', () => {
       const body = Buffer.from(JSON.stringify(validPayload));
       await expect(service.handle(body, sign(body), undefined)).rejects.toMatchObject({
         status: 403,
+        errorCode: ErrorCode.REGISTRY_DISABLED,
+        message: "Registry 'reg.example' is disabled",
       });
     });
 
@@ -457,6 +462,7 @@ describe('IngestService', () => {
       const body = Buffer.from(JSON.stringify(validPayload));
       await expect(service.handle(body, sign(body), undefined)).rejects.toMatchObject({
         status: 403,
+        errorCode: ErrorCode.REGISTRY_NOT_ENROLLED,
       });
       expect(processor.process).not.toHaveBeenCalled();
     });

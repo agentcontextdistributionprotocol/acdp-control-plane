@@ -1022,3 +1022,71 @@
   plan forbids); template with an override parameter (two ways to call it).
 - **Blast radius if wrong:** Low — internal helper signature.
 - **Status:** UNCONFIRMED
+
+## Ingest enrollment codes are answered before HMAC verification (Phase 3, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md`
+- **Assumed:** naming `REGISTRY_NOT_ENROLLED` / `REGISTRY_DISABLED` adds no
+  information an unauthenticated caller lacked: the enrollment lookup already
+  ran before HMAC verification (`ingest.service.ts`) and the 403 message
+  already said "is not enrolled" / "is disabled". RFC-ACDP-0007 §5.2's
+  leakage rule binds registries, but its reasoning was considered.
+- **Chose:** mint both codes without reordering the checks.
+- **Alternatives:** verify HMAC first (needs the per-registry secret, which
+  only the enrollment lookup provides — a larger redesign); collapse both to
+  generic `FORBIDDEN` (loses the operator remedy).
+- **Blast radius if wrong:** Low — an enrollment-status oracle that already
+  existed via the message.
+- **Status:** UNCONFIRMED
+
+## Policy deny and indeterminate share POLICY_DENIED (Phase 3, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md` (Open question 4)
+- **Assumed:** the legacy top-level `code: "indeterminate"` is enough for
+  clients to tell "OPA could not decide (retry may help)" from a final deny.
+- **Chose:** one `POLICY_DENIED`; a `POLICY_INDETERMINATE` can be added later
+  without breaking anyone (removing one later would).
+- **Blast radius if wrong:** Low — additive fix.
+- **Status:** UNCONFIRMED
+
+## Policy/quota bodies labelled in place, adding a top-level `metadata` (Phase 3, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md`
+- **Assumed:** adding `statusCode`, `errorCode` and a `metadata` member that
+  duplicates already-top-level fields is a compatible change for the
+  documented legacy bodies (AppException bodies already carry `metadata`).
+- **Chose:** label in place, not AppException (which would move the legacy
+  fields under `metadata` — breaking). 401 per-reason codes on the challenge/
+  token path were NOT added (Open question 3: an oracle for attackers).
+- **Blast radius if wrong:** Low — purely additive fields.
+- **Status:** UNCONFIRMED
+
+## CI rule 7 bans only NotFound/Forbidden, not every Nest built-in (Phase 4, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md` (Open question 6)
+- **Assumed:** 400/401 built-ins stay acceptable at the HTTP boundary because
+  their fallbacks (`INVALID_PAYLOAD`, `UNAUTHORIZED`) are accurate, while a bare
+  403/404 erases a distinction clients need (admin vs tenant vs policy).
+- **Chose:** rule 7 forbids `new NotFoundException(` / `new ForbiddenException(`
+  with no file exemptions; the docs table is mechanically checked by a unit spec.
+- **Alternatives:** ban every non-AppException built-in (~30 accurate sites
+  churn); spec-only coverage (cannot stop a new admin route from returning
+  generic `FORBIDDEN`).
+- **Blast radius if wrong:** Low — a CI rule, reversible.
+- **Status:** UNCONFIRMED
+
+## Reserved-tenant assertion stays 403, diverging from the registry's 400 (issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md` (Open question 2)
+- **Assumed:** keeping the CP's existing `403` for an explicit `default`
+  tenant assertion (now `TENANT_RESERVED`) is preferable to parity with the
+  registry's `schema_violation`/400, because the status is pinned by
+  `tenancy-isolation.integration.spec.ts` and console copy. Fixed decision
+  from the requester for #182; parity is a separate decision.
+- **Blast radius if wrong:** Medium — changing the status later is a
+  client-visible break.
+- **Status:** UNCONFIRMED
+
+## The federation proxy's 502 still reports INTERNAL_ERROR (issue #182 scope)
+- **Plan:** `plans/error-codes-4xx-182.md` (Open question 5)
+- **Assumed:** #182 is scoped to 4xx; `contexts.controller.ts`'s
+  `BadGatewayException` (502, upstream unreachable) keeps the 5xx fallback
+  `INTERNAL_ERROR` (retryable, which is not wrong for a 502) until a follow-up
+  mints a code aligned with RFC-ACDP-0007 `cross_registry_resolution_failed`.
+- **Blast radius if wrong:** Low — retryable code on a retryable status.
+- **Status:** UNCONFIRMED

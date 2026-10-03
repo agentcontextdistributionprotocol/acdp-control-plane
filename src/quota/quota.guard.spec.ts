@@ -1,5 +1,6 @@
  
 import { ExecutionContext, HttpException } from '@nestjs/common';
+import { ErrorCode } from '../errors/error-codes';
 import { Reflector } from '@nestjs/core';
 import { QUOTA_ACTION_KEY } from './check-quota.decorator';
 import { parseQuotaConfig } from './quota-config';
@@ -88,6 +89,19 @@ describe('QuotaGuard', () => {
     expect(body.tenantId).toBe('tenant-a');
     expect(body.action).toBe('publish');
     expect(body.limit).toBe(2);
+    // #182: labelled in place — category + envelope details, legacy fields kept.
+    expect(body.statusCode).toBe(429);
+    expect(body.errorCode).toBe(ErrorCode.QUOTA_EXCEEDED);
+    expect(body.windowSeconds).toBe(60);
+    expect(typeof body.retryAfterSeconds).toBe('number');
+    expect(body.metadata).toEqual({
+      code: 'rate_limited',
+      tenantId: 'tenant-a',
+      action: 'publish',
+      limit: 2,
+      windowSeconds: 60,
+      retryAfterSeconds: body.retryAfterSeconds,
+    });
   });
 
   it('different tenants have independent counters', async () => {

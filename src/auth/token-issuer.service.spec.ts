@@ -3,6 +3,7 @@ import {
   BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ErrorCode } from '../errors/error-codes';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 
@@ -234,7 +235,7 @@ describe('TokenIssuer', () => {
         algorithm: 'ed25519',
         signature: signChallenge('TAMPERED-INPUT'),
       }),
-    ).rejects.toThrow(UnauthorizedException);
+    ).rejects.toMatchObject({ errorCode: ErrorCode.INVALID_SIGNATURE, status: 401 });
   });
 
   it('verifyJwt accepts a token it issued', async () => {
@@ -385,7 +386,7 @@ describe('TokenIssuer', () => {
         algorithm: 'ed25519',
         signature: signChallenge('TAMPERED-INPUT'),
       }),
-    ).rejects.toThrow(UnauthorizedException);
+    ).rejects.toMatchObject({ errorCode: ErrorCode.INVALID_SIGNATURE, status: 401 });
     const snap = ledger.__snapshot();
     expect(snap[snap.length - 1].row.decision).toBe('reject_signature');
   });

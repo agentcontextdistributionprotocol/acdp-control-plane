@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { ErrorCode } from "./error-codes";
 
 /**
@@ -40,6 +42,12 @@ const SHIPPED: readonly string[] = [
   "TENANT_RESERVED",
   "TENANT_MISMATCH",
   "TENANT_REQUIRED",
+  // #182 Phase 3 — credentials, ingest gating, policy, quota.
+  "INVALID_WEBHOOK_SIGNATURE",
+  "REGISTRY_DISABLED",
+  "REGISTRY_NOT_ENROLLED",
+  "POLICY_DENIED",
+  "QUOTA_EXCEEDED",
 ];
 
 describe("ErrorCode public surface", () => {
@@ -53,6 +61,17 @@ describe("ErrorCode public surface", () => {
   it("every value equals its key", () => {
     for (const [k, v] of Object.entries(ErrorCode)) {
       expect(v).toBe(k);
+    }
+  });
+
+  it("every code has a row in the docs/API.md error-code table", () => {
+    const doc = readFileSync(
+      resolve(__dirname, "..", "..", "docs", "API.md"),
+      "utf8",
+    );
+    for (const v of values) {
+      expect({ code: v, inTable: new RegExp("^\\| `" + v + "` \\|", "m").test(doc) })
+        .toEqual({ code: v, inTable: true });
     }
   });
 

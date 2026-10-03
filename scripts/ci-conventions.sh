@@ -24,6 +24,10 @@
 #    exactly the class of regression a grep rule catches and review does not.
 # 6. No `Acdp<Something> as unknown as <local type>` — the SDK-surface shim hole;
 #    full rationale in the comment block immediately above the check itself.
+# 7. No `new NotFoundException(` / `new ForbiddenException(` — every 403/404 is
+#    an explicit AppException with a specific ErrorCode (issue #182), so a
+#    client can tell "admin required" from "tenant mismatch" from "policy".
+#    No file exemptions: a ratchet that starts at zero.
 #
 # Usage: ci-conventions.sh [SOURCE_DIR]   (SOURCE_DIR defaults to ./src; the
 # argument exists so the unit spec can point the script at a scratch tree and
@@ -109,5 +113,16 @@ fi
 check "no Acdp* laundered through 'as unknown as' (SDK surface shims)" \
   'Acdp[A-Za-z]* as unknown as' \
   '(\.spec\.ts)'
+
+# 7. Unlabelled 403/404s (#182). The pattern is a BRE (check() runs plain grep,
+#    no -E): `\(…\|…\)` groups/alternates and the trailing `(` is literal. The
+#    ERE spelling `(NotFound|Forbidden)Exception\(` is a MALFORMED BRE here —
+#    grep exits 2, `|| true` swallows it, and the rule would pass forever.
+#    src/ci-conventions.spec.ts proves it fires for each class name.
+#    Unauthorized/BadRequest stay allowed: their generic fallbacks
+#    (UNAUTHORIZED, INVALID_PAYLOAD) are accurate. Comment lines are exempt.
+check "no unlabelled NotFound/Forbidden exceptions (see #182)" \
+  'new \(NotFound\|Forbidden\)Exception(' \
+  '(\.spec\.ts|:[0-9]+: *(//|\*))'
 
 exit $fail

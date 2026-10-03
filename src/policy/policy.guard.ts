@@ -19,13 +19,15 @@
 import {
   CanActivate,
   ExecutionContext,
-  ForbiddenException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   Logger,
   Optional,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { ErrorCode } from '../errors/error-codes';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { POLICY_ACTION_KEY } from './check-policy.decorator';
 import {
@@ -90,7 +92,7 @@ export class PolicyGuard implements CanActivate {
         this.logger.warn(
           `policy deny: action=${action} subject=${policyReq.subjectDid} reason=${decision.code} (${decision.reason})`,
         );
-        throw new ForbiddenException({
+        throw policyDenied({
           message: 'policy denied',
           code: decision.code,
           reason: decision.reason,
@@ -99,7 +101,7 @@ export class PolicyGuard implements CanActivate {
         this.logger.warn(
           `policy indeterminate: action=${action} subject=${policyReq.subjectDid} note=${decision.note ?? ''} — treating as DENY`,
         );
-        throw new ForbiddenException({
+        throw policyDenied({
           message: 'policy indeterminate',
           code: 'indeterminate',
           reason: decision.note ?? 'no rule matched',
@@ -117,4 +119,29 @@ function extractResourceId(req: { params?: Record<string, unknown> }): string {
     '';
   if (Array.isArray(candidate)) return candidate.join('/');
   return typeof candidate === 'string' ? candidate : '';
+}
+
+/**
+ * Label the policy 403 IN PLACE (#182) rather than converting to
+ * AppException: the documented legacy body (`message`, `code`, `reason` at the
+ * top level — docs/POLICY.md) must stay where clients read it, while
+ * `errorCode` (the CP error category) and `metadata` (→ envelope
+ * `error.details`) are added. `errorCode` never overwrites the decider's
+ * `code` — different axes (CP category vs policy rule id). A plain
+ * HttpException, not ForbiddenException: the status is the contract.
+ */
+function policyDenied(body: {
+  message: string;
+  code: string;
+  reason: string;
+}): HttpException {
+  return new HttpException(
+    {
+      statusCode: HttpStatus.FORBIDDEN,
+      errorCode: ErrorCode.POLICY_DENIED,
+      ...body,
+      metadata: { code: body.code, reason: body.reason },
+    },
+    HttpStatus.FORBIDDEN,
+  );
 }

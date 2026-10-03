@@ -42,11 +42,27 @@ The decider returns `allow`, `deny` (with a `code` + `reason`), or
 `indeterminate` → `403`:
 
 ```json
-{ "message": "policy denied", "code": "visibility", "reason": "…" }
+{
+  "statusCode": 403,
+  "errorCode": "POLICY_DENIED",
+  "message": "policy denied",
+  "code": "visibility",
+  "reason": "…",
+  "metadata": { "code": "visibility", "reason": "…" },
+  "error": {
+    "code": "POLICY_DENIED",
+    "message": "policy denied",
+    "details": { "code": "visibility", "reason": "…" }
+  }
+}
 ```
 
-`code` is one of `visibility`, `audience`, `scope`, `tenant_mismatch`,
-`unauthenticated`, `indeterminate`.
+`errorCode` (and `error.code`) is always `POLICY_DENIED` — the control-plane
+error category. The top-level `code` is the decider's rule id, one of
+`visibility`, `audience`, `scope`, `tenant_mismatch`, `unauthenticated`,
+`indeterminate` (`indeterminate` = the decider could not decide; retrying may
+help once OPA is reachable). The two are different axes and never overwrite
+each other.
 
 ### Backends (`POLICY_BACKEND`)
 
@@ -148,16 +164,22 @@ TENANT_QUOTAS=tenant-a:publish=100/min,run.start=10/min;tenant-b:publish=500/min
 
 ```json
 {
+  "statusCode": 429,
+  "errorCode": "QUOTA_EXCEEDED",
   "message": "quota exceeded",
   "code": "rate_limited",
   "tenantId": "tenant-a",
   "action": "publish",
   "limit": 100,
   "windowSeconds": 60,
-  "retryAfterSeconds": 42
+  "retryAfterSeconds": 42,
+  "metadata": { "code": "rate_limited", "tenantId": "tenant-a", "action": "publish", "limit": 100, "windowSeconds": 60, "retryAfterSeconds": 42 },
+  "error": { "code": "QUOTA_EXCEEDED", "message": "quota exceeded", "details": { "…": "same as metadata" } }
 }
 ```
-plus a `Retry-After: 42` header.
+plus a `Retry-After: 42` header. The legacy top-level fields are kept for
+existing clients. `QUOTA_EXCEEDED` is distinct from `RATE_LIMITED`, the coarse
+per-principal throttle (`THROTTLE_LIMIT`), which is not action-scoped.
 
 ### Which handlers are gated
 

@@ -32,6 +32,8 @@ export enum ErrorCode {
   CONTEXT_ID_MISMATCH = "CONTEXT_ID_MISMATCH",
   CONTEXT_BINDING_UNVERIFIABLE = "CONTEXT_BINDING_UNVERIFIABLE",
   INVALID_PAYLOAD = "INVALID_PAYLOAD",
+  // 401 on /auth/token and /capabilities: the Ed25519/ECDSA-P256 signature
+  // over a challenge or capability assertion failed verification (#182).
   INVALID_SIGNATURE = "INVALID_SIGNATURE",
   // ACDP 0.3.0 Tier 3 (RFC-ACDP-0012 §11): an inclusion proof, consistency
   // proof, or checkpoint failed the §9 verification procedures. Deliberately
@@ -87,4 +89,29 @@ export enum ErrorCode {
   TENANT_MISMATCH = "TENANT_MISMATCH",
   /** 403 — AUTH_REQUIRE_TENANT strict mode and no bound tenant; bind the key or claim. */
   TENANT_REQUIRED = "TENANT_REQUIRED",
+
+  // Credentials, ingest gating, policy and quota (#182 Phase 3).
+  /**
+   * 401 — the HMAC-SHA256 webhook signature (`X-ACDP-Signature`) on
+   * `/ingest/acdp` or `/runs/*` notify failed. A shared-secret MAC, NOT a
+   * producer signature — the fix is the webhook secret, not a DID key, so it
+   * is deliberately distinct from INVALID_SIGNATURE.
+   */
+  INVALID_WEBHOOK_SIGNATURE = "INVALID_WEBHOOK_SIGNATURE",
+  /** 403 — the ingesting registry is enrolled but disabled. */
+  REGISTRY_DISABLED = "REGISTRY_DISABLED",
+  /** 403 — INGEST_REQUIRE_ENROLLMENT and the registry is not enrolled. */
+  REGISTRY_NOT_ENROLLED = "REGISTRY_NOT_ENROLLED",
+  /**
+   * 403 — PolicyGuard denied (or could not decide: the legacy top-level
+   * `code: "indeterminate"` distinguishes that case). The body keeps its
+   * documented top-level `code`/`reason`.
+   */
+  POLICY_DENIED = "POLICY_DENIED",
+  /**
+   * 429 — a per-tenant per-action TENANT_QUOTAS limit was exceeded. Distinct
+   * from RATE_LIMITED (the coarse per-principal throttle): different remedy.
+   * The body keeps its documented top-level `code: "rate_limited"` etc.
+   */
+  QUOTA_EXCEEDED = "QUOTA_EXCEEDED",
 }

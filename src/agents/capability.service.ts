@@ -15,10 +15,13 @@
  */
 import {
   BadRequestException,
+  HttpStatus,
   Injectable,
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
+import { AppException } from '../errors/app-exception';
+import { ErrorCode } from '../errors/error-codes';
 import { verifySignatureB64 } from '../auth/acdp-verify';
 import { PinnedKeysService } from '../auth/pinned-keys.service';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
@@ -124,7 +127,11 @@ export class CapabilityService {
       req.signature,
     );
     if (!ok) {
-      throw new UnauthorizedException('capability declaration signature verification failed');
+      throw new AppException(
+        ErrorCode.INVALID_SIGNATURE,
+        'capability declaration signature verification failed',
+        HttpStatus.UNAUTHORIZED,
+      );
     }
 
     const row = await this.repo.declare({

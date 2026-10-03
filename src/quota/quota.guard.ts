@@ -27,6 +27,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { ErrorCode } from '../errors/error-codes';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { QUOTA_ACTION_KEY } from './check-quota.decorator';
 import {
@@ -81,15 +82,25 @@ export class QuotaGuard implements CanActivate {
       const retryAfter = Math.max(1, ttlSeconds);
       const res = req.res ?? context.switchToHttp().getResponse();
       if (res?.setHeader) res.setHeader('Retry-After', String(retryAfter));
+      // Labelled IN PLACE (#182): the documented legacy top-level fields
+      // (docs/POLICY.md, TROUBLESHOOTING.md) stay put; `errorCode` +
+      // `metadata` (→ envelope `error.details`) are additive. QUOTA_EXCEEDED,
+      // not RATE_LIMITED: the coarse throttle has a different remedy.
+      const details = {
+        code: 'rate_limited',
+        tenantId,
+        action,
+        limit: limit.count,
+        windowSeconds: limit.windowSeconds,
+        retryAfterSeconds: retryAfter,
+      };
       throw new HttpException(
         {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          errorCode: ErrorCode.QUOTA_EXCEEDED,
           message: 'quota exceeded',
-          code: 'rate_limited',
-          tenantId,
-          action,
-          limit: limit.count,
-          windowSeconds: limit.windowSeconds,
-          retryAfterSeconds: retryAfter,
+          ...details,
+          metadata: details,
         },
         HttpStatus.TOO_MANY_REQUESTS,
       );

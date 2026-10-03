@@ -26,8 +26,10 @@ One of: body isn't valid JSON; a required field is missing (`type`,
 
 ### `403 Forbidden` from `POST /ingest/acdp`
 
-Either the authority isn't enrolled while `INGEST_REQUIRE_ENROLLMENT=true`, or an
-unenrolled authority asserted a non-`default` tenant while `INGEST_STRICT_TENANT=true`.
+`errorCode: REGISTRY_NOT_ENROLLED` — the authority isn't enrolled while
+`INGEST_REQUIRE_ENROLLMENT=true`. `errorCode: REGISTRY_DISABLED` — it is
+enrolled but disabled. (With `INGEST_STRICT_TENANT=true` an unenrolled
+authority's non-`default` tenant header is ignored, not rejected.)
 Enroll the registry (`POST /registries/enroll`) or relax the flag. See
 [INGEST.md](./INGEST.md#registry-trust--enrollment).
 
@@ -114,7 +116,7 @@ A handler likely forgot to thread `tenantOf(req)` — the repository defaulted t
 
 ## Policy & quota
 
-### `403 { "code": "…" }` on a gated route
+### `403 { "errorCode": "POLICY_DENIED", "code": "…" }` on a gated route
 
 `PolicyGuard` denied it. The `code` tells you which rule: `visibility`,
 `audience`, `scope`, `tenant_mismatch`, `unauthenticated`, or `indeterminate`
@@ -127,11 +129,12 @@ decider returns `indeterminate` → deny. Fix connectivity, or set
 `OPA_FAIL_OPEN=true` if availability matters more than strict enforcement.
 `indeterminate` is never cached, so it re-evaluates every request.
 
-### `429 { "code": "rate_limited" }`
+### `429 { "errorCode": "QUOTA_EXCEEDED", "code": "rate_limited" }`
 
 A `TENANT_QUOTAS` limit for `(tenant, action)` was exceeded. The body and
 `Retry-After` header give the window and wait. Distinguish from the coarse
-throttle (`THROTTLE_LIMIT`), which is per-principal and not action-scoped.
+throttle (`THROTTLE_LIMIT`), which is per-principal and not action-scoped — it
+answers `429` with `errorCode: RATE_LIMITED` and no top-level `code`.
 
 ---
 

@@ -3477,3 +3477,31 @@ Integration: tenant mismatch/reserved, admin-required (pinned-keys, routing,
 enroll), agent 404, SSE leak == missing-run code, cross-tenant registry ==
 unknown-registry code. Gate: tsc both, lint, conventions 6/6, unit 81 suites/
 1171 passed, integration 31 suites/218 passed (217 + the new cross-tenant case).
+
+PR A merged: #184 (squash 7e5514a) — Phases 1-2, all 3 required checks green.
+
+### Phase 3 — credentials, ingest gating, policy, quota — 2026-10-03
+
+DONE, gate PASS round 1 (fresh Opus). New codes `INVALID_WEBHOOK_SIGNATURE`
+(ingest + runs notify HMAC, 401), `REGISTRY_DISABLED` / `REGISTRY_NOT_ENROLLED`
+(ingest 403), `POLICY_DENIED` (403, deny + indeterminate), `QUOTA_EXCEEDED`
+(429); `INVALID_SIGNATURE` minted for the first time at the two signature-
+verification 401s only. Policy/quota labelled IN PLACE: legacy top-level
+fields kept, `statusCode` + `errorCode` + `metadata` (→ `error.details`) added;
+policy moved from `ForbiddenException` to `HttpException(…, 403)`. Grep AC:
+zero `new (NotFound|Forbidden)Exception(` left in non-spec src. Docs: POLICY,
+API (ingest status table incl. new 413/429 rows), TROUBLESHOOTING, INGEST.
+Gate: tsc both, lint, conventions 6/6, unit 81 suites/1172 passed, integration
+31 suites/218 passed.
+
+### Phase 4 — docs table + CI rule 7 — 2026-10-03
+
+DONE, gate PASS round 1 (fresh Opus). `scripts/ci-conventions.sh` rule 7 (BRE
+`new \(NotFound\|Forbidden\)Exception(`, no file exemptions, comments/specs
+exempt) — spec proves it fires per class name; seven ✓. `docs/API.md` inline
+list replaced by a 29-row table; `error-codes.spec.ts` asserts every code has
+a row (verified it fails when a row is deleted). CLAUDE.md Errors convention +
+"Seven checks" (gitignored, local). Gate: tsc both, lint, conventions 7/7,
+unit 81 suites/1176 passed, integration 31 suites/218 passed, check:build ok.
+Follow-ups not done (outside this repo): console issue to key copy on the new
+codes; 502 federation code (plan Open question 5).

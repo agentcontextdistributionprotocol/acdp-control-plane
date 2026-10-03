@@ -53,11 +53,46 @@ describe('scripts/ci-conventions.sh', () => {
     for (const root of scratchRoots) rmSync(root, { recursive: true, force: true });
   });
 
-  it('passes on the real src/ tree and prints exactly six ✓ checks', () => {
+  it('passes on the real src/ tree and prints exactly seven ✓ checks', () => {
     const { status, out } = runScript('src');
     expect(out).not.toMatch(/✗/);
     expect(status).toBe(0);
-    expect(out.match(/✓/g) ?? []).toHaveLength(6);
+    expect(out.match(/✓/g) ?? []).toHaveLength(7);
+  });
+
+  // ── Check 7: unlabelled 403/404s (#182) ────────────────────────────────
+  //
+  // The rule is a BRE; a malformed pattern makes grep exit 2, which check()
+  // swallows — so it must be proven to fire for EACH class name.
+
+  it.each(['ForbiddenException', 'NotFoundException'])(
+    'fails on a bare `new %s(`',
+    (cls) => {
+      const dir = scratchTree({
+        'gate.ts': ['export function f(): never {', `  throw new ${cls}('x');`, '}'].join('\n'),
+      });
+      const { status, out } = runScript(dir);
+      expect(status).not.toBe(0);
+      expect(out).toContain('✗ no unlabelled NotFound/Forbidden exceptions');
+      expect(out).toContain('gate.ts:2:');
+    },
+  );
+
+  it('rule 7 exempts comment lines and *.spec.ts, and allows AppException / UnauthorizedException', () => {
+    const dir = scratchTree({
+      'commented.ts': [
+        '// never: new ForbiddenException(\'x\')',
+        '/**',
+        ' * nor new NotFoundException(\'y\')',
+        ' */',
+        'export const ok = new AppException(ErrorCode.ADMIN_REQUIRED, \'m\', 403);',
+        'export const u = new UnauthorizedException(\'z\');',
+      ].join('\n'),
+      'thing.spec.ts': "expect(() => { throw new ForbiddenException('x'); }).toThrow();\n",
+    });
+    const { status, out } = runScript(dir);
+    expect(status).toBe(0);
+    expect(out).toContain('✓ no unlabelled NotFound/Forbidden exceptions');
   });
 
   // ── Check 6: the SDK-surface shim hole ─────────────────────────────────

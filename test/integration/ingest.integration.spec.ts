@@ -73,6 +73,7 @@ describe('Ingest pipeline (integration)', () => {
       },
     });
     expect(res.status).toBe(401);
+    expect((res.body as { errorCode: string }).errorCode).toBe('INVALID_WEBHOOK_SIGNATURE');
 
     // Nothing persisted
     const events = (await ctx.client.listEvents()) as { data: unknown[] };
@@ -86,6 +87,7 @@ describe('Ingest pipeline (integration)', () => {
       headers: { 'Content-Type': 'application/json' },
     });
     expect(res.status).toBe(401);
+    expect((res.body as { errorCode: string }).errorCode).toBe('INVALID_WEBHOOK_SIGNATURE');
   });
 
   it('rejects malformed JSON (400)', async () => {
