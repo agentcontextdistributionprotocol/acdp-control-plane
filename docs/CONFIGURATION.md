@@ -10,6 +10,11 @@ and `domain-packs/domain-packs.module.ts`. Start from `.env.example`.
 the first import in `main.ts`, before anything else runs — so it's populated
 before `AppConfigService` is ever constructed (including the manual instance
 `main.ts` uses to drive database migrations, ahead of Nest's own bootstrap).
+A variable already set in the environment wins over `.env` (unless
+`DOTENV_OVERRIDE=true` is set);
+a missing `.env` is not an error; and since dotenv 18 the preload is silent
+(set `DOTENV_QUIET=false` to see its "injected env" line, which goes to
+stderr). `src/dotenv-preload.spec.ts` pins all of this.
 
 Defaults below are the code defaults. Several variables are **fail-fast in
 production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startup-validation).

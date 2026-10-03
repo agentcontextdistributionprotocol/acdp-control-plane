@@ -1122,3 +1122,11 @@
 - **Blast radius if wrong:** Low — rate-limit tuning only; 429 contract pinned
   by the shared integration case.
 - **Status:** UNCONFIRMED
+
+## Keep `import 'dotenv/config'` instead of a `src/load-env.ts` loader (issue #155)
+- **Plan:** `plans/nestjs-12-155.md` (Phase 2)
+- **Assumed:** with `moduleResolution: "bundler"` (#156) dotenv 18's exports-only
+  typings resolve, so the planned loader module adds nothing. If the repo ever
+  returned to node10 resolution the TS2882 would come back loudly in `tsc`.
+- **Blast radius if wrong:** Low — one import line; the preload spec pins behaviour.
+- **Status:** UNCONFIRMED
