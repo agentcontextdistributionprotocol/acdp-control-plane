@@ -47,5 +47,14 @@ describe('Quota enforcement (integration)', () => {
     // RFC 9110 Retry-After (delta-seconds) so clients can back off.
     expect(third.headers['retry-after']).toBeDefined();
     expect(Number(third.headers['retry-after'])).toBeGreaterThan(0);
+    // #182: QUOTA_EXCEEDED category + envelope details; legacy fields kept.
+    const body = third.body as Record<string, unknown>;
+    expect(body.errorCode).toBe('QUOTA_EXCEEDED');
+    expect(body.code).toBe('rate_limited');
+    expect(body.action).toBe('publish');
+    expect(body.error).toMatchObject({
+      code: 'QUOTA_EXCEEDED',
+      details: { action: 'publish', code: 'rate_limited' },
+    });
   });
 });

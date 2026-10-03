@@ -40,6 +40,12 @@ const SHIPPED: readonly string[] = [
   "TENANT_RESERVED",
   "TENANT_MISMATCH",
   "TENANT_REQUIRED",
+  // #182 Phase 3 — credentials, ingest gating, policy, quota.
+  "INVALID_WEBHOOK_SIGNATURE",
+  "REGISTRY_DISABLED",
+  "REGISTRY_NOT_ENROLLED",
+  "POLICY_DENIED",
+  "QUOTA_EXCEEDED",
 ];
 
 describe("ErrorCode public surface", () => {

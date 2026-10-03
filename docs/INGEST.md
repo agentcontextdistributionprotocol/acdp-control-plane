@@ -34,7 +34,7 @@ Two opt-in env flags harden which registries the control plane accepts:
 
 | Env var | Default | Effect when `true` |
 |---------|---------|--------------------|
-| `INGEST_REQUIRE_ENROLLMENT` | `false` | Ingest accepts **only** authorities that have a `POST /registries/enroll` record (`enabled=true`). Unenrolled authorities are rejected with `403`. |
+| `INGEST_REQUIRE_ENROLLMENT` | `false` | Ingest accepts **only** authorities that have a `POST /registries/enroll` record (`enabled=true`). Unenrolled authorities are rejected with `403 REGISTRY_NOT_ENROLLED`; a disabled enrollment with `403 REGISTRY_DISABLED`. |
 | `INGEST_STRICT_TENANT` | `false` | An unenrolled authority may **not** assert a non-`default` tenant via `X-Tenant-Id`; only a server-side enrollment can bind an event to a non-`default` tenant. Recommended for multi-tenant deployments. |
 
 With both `false` (the default), behavior is backward compatible: any authority

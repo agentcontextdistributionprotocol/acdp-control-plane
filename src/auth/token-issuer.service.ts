@@ -27,11 +27,14 @@ import {
   Optional,
   UnauthorizedException,
   BadRequestException,
+  HttpStatus,
 } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 
 import { AppConfigService } from '../config/app-config.service';
+import { AppException } from '../errors/app-exception';
+import { ErrorCode } from '../errors/error-codes';
 import { ChallengeStore, ChallengeRecord } from './challenge-store.service';
 import { DidWebResolverService } from './did-web/did-web-resolver.service';
 import { verifySignatureB64 } from './acdp-verify';
@@ -263,7 +266,11 @@ export class TokenIssuer {
         signerIp: ctx.signerIp,
         decision: 'reject_signature',
       });
-      throw new UnauthorizedException('Signature verification failed');
+      throw new AppException(
+        ErrorCode.INVALID_SIGNATURE,
+        'Signature verification failed',
+        HttpStatus.UNAUTHORIZED,
+      );
     }
 
     // Mint the JWT.

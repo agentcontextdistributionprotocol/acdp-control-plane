@@ -12,7 +12,6 @@ import {
   RawBodyRequest,
   Req,
   Sse,
-  UnauthorizedException,
   ValidationPipe,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -241,7 +240,11 @@ export class RunsController {
   ): void {
     const raw = req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
     if (!verifyWebhookSignature(raw, signature ?? '', this.config.webhookSecret)) {
-      throw new UnauthorizedException('Invalid webhook signature');
+      throw new AppException(
+        ErrorCode.INVALID_WEBHOOK_SIGNATURE,
+        'Invalid webhook signature',
+        HttpStatus.UNAUTHORIZED,
+      );
     }
   }
 

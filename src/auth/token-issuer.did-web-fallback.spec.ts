@@ -8,6 +8,7 @@
  * preserved so emergency revocations stage locally.
  */
 import { UnauthorizedException } from '@nestjs/common';
+import { ErrorCode } from '../errors/error-codes';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { ChallengeStore } from './challenge-store.service';
 import { DidFetchResponse, DidWebResolverService } from './did-web/did-web-resolver.service';
@@ -187,6 +188,6 @@ describe('TokenIssuer × DidWebResolverService (fallback chain)', () => {
         algorithm: 'ed25519',
         signature: signEd25519(otherPair.privateKey, ch.signingInput),
       }),
-    ).rejects.toThrow(UnauthorizedException);
+    ).rejects.toMatchObject({ errorCode: ErrorCode.INVALID_SIGNATURE, status: 401 });
   });
 });

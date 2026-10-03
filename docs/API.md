@@ -55,8 +55,11 @@ distinct (RFC-ACDP-0015 §10): the former indicts a transparency-log proof or
 checkpoint, the latter a witness's own cosignature — an independent verdict
 over an independent signer, never collapsed into one code.
 
-Policy denials return `403` with `{ message, code, reason }`; quota exceeded
-returns `429` with a `Retry-After` header (see [POLICY.md](./POLICY.md)).
+Policy denials return `403 POLICY_DENIED` and keep the legacy top-level
+`{ message, code, reason }`; quota exceeded returns `429 QUOTA_EXCEEDED` with
+the legacy top-level `{ code: "rate_limited", tenantId, action, limit, … }` and
+a `Retry-After` header (see [POLICY.md](./POLICY.md)). In both, the same
+fields also appear as `error.details`.
 
 ---
 
@@ -137,9 +140,11 @@ returns `429` with a `Retry-After` header (see [POLICY.md](./POLICY.md)).
 | Status | Meaning |
 |--------|---------|
 | `204` | Accepted (persisted and broadcast), **or** silently deduplicated. |
-| `400` | Malformed JSON, missing required fields, oversized body, JSON too deep, or domain-pack-gated `context_type`. |
-| `401` | Bad or missing HMAC signature. |
-| `403` | Unenrolled authority (when `INGEST_REQUIRE_ENROLLMENT=true`) or tenant assertion rejected. |
+| `400` | Malformed JSON, missing required fields, JSON too deep, or domain-pack-gated `context_type`. (An oversized JSON body is a `413`, below — the body parser enforces the same `INGEST_MAX_BODY_BYTES` limit first.) |
+| `401` | `INVALID_WEBHOOK_SIGNATURE` — bad or missing HMAC signature. |
+| `403` | `REGISTRY_NOT_ENROLLED` (when `INGEST_REQUIRE_ENROLLMENT=true`) or `REGISTRY_DISABLED`. |
+| `413` | `PAYLOAD_TOO_LARGE` — a JSON body over `INGEST_MAX_BODY_BYTES`, rejected by the body parser before the handler runs. |
+| `429` | `QUOTA_EXCEEDED` (`TENANT_QUOTAS`) or `RATE_LIMITED` (coarse throttle), with `Retry-After`. |
 
 ### `GET /ingest/health`
 

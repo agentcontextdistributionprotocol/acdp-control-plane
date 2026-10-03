@@ -102,9 +102,11 @@ describe('Run lifecycle (integration)', () => {
       { signatureOverride: 'sha256=deadbeef' },
     );
     expect(badSig.status).toBe(401);
+    expect((badSig.body as { errorCode: string }).errorCode).toBe('INVALID_WEBHOOK_SIGNATURE');
 
     const noSig = await ctx.client.markRunStarted({ run_id: runId, scenario_id: 'x' });
     expect(noSig.status).toBe(401);
+    expect((noSig.body as { errorCode: string }).errorCode).toBe('INVALID_WEBHOOK_SIGNATURE');
   });
 
   it('GET /runs filters by status and scenarioId, paginates', async () => {

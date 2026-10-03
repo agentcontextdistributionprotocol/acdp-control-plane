@@ -1022,3 +1022,38 @@
   plan forbids); template with an override parameter (two ways to call it).
 - **Blast radius if wrong:** Low — internal helper signature.
 - **Status:** UNCONFIRMED
+
+## Ingest enrollment codes are answered before HMAC verification (Phase 3, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md`
+- **Assumed:** naming `REGISTRY_NOT_ENROLLED` / `REGISTRY_DISABLED` adds no
+  information an unauthenticated caller lacked: the enrollment lookup already
+  ran before HMAC verification (`ingest.service.ts`) and the 403 message
+  already said "is not enrolled" / "is disabled". RFC-ACDP-0007 §5.2's
+  leakage rule binds registries, but its reasoning was considered.
+- **Chose:** mint both codes without reordering the checks.
+- **Alternatives:** verify HMAC first (needs the per-registry secret, which
+  only the enrollment lookup provides — a larger redesign); collapse both to
+  generic `FORBIDDEN` (loses the operator remedy).
+- **Blast radius if wrong:** Low — an enrollment-status oracle that already
+  existed via the message.
+- **Status:** UNCONFIRMED
+
+## Policy deny and indeterminate share POLICY_DENIED (Phase 3, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md` (Open question 4)
+- **Assumed:** the legacy top-level `code: "indeterminate"` is enough for
+  clients to tell "OPA could not decide (retry may help)" from a final deny.
+- **Chose:** one `POLICY_DENIED`; a `POLICY_INDETERMINATE` can be added later
+  without breaking anyone (removing one later would).
+- **Blast radius if wrong:** Low — additive fix.
+- **Status:** UNCONFIRMED
+
+## Policy/quota bodies labelled in place, adding a top-level `metadata` (Phase 3, issue #182)
+- **Plan:** `plans/error-codes-4xx-182.md`
+- **Assumed:** adding `statusCode`, `errorCode` and a `metadata` member that
+  duplicates already-top-level fields is a compatible change for the
+  documented legacy bodies (AppException bodies already carry `metadata`).
+- **Chose:** label in place, not AppException (which would move the legacy
+  fields under `metadata` — breaking). 401 per-reason codes on the challenge/
+  token path were NOT added (Open question 3: an oracle for attackers).
+- **Blast radius if wrong:** Low — purely additive fields.
+- **Status:** UNCONFIRMED
