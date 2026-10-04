@@ -166,11 +166,15 @@ it detects production + memory strategy.
 The owning registry returned `429`. The CP maps it to `503` and logs the upstream
 `Retry-After`. Back off and retry.
 
-### `502 Bad Gateway` from `GET /contexts/*`
+### `502 FEDERATION_UPSTREAM_ERROR` from `GET /contexts/*`
 
 The `SafeFederationClient` blocked the fetch: SSRF policy (non-HTTPS, IP literal,
 private/loopback/IMDS-resolved host), a cross-authority redirect, an oversized
-body (>1 MiB), or a transport/timeout error. Check the logged error code.
+body (>1 MiB), or a transport/timeout error. The specific cause is in the
+`federation proxy upstream fetch failed` warn line's `fetchErrorCode` field
+(`SSRF` | `FETCH` | `REDIRECT` | `BODY_TOO_LARGE`, with `detail`). A `502`
+carrying `CONTEXT_ID_MISMATCH` / `CONTEXT_BINDING_UNVERIFIABLE` is different:
+the registry did answer, but the served `ctx_id` binding failed.
 
 ### `404` from `GET /contexts/*`
 

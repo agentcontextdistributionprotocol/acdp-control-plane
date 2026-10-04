@@ -1,5 +1,4 @@
 import {
-  BadGatewayException,
   BadRequestException,
   Controller,
   Get,
@@ -83,14 +82,25 @@ export class ContextsController {
     try {
       response = await this.federationClient.get(upstream);
     } catch (err) {
-      // SSRF / transport / oversize failures are upstream problems, not
-      // "context not found" — surface 502 so the caller can tell them apart.
+      // SSRF / transport / redirect / oversize failures are upstream
+      // problems, not "context not found" and not a control-plane fault —
+      // surface a labelled 502 (#200; it reported INTERNAL_ERROR before). The
+      // specific FederationFetchError cause goes to the log only. An upstream
+      // 429 arrives here already as an AppException
+      // (FEDERATION_UPSTREAM_RATE_LIMITED, 503) and is rethrown unchanged.
       if (err instanceof FederationFetchError) {
-        this.logger.warn(
-          `federation proxy GET ${upstream} failed [${err.code}]: ${err.message}`,
-        );
-        throw new BadGatewayException(
+        this.logger.warn({
+          msg: 'federation proxy upstream fetch failed',
+          registryAuthority: parsed.authority,
+          ctxId,
+          upstream,
+          fetchErrorCode: err.code,
+          detail: err.message,
+        });
+        throw new AppException(
+          ErrorCode.FEDERATION_UPSTREAM_ERROR,
           `Upstream registry ${parsed.authority} unreachable for ${ctxId}`,
+          HttpStatus.BAD_GATEWAY,
         );
       }
       throw err;
@@ -225,8 +235,9 @@ export class ContextsController {
  * **Why this matches the SDK rather than a looser host shape.** The binding
  * check below runs the requested ctx_id through the SDK, which parses it with
  * exactly this grammar — so a ctx_id accepted here but refused there could
- * only ever end in a 502, and 502 on this route must keep meaning one thing:
- * *the upstream served a different context than we asked for.* This is also
+ * only ever end in a 502, and every 502 on this route must indict the
+ * UPSTREAM (CONTEXT_ID_MISMATCH, CONTEXT_BINDING_UNVERIFIABLE, or
+ * FEDERATION_UPSTREAM_ERROR), never a caller's malformed ctx_id. This is also
  * not a contract change for any conformant caller: the reference registry
  * parses the path ctx_id through the same `CtxId::parse` in its own retrieve
  * handler (`acdp-registry-core/src/handlers/context.rs:899`), so such a

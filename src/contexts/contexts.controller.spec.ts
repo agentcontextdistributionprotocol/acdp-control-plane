@@ -1,5 +1,4 @@
 import {
-  BadGatewayException,
   BadRequestException,
   HttpStatus,
 } from '@nestjs/common';
@@ -240,17 +239,70 @@ describe('ContextsController', () => {
     expect(res._headers['Content-Type']).toBe('application/json');
   });
 
-  it('maps a FederationFetchError (SSRF/transport) to 502 BadGateway', async () => {
+  // #200: every FederationFetchError cause is a labelled upstream 502 —
+  // never the 5xx fallback INTERNAL_ERROR — with the client message unchanged.
+  it.each(['SSRF', 'FETCH', 'REDIRECT', 'BODY_TOO_LARGE'] as const)(
+    'maps a FederationFetchError(%s) to 502 FEDERATION_UPSTREAM_ERROR',
+    async (code) => {
+      registryRepo.findByAuthority.mockResolvedValue({
+        baseUrl: 'https://acme.example',
+      });
+      federationClient.get.mockRejectedValue(
+        new FederationFetchError(code, 'internal detail https://acme.example/x'),
+      );
+
+      const err = await caught(() => controller.getContext(CTX_ID, req, fakeRes()));
+
+      expect(err).toBeInstanceOf(AppException);
+      expect((err as AppException).errorCode).toBe(ErrorCode.FEDERATION_UPSTREAM_ERROR);
+      expect((err as AppException).getStatus()).toBe(HttpStatus.BAD_GATEWAY);
+      expect((err as AppException).message).toBe(
+        `Upstream registry acme.example unreachable for ${CTX_ID}`,
+      );
+      // The internal cause/detail stays in the log, never on the wire.
+      expect(JSON.stringify((err as AppException).getResponse())).not.toContain(
+        'internal detail',
+      );
+    },
+  );
+
+  it('logs an upstream fetch failure as ONE structured object (CLAUDE.md, #159)', async () => {
     registryRepo.findByAuthority.mockResolvedValue({
       baseUrl: 'https://acme.example',
     });
     federationClient.get.mockRejectedValue(
-      new FederationFetchError('SSRF', 'blocked address'),
+      new FederationFetchError('FETCH', 'connect ETIMEDOUT'),
     );
+    const warn = jest
+      .spyOn((controller as unknown as { logger: { warn: jest.Mock } }).logger, 'warn')
+      .mockImplementation(() => undefined);
 
-    await expect(
-      controller.getContext(CTX_ID, req, fakeRes()),
-    ).rejects.toBeInstanceOf(BadGatewayException);
+    await caught(() => controller.getContext(CTX_ID, req, fakeRes()));
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]).toHaveLength(1);
+    expect(warn.mock.calls[0][0]).toEqual({
+      msg: 'federation proxy upstream fetch failed',
+      registryAuthority: 'acme.example',
+      ctxId: CTX_ID,
+      upstream: `https://acme.example/contexts/${encodeURIComponent(CTX_ID)}`,
+      fetchErrorCode: 'FETCH',
+      detail: 'connect ETIMEDOUT',
+    });
+  });
+
+  it('passes an upstream-429 AppException (FEDERATION_UPSTREAM_RATE_LIMITED, 503) through unwrapped', async () => {
+    registryRepo.findByAuthority.mockResolvedValue({
+      baseUrl: 'https://acme.example',
+    });
+    const limited = new AppException(
+      ErrorCode.FEDERATION_UPSTREAM_RATE_LIMITED,
+      "upstream 'acme.example' is rate limiting",
+      HttpStatus.SERVICE_UNAVAILABLE,
+    );
+    federationClient.get.mockRejectedValue(limited);
+
+    await expect(controller.getContext(CTX_ID, req, fakeRes())).rejects.toBe(limited);
   });
 
   it('rethrows non-federation errors unchanged (e.g. upstream 429 → AppException)', async () => {

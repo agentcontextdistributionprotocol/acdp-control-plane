@@ -53,11 +53,11 @@ describe('scripts/ci-conventions.sh', () => {
     for (const root of scratchRoots) rmSync(root, { recursive: true, force: true });
   });
 
-  it('passes on the real src/ tree and prints exactly seven ✓ checks', () => {
+  it('passes on the real src/ tree and prints exactly eight ✓ checks', () => {
     const { status, out } = runScript('src');
     expect(out).not.toMatch(/✗/);
     expect(status).toBe(0);
-    expect(out.match(/✓/g) ?? []).toHaveLength(7);
+    expect(out.match(/✓/g) ?? []).toHaveLength(8);
   });
 
   // ── Check 7: unlabelled 403/404s (#182) ────────────────────────────────
@@ -93,6 +93,43 @@ describe('scripts/ci-conventions.sh', () => {
     const { status, out } = runScript(dir);
     expect(status).toBe(0);
     expect(out).toContain('✓ no unlabelled NotFound/Forbidden exceptions');
+  });
+
+  // ── Check 8: unlabelled gateway-family 5xx (#200) ──────────────────────
+  //
+  // Same BRE trap as rule 7 — proven to fire for EACH class name.
+
+  it.each(['BadGatewayException', 'ServiceUnavailableException', 'GatewayTimeoutException'])(
+    'fails on a bare `new %s(`',
+    (cls) => {
+      const dir = scratchTree({
+        'gate.ts': ['export function f(): never {', `  throw new ${cls}('x');`, '}'].join('\n'),
+      });
+      const { status, out } = runScript(dir);
+      expect(status).not.toBe(0);
+      expect(out).toContain(
+        '✗ no unlabelled BadGateway/ServiceUnavailable/GatewayTimeout exceptions',
+      );
+      expect(out).toContain('gate.ts:2:');
+    },
+  );
+
+  it('rule 8 exempts comment lines and *.spec.ts, and allows AppException(…, BAD_GATEWAY)', () => {
+    const dir = scratchTree({
+      'commented.ts': [
+        '// never: new BadGatewayException(\'x\')',
+        '/**',
+        ' * nor new GatewayTimeoutException(\'y\')',
+        ' */',
+        'export const ok = new AppException(ErrorCode.FEDERATION_UPSTREAM_ERROR, \'m\', HttpStatus.BAD_GATEWAY);',
+      ].join('\n'),
+      'thing.spec.ts': "expect(() => { throw new ServiceUnavailableException('x'); }).toThrow();\n",
+    });
+    const { status, out } = runScript(dir);
+    expect(status).toBe(0);
+    expect(out).toContain(
+      '✓ no unlabelled BadGateway/ServiceUnavailable/GatewayTimeout exceptions',
+    );
   });
 
   // ── Check 6: the SDK-surface shim hole ─────────────────────────────────

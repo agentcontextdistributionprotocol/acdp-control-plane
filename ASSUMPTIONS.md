@@ -1089,7 +1089,7 @@
   `INTERNAL_ERROR` (retryable, which is not wrong for a 502) until a follow-up
   mints a code aligned with RFC-ACDP-0007 `cross_registry_resolution_failed`.
 - **Blast radius if wrong:** Low — retryable code on a retryable status.
-- **Status:** NEEDS-CHANGE — follow-up issue #200 (mint an upstream-failure code); not a ship blocker (reversible, additive)
+- **Status:** CONFIRMED (resolved, 2026-10-03) — fixed by #200 (`plans/federation-502-code-200.md`): the 502 now carries the specific `FEDERATION_UPSTREAM_ERROR` (`src/errors/error-codes.ts`), thrown as an `AppException` in `src/contexts/contexts.controller.ts`. Alignment with the registry's lowercase `cross_registry_resolution_failed` was rejected — CP codes stay SCREAMING_SNAKE and disjoint. See the three #200 entries below.
 
 ## `moduleResolution: "bundler"` is the resting point for the CJS build (issue #156)
 - **Plan:** `plans/typescript-7-156.md` (Phase 1)
@@ -1202,4 +1202,38 @@
   bucket (one-time bucket reset at deploy), an empty-string `req.ip` now keys on
   `'anonymous'` instead of `''`, and malformed strings still key on themselves.
 - **Blast radius if wrong:** Low — a removed export fails typecheck/CI loudly.
+- **Status:** UNCONFIRMED
+
+## The upstream-failure 502 is named `FEDERATION_UPSTREAM_ERROR` (issue #200)
+- **Plan:** `plans/federation-502-code-200.md` (Open question 1)
+- **Assumed:** one code for all four `FederationFetchError` causes (SSRF,
+  FETCH, REDIRECT, BODY_TOO_LARGE), named in the `FEDERATION_UPSTREAM_*` family
+  of the existing 503 `FEDERATION_UPSTREAM_RATE_LIMITED`.
+- **Alternatives:** `UPSTREAM_REGISTRY_ERROR` (issue's candidate; breaks the
+  family prefix), `FEDERATION_UPSTREAM_UNREACHABLE` (false for SSRF/oversize),
+  one code per cause (four public names nobody branches on yet).
+- **Blast radius if wrong:** Medium — `ErrorCode` is a one-way public surface;
+  a rename after release is a breaking change (adding finer codes is additive).
+- **Status:** UNCONFIRMED
+
+## The federation fetch cause stays in the log, not on the wire (issue #200)
+- **Plan:** `plans/federation-502-code-200.md` (Open question 2)
+- **Assumed:** the 502 body carries no `error.details.cause`; the cause is the
+  `fetchErrorCode` field of the `federation proxy upstream fetch failed` warn.
+  Retryability differs by cause (FETCH transient; SSRF/REDIRECT/BODY_TOO_LARGE
+  effectively permanent), but exposing the SSRF classification to arbitrary
+  callers is an information-disclosure question; adding `details` later is additive.
+- **Blast radius if wrong:** Low — additive to change.
+- **Status:** UNCONFIRMED
+
+## Unlabelled 5xx keeps `INTERNAL_ERROR`; no generic gateway fallback (issue #200)
+- **Plan:** `plans/federation-502-code-200.md` (Open question 3)
+- **Assumed:** `defaultErrorCode` is unchanged: after #200 nothing in `src/`
+  throws an unlabelled 502/503/504, and minting a generic fallback with zero
+  producers would be a permanent public name for a hypothetical. CI rule 8 bans
+  bare `new BadGateway|ServiceUnavailable|GatewayTimeoutException(`. Known gap:
+  a string-bodied `new HttpException('x', 502)` is not matched by rule 8 and
+  would still report `INTERNAL_ERROR` (pinned by `exception.filter.spec.ts`).
+- **Blast radius if wrong:** Low — a future upstream 5xx would be mislabelled
+  retryable `INTERNAL_ERROR`, which is still a retryable status.
 - **Status:** UNCONFIRMED
