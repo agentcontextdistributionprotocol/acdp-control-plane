@@ -21,9 +21,12 @@
  *     a signature verify, a DB write — limiting the rate protects the
  *     resolver + DB from being a DoS lever.
  *
- * The tracker is `req.actorId ?? req.ip` from ThrottleByUserGuard. Since
- * these routes are `@Public()`, actorId is unset and the bucket keys on
- * caller IP. Operators behind a proxy MUST set `app.set('trust proxy')`
+ * The tracker comes from ThrottleByUserGuard: `req.actorId`, else the
+ * normalized `req.ip`. Since these routes are `@Public()`, actorId is unset
+ * and the bucket keys on caller IP — an IPv6 caller on its `/64` network
+ * (`THROTTLE_IPV6_SUBNET_PREFIX`, issue #187), so rotating addresses inside
+ * one allocation does not reset the 20/min budget. Operators behind a proxy
+ * MUST set `app.set('trust proxy')` (a hop count or proxy CIDR, never `true`)
  * so the bucket keys on the real client, not the proxy hop.
  */
 import {

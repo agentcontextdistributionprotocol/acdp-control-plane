@@ -88,9 +88,13 @@ import { WitnessSigningService } from './witness/witness-signing.service';
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [AppConfigService],
-      useFactory: (config: AppConfigService) => [
-        { ttl: config.throttleTtlMs, limit: config.throttleLimit },
-      ],
+      // Object form (not the bare array): only the object form carries
+      // `ipv6SubnetPrefix`, which ThrottlerGuard.onModuleInit copies onto
+      // the guard for ThrottleByUserGuard's IP fallback (issue #187).
+      useFactory: (config: AppConfigService) => ({
+        throttlers: [{ ttl: config.throttleTtlMs, limit: config.throttleLimit }],
+        ipv6SubnetPrefix: config.throttleIpv6SubnetPrefix,
+      }),
     }),
   ],
   controllers: [

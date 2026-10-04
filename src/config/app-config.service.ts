@@ -245,6 +245,11 @@ export class AppConfigService implements OnModuleInit {
   // `src/auth/auth.controller.ts` for the literal override.
   readonly throttleTtlMs = readNumber('THROTTLE_TTL_MS', 60000);
   readonly throttleLimit = readNumber('THROTTLE_LIMIT', 200);
+  // Unauthenticated callers key on IP; an IPv6 address is collapsed to this
+  // prefix length so a host rotating source addresses inside its own /64
+  // still lands in ONE bucket (issue #187). 128 = per-address (the pre-#187
+  // behaviour). Validated to an integer in [1, 128] at startup.
+  readonly throttleIpv6SubnetPrefix = readNumber('THROTTLE_IPV6_SUBNET_PREFIX', 64);
 
   // Receipt audit mode (ACDP 0.2.0, RFC-ACDP-0010). When enabled, a
   // background sweep cross-checks registry receipts on ingested publish
@@ -439,6 +444,21 @@ export class AppConfigService implements OnModuleInit {
           'TENANT_API_KEYS entry) but AUTH_REQUIRE_TENANT=false. A request ' +
           'that resolves to no tenant would run unscoped and leak cross-tenant ' +
           'data. Set AUTH_REQUIRE_TENANT=true to enable strict enforcement.',
+      );
+    }
+
+    // A rate-limit security control (issue #187): enforced in every
+    // environment. 0 would merge every IPv6 caller into one bucket (a
+    // self-inflicted DoS); a fractional or >128 value would be silently
+    // clamped/truncated by the throttler, hiding the operator's mistake.
+    if (
+      !Number.isInteger(this.throttleIpv6SubnetPrefix) ||
+      this.throttleIpv6SubnetPrefix < 1 ||
+      this.throttleIpv6SubnetPrefix > 128
+    ) {
+      throw new Error(
+        `THROTTLE_IPV6_SUBNET_PREFIX must be an integer in [1, 128] ` +
+          `(got ${this.throttleIpv6SubnetPrefix}); default 64.`,
       );
     }
 

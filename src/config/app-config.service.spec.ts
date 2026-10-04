@@ -57,6 +57,41 @@ describe('AppConfigService', () => {
     expect(freshConfig().port).toBe(3001);
   });
 
+  describe('THROTTLE_IPV6_SUBNET_PREFIX (issue #187)', () => {
+    it('defaults to 64', () => {
+      delete process.env.THROTTLE_IPV6_SUBNET_PREFIX;
+      expect(freshConfig().throttleIpv6SubnetPrefix).toBe(64);
+    });
+
+    it('accepts the bounds 1 and 128 and a typical 56', () => {
+      process.env.NODE_ENV = 'development';
+      for (const v of ['1', '56', '128']) {
+        process.env.THROTTLE_IPV6_SUBNET_PREFIX = v;
+        const cfg = freshConfig();
+        expect(cfg.throttleIpv6SubnetPrefix).toBe(Number(v));
+        expect(() => cfg.onModuleInit()).not.toThrow();
+      }
+    });
+
+    it('falls back to 64 on non-numeric input (readNumber semantics)', () => {
+      process.env.THROTTLE_IPV6_SUBNET_PREFIX = 'sixty-four';
+      expect(freshConfig().throttleIpv6SubnetPrefix).toBe(64);
+    });
+
+    it.each(['development', 'production'])(
+      'fails startup on 0, 129, -1 or 64.5 in %s (not dev-only)',
+      (env) => {
+        process.env.NODE_ENV = env;
+        process.env.AUTH_API_KEYS = 'k';
+        process.env.WEBHOOK_SECRET = 'shh';
+        for (const v of ['0', '129', '-1', '64.5']) {
+          process.env.THROTTLE_IPV6_SUBNET_PREFIX = v;
+          expect(() => freshConfig().onModuleInit()).toThrow(/THROTTLE_IPV6_SUBNET_PREFIX/);
+        }
+      },
+    );
+  });
+
   describe('production validation (onModuleInit)', () => {
     beforeEach(() => {
       process.env.NODE_ENV = 'production';

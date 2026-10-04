@@ -678,7 +678,8 @@ Body:
 Returns `{ "token": "<jwt>", "token_type": "Bearer", "expires_at": <unix> }`.
 `401` on unknown/expired nonce, agent mismatch, missing pinned key, or bad
 signature; `400` on unsupported algorithm. `/auth/challenge` and `/auth/token`
-carry a tighter per-IP throttle than the global limit.
+carry a tighter per-IP throttle than the global limit (an IPv6 caller is
+counted per `/64` network, not per address — `THROTTLE_IPV6_SUBNET_PREFIX`).
 
 ### `POST /auth/introspect` — RFC 7662 introspection
 
