@@ -389,11 +389,16 @@ only on full success.
   files committed under `drizzle/` (no `drizzle-kit` at runtime). Applied
   migrations are tracked in `_migrations`.
 - **Graceful shutdown** via `src/shutdown.ts`: a single idempotent handler on
-  SIGINT/SIGTERM first **begins the drain** (issue #192) and then calls
-  `app.close()`. Drain sequence:
+  SIGINT/SIGTERM first **begins the drain** (issue #192), optionally waits
+  `SHUTDOWN_DRAIN_DELAY_MS`, and then calls `app.close()`. `DrainState` moves
+  through three monotone phases, `serving → draining → closing`. Drain sequence:
   1. `DrainState.begin()` (`src/shutdown-drain.ts`, a global provider with no
-     lifecycle hooks, resolved once in `bootstrap.ts`) flips the single "are we
-     shutting down?" flag and fires its replaying `drained$`. Every open SSE
+     lifecycle hooks, resolved once in `bootstrap.ts`) enters `draining` — the
+     single "are we shutting down?" source — and fires its replaying
+     `drained$`. From this moment `GET /readyz` answers `503 SERVICE_DRAINING`
+     **without querying the database**: the health controller checks the drain
+     first (readiness = `!draining && deps ok`, one code path), so a load
+     balancer stops routing here. Every open SSE
      stream (both routes share `src/events/sse-drain.ts`) writes a terminal
      `event: shutdown` with a `retry:` hint and completes. A stream opened
      *after* this point gets the same event at once and never subscribes to the
@@ -402,16 +407,30 @@ only on full success.
      on the stream-hub strategy. `StreamHubService`'s teardown stays as the
      backstop.
 
-     From the same moment, every **new** non-SSE request is answered
+     **Optional drain delay (Phase 3).** With `SHUTDOWN_DRAIN_DELAY_MS` > 0 the
+     handler now waits that long in `draining` before going on. During the
+     delay **every other route keeps serving** (the pool is still alive) — the
+     point is that a lagging load balancer's requests still succeed while it
+     notices the failing readiness probe and deregisters the instance. The
+     wait is `unref()`'d and cancellable: a second signal skips the rest of it
+     (log `second signal — skipping drain delay`) and never re-enters
+     `close()`. The deadline covers only `close()`, so the worst case is delay
+     + timeout. Default 0: no timer, and the next step follows in the same
+     tick — the Phase 1–2 timing exactly.
+
+     Then `DrainState.beginClosing()` enters `closing`. From that moment, every
+     **new** non-SSE request is answered
      `503 SERVICE_DRAINING` (`Retry-After`, `Connection: close`, the JSON
      envelope, CORS and helmet headers, an `X-Request-Id` and a request-log
      line). "New" is decided **at arrival**: a plain Express middleware
      registered in `bootstrap.ts` *before* the body parsers stamps
-     `DrainState.isDraining()` onto the request as soon as its headers are
+     `DrainState.phase()` onto the request as soon as its headers are
      parsed (`createDrainArrivalMarker`), and the drain gate
      (`src/middleware/drain-gate.middleware.ts`, module middleware after the
      correlation-id and request-logger middleware, so before every guard)
-     decides from that stamp alone. Module middleware only runs after the body
+     decides from that stamp alone — `closing` is rejected, `serving` and
+     `draining` pass (the gate has no readiness rule; in `closing` its generic
+     503 covers `/readyz` too). Module middleware only runs after the body
      parsers, so a gate reading the live flag would 503 a request whose headers
      arrived before the signal and whose body finished after it. `GET` on the
      two SSE routes is exempt and takes the subscribe-after-drain path above,
@@ -419,8 +438,8 @@ only on full success.
      CORS preflight is ended by `cors()` (204) before it reaches the gate.
   2. `app.close()` runs the destroy hooks, then Nest's `dispose()` calls
      `httpServer.close()`. That stops the listener and closes the sockets that
-     are idle at that moment, once. A 100 ms idle-socket reaper started at drain
-     time calls `server.closeIdleConnections()` on every tick, but **only once
+     are idle at that moment, once. A 100 ms idle-socket reaper started when the
+     close begins calls `server.closeIdleConnections()` on every tick, but **only once
      `server.listening` is false**: `closeIdleConnections()` also destroys a
      just-accepted socket that has not sent its request line yet. Sockets that go
      idle during the close (every SSE stream after its `shutdown` event, every
@@ -437,7 +456,8 @@ only on full success.
   503s SSE reconnects too (see `plans/graceful-drain-192.md`).
 
   Each shutdown ends with one structured `shutdown drain complete` line
-  (`drainMs`, `sseStreamsTerminated`, `drainRejections`, `forcedConnections`).
+  (`drainMs`, `drainDelayMs`, `sseStreamsTerminated`, `drainRejections`,
+  `forcedConnections`).
   On an overrun the handler first reads a synchronous open-socket count
   (`trackOpenConnections`, never the callback-async `getConnections()`) and logs
   it as `forcedConnections` before `closeAllConnections()`.
@@ -498,3 +518,46 @@ only on full success.
 - **Dev sandbox**: when `WEBHOOK_SECRET` is empty, HMAC verification is
   **skipped** (the config service fails startup in production). Never use in
   production.
+
+### Deploying behind a load balancer
+
+The listener closes within milliseconds of SIGTERM unless something holds it, so
+a load balancer that has not yet noticed the stopping instance routes requests to
+a closed port (refused/reset). `SHUTDOWN_DRAIN_DELAY_MS` (issue #192, Phase 3,
+default `0`) is the opt-in fix: for that long after the signal `/readyz` returns
+`503 SERVICE_DRAINING` while every other route keeps serving, and only then does
+the close begin. Set it **or** a Kubernetes `preStop: exec: sleep N` hook, not
+both — `preStop` delays the SIGTERM itself but does not flip `/readyz`, and
+stacking the two simply adds them. Two inequalities must hold:
+
+- **Termination grace covers the whole drain.**
+  `terminationGracePeriodSeconds ≥ (SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS)/1000 + 5`.
+  Otherwise the platform SIGKILLs (exit 137) before the forced path can run.
+  With `5000` + the default `10000` that is ≥ 20 s (Kubernetes' default 30 s is
+  enough). Startup warns when delay + timeout exceeds 25000 ms. For Docker
+  Compose the equivalent is `stop_grace_period` (default 10 s, equal to the
+  default `SHUTDOWN_TIMEOUT_MS`; `docker-compose.yml` sets 15 s).
+- **The readiness probe notices the drain inside the delay.**
+  `periodSeconds × failureThreshold` (in ms) must be **shorter** than
+  `SHUTDOWN_DRAIN_DELAY_MS`, with margin for the endpoint change to propagate
+  to the load balancer. Example: `periodSeconds: 1`, `failureThreshold: 2` →
+  2000 ms < 5000 ms. Otherwise the listener closes before the probe has failed
+  often enough to deregister the pod.
+
+```yaml
+# Illustrative pod spec fragment (the repo ships no manifests).
+env:
+  - { name: SHUTDOWN_DRAIN_DELAY_MS, value: "5000" }
+  - { name: SHUTDOWN_TIMEOUT_MS, value: "10000" }
+terminationGracePeriodSeconds: 30   # >= (5000 + 10000)/1000 + 5 = 20
+readinessProbe:
+  httpGet: { path: /readyz, port: 3001 }
+  periodSeconds: 1
+  failureThreshold: 2               # 2 s to notice < 5 s delay
+```
+
+Registry webhooks benefit too: the registry's default webhook `max_retries = 3`
+gives a retry window of only ~750 ms. During the delay `/ingest/acdp` is still
+served, so deliveries keep succeeding while the load balancer deregisters this
+instance instead of hitting a 503 or a refused port and being dropped after
+three quick retries.

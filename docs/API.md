@@ -79,8 +79,10 @@ wherever one exists. `INTERNAL_ERROR` is reserved for genuine server faults
 | `INVALID_LOG_PROOF` | — | verdict | Transparency-log proof/checkpoint failed (audit verdict/alert category). |
 | `INVALID_WITNESS_COSIGNATURE` | — | verdict | A witness cosignature failed (diagnostic category). |
 
-`SERVICE_DRAINING` (issue #192) is returned by the shutdown drain gate to any
-request whose headers arrive after the instance began shutting down, before
+`SERVICE_DRAINING` (issue #192) is returned by `GET /readyz` from the moment a
+shutdown signal arrives, and by the shutdown drain gate to any
+request whose headers arrive after the instance began closing (after the
+optional `SHUTDOWN_DRAIN_DELAY_MS`, during which other routes still serve), before
 authentication (so it costs no throttle or quota budget), with `Retry-After`
 (`SHUTDOWN_RETRY_AFTER_SECONDS`, default 1), `Connection: close`, the usual
 JSON envelope, CORS headers and an `X-Request-Id`. A request whose headers
@@ -860,7 +862,7 @@ the `did:web` document to resolve.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET`  | `/healthz` | Liveness (`{ ok, service, version }`); pings DB. **Public.** |
-| `GET`  | `/readyz` | Readiness (`{ ok, database }`). **Public.** |
+| `GET`  | `/readyz` | Readiness (`{ ok, database }`). **Public.** Once a shutdown signal has arrived it answers `503 SERVICE_DRAINING` (with `Retry-After`) without querying the database, so a load balancer stops routing here; with `SHUTDOWN_DRAIN_DELAY_MS` set that happens while every other route still serves (issue #192). |
 | `GET`  | `/metrics` | Prometheus text-format metrics. **Public.** |
 | `GET`  | `/docs` | Swagger UI (dev / opt-in). |
 

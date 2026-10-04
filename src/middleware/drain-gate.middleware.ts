@@ -3,7 +3,7 @@ import { NextFunction, Request, Response } from 'express';
 import { AppConfigService } from '../config/app-config.service';
 import { AppException } from '../errors/app-exception';
 import { ErrorCode } from '../errors/error-codes';
-import { arrivedDuringDrain, DrainState } from '../shutdown-drain';
+import { arrivedWhileClosing, DrainState } from '../shutdown-drain';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
 
 /**
@@ -42,11 +42,18 @@ export function isSseRequest(req: Pick<Request, 'method' | 'originalUrl'>): bool
  * it runs before every `APP_GUARD`: a draining 503 costs no `ThrottleByUserGuard`
  * budget and no `QuotaGuard` increment, and `@Public()` is irrelevant.
  *
- * It decides ONLY from the arrival mark (`arrivedDuringDrain`, stamped by the
+ * It decides ONLY from the arrival mark (`arrivedWhileClosing`, stamped by the
  * marker `src/bootstrap.ts` installs before the body parsers), never from the
- * live `DrainState.isDraining()`. A request whose headers arrived before the
- * drain therefore passes even if its body completes after it — the regression
- * the split exists to prevent (see `createDrainArrivalMarker`).
+ * live `DrainState.phase()`. A request whose headers arrived before the close
+ * therefore passes even if its body completes after it — the regression the
+ * split exists to prevent (see `createDrainArrivalMarker`).
+ *
+ * Phases (#192 Phase 3): during `draining` — the opt-in `SHUTDOWN_DRAIN_DELAY_MS`
+ * window — the gate passes EVERYTHING: that window exists so a load balancer
+ * that has not yet deregistered this replica still gets its requests served.
+ * Readiness during `draining` is the health controller's job (readiness → 503),
+ * the ONE readiness mechanism; this gate has no route check for it. Only a
+ * request arriving in `closing` is rejected.
  *
  * Exempt: `GET` on the two SSE routes. A non-2xx kills `EventSource` for good
  * (`readyState` CLOSED, no retry), so a new SSE request instead takes the
@@ -55,8 +62,8 @@ export function isSseRequest(req: Pick<Request, 'method' | 'originalUrl'>): bool
  * so e.g. a JWT revocation lookup after `pool.end()` can still fail an SSE
  * reconnect — a residual risk bounded to the last moments of the close.)
  *
- * Everything else that arrived during the drain — `/healthz` and `/readyz`
- * included, with no route special-casing — gets
+ * Everything else that arrived during `closing` — both health probes included,
+ * with no route special-casing — gets
  * `503 SERVICE_DRAINING` with `Retry-After` and `Connection: close`, through
  * `GlobalExceptionFilter` (so the JSON envelope, `application/acdp+json`, and the
  * helmet + CORS headers registered ahead of module middleware are all present).
@@ -75,7 +82,7 @@ export class DrainGateMiddleware implements NestMiddleware {
   ) {}
 
   use(req: Request, res: Response, next: NextFunction): void {
-    if (!arrivedDuringDrain(req) || isSseRequest(req)) {
+    if (!arrivedWhileClosing(req) || isSseRequest(req)) {
       next();
       return;
     }

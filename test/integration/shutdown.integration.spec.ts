@@ -329,6 +329,77 @@ describe('graceful shutdown (real process, real signal)', () => {
       }
     });
 
+    interface RawResponse {
+      raw: string;
+      status: number;
+      headers: Record<string, string>;
+      body: string;
+    }
+
+    /** Send one request on a FRESH connection and collect everything until the
+     *  server closes it (`untilEnd` true), until the header block is in (false),
+     *  or until the header block plus the `Content-Length` body is in (`'body'`,
+     *  for a keep-alive response the server does not close). A refused
+     *  connection is reported distinctly: it means the fixture did not hold the
+     *  listener open, NOT that the gate failed. */
+    function rawRequest(request: string, untilEnd: boolean | 'body' = true): Promise<RawResponse> {
+      return new Promise((resolve, reject) => {
+        const socket = connect(PORT, '127.0.0.1');
+        let raw = '';
+        const done = (): void => {
+          const head = raw.split('\r\n\r\n', 1)[0] ?? '';
+          const [statusLine, ...lines] = head.split('\r\n');
+          const headers: Record<string, string> = {};
+          for (const line of lines) {
+            const i = line.indexOf(':');
+            if (i > 0) headers[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
+          }
+          resolve({
+            raw,
+            status: Number(/^HTTP\/1\.1 (\d{3})/.exec(statusLine ?? '')?.[1] ?? 0),
+            headers,
+            body: raw.slice(head.length + 4),
+          });
+        };
+        socket.on('data', (c: Buffer) => {
+          raw += c.toString('latin1');
+          // A response that does not close the socket (a preflight 204 on a
+          // keep-alive connection) is complete once its header block is in.
+          if (!untilEnd && raw.includes('\r\n\r\n')) {
+            socket.destroy();
+            done();
+          }
+          if (untilEnd === 'body' && raw.includes('\r\n\r\n')) {
+            const headEnd = raw.indexOf('\r\n\r\n') + 4;
+            const len = Number(/\r\ncontent-length:\s*(\d+)/i.exec(raw.slice(0, headEnd))?.[1]);
+            if (Number.isFinite(len) && raw.length - headEnd >= len) {
+              socket.destroy();
+              done();
+            }
+          }
+        });
+        socket.once('error', (err: NodeJS.ErrnoException) => {
+          if (raw) return;
+          reject(
+            new Error(
+              err.code === 'ECONNREFUSED'
+                ? 'fixture did not hold the listener open (ECONNREFUSED) — not a gate failure'
+                : `probe connection failed: ${err.code ?? err.message}`,
+            ),
+          );
+        });
+        socket.once('close', () => {
+          if (raw) done();
+        });
+        socket.write(request);
+      });
+    }
+
+    const at = <T>(sentAt: number, ms: number, fn: () => Promise<T>): Promise<T> =>
+      new Promise<T>((resolve, reject) => {
+        setTimeout(() => fn().then(resolve, reject), Math.max(0, sentAt + ms - Date.now()));
+      });
+
     describe('drain gate for new requests (issue #192, Phase 2)', () => {
       // Red on the Phase 1 code (recorded 2026-10-04, before Phase 2): (ii) the
       // fresh `GET /readyz` at +100 ms got 200, not 503. Phase 1 already gave
@@ -342,66 +413,6 @@ describe('graceful shutdown (real process, real signal)', () => {
        *  the fixture would boot it). */
       const STALL_MS = 1500;
       const ORIGIN = 'http://drain-probe.example';
-
-      interface RawResponse {
-        raw: string;
-        status: number;
-        headers: Record<string, string>;
-        body: string;
-      }
-
-      /** Send one request on a FRESH connection and collect everything until the
-       *  server closes it. A refused connection is reported distinctly: it means
-       *  the fixture did not hold the listener open, NOT that the gate failed. */
-      function rawRequest(request: string, untilEnd = true): Promise<RawResponse> {
-        return new Promise((resolve, reject) => {
-          const socket = connect(PORT, '127.0.0.1');
-          let raw = '';
-          const done = (): void => {
-            const head = raw.split('\r\n\r\n', 1)[0] ?? '';
-            const [statusLine, ...lines] = head.split('\r\n');
-            const headers: Record<string, string> = {};
-            for (const line of lines) {
-              const i = line.indexOf(':');
-              if (i > 0) headers[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
-            }
-            resolve({
-              raw,
-              status: Number(/^HTTP\/1\.1 (\d{3})/.exec(statusLine ?? '')?.[1] ?? 0),
-              headers,
-              body: raw.slice(head.length + 4),
-            });
-          };
-          socket.on('data', (c: Buffer) => {
-            raw += c.toString('latin1');
-            // A response that does not close the socket (a preflight 204 on a
-            // keep-alive connection) is complete once its header block is in.
-            if (!untilEnd && raw.includes('\r\n\r\n')) {
-              socket.destroy();
-              done();
-            }
-          });
-          socket.once('error', (err: NodeJS.ErrnoException) => {
-            if (raw) return;
-            reject(
-              new Error(
-                err.code === 'ECONNREFUSED'
-                  ? 'fixture did not hold the listener open (ECONNREFUSED) — not a gate failure'
-                  : `probe connection failed: ${err.code ?? err.message}`,
-              ),
-            );
-          });
-          socket.once('close', () => {
-            if (raw) done();
-          });
-          socket.write(request);
-        });
-      }
-
-      const at = <T>(sentAt: number, ms: number, fn: () => Promise<T>): Promise<T> =>
-        new Promise<T>((resolve, reject) => {
-          setTimeout(() => fn().then(resolve, reject), Math.max(0, sentAt + ms - Date.now()));
-        });
 
       it('503s new requests on arrival, keeps SSE reconnects 200, and lets in-flight requests finish', async () => {
         app = await startApp({ ...DRAIN_ENV, CORS_ORIGIN: ORIGIN }, SLOW);
@@ -505,11 +516,130 @@ describe('graceful shutdown (real process, real signal)', () => {
           expect(out).toContain('shutdown drain complete');
           expect(out).toMatch(/"?drainMs"?:\s*\d+/);
           expect(out).toMatch(/"?drainRejections"?:\s*[1-9]\d*/);
+          // #192 Phase 3: with SHUTDOWN_DRAIN_DELAY_MS unset there is no delay —
+          // every timing above is the Phase 2 one, unchanged.
+          expect(out).toMatch(/"?drainDelayMs"?:\s*0\b/);
+          expect(out).not.toContain('draining before close');
           expect(out).not.toContain('forcing shutdown');
         } finally {
           sse.socket.destroy();
           post.destroy();
         }
+      });
+    });
+
+    describe('opt-in pre-close drain delay (issue #192, Phase 3)', () => {
+      const stripAnsi = (t: string): string =>
+        t.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+
+      it('during SHUTDOWN_DRAIN_DELAY_MS, /readyz is 503 (health controller) while other routes serve; then it closes', async () => {
+        app = await startApp({ ...DRAIN_ENV, SHUTDOWN_DRAIN_DELAY_MS: '1500' });
+        const sse = await openSse('/events/stream');
+
+        try {
+          const sentAt = Date.now();
+          app.child.kill('SIGTERM');
+          const exited = exitCodeWithin(app.child, 20_000);
+
+          // `'body'`: these keep-alive responses do not close the socket, and
+          // must not be read as complete until their JSON is in.
+          const readyz = at(sentAt, 500, () =>
+            rawRequest('GET /readyz HTTP/1.1\r\nHost: localhost\r\n\r\n', 'body'),
+          );
+          const runs = at(sentAt, 500, () =>
+            rawRequest(
+              `GET /runs HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${API_KEY}\r\n\r\n`,
+              'body',
+            ),
+          );
+          const newSse = at(sentAt, 500, () =>
+            rawRequest(
+              'GET /events/stream HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n' +
+                `Authorization: Bearer ${API_KEY}\r\n\r\n`,
+            ),
+          );
+          // After the delay the listener is closing/closed: a 503 from the gate
+          // or a refused connection — never a normal answer.
+          const late = at(sentAt, 2000, () =>
+            rawRequest('GET /runs HTTP/1.1\r\nHost: localhost\r\n\r\n').then(
+              (r) => r.status,
+              (err: Error) => (/ECONNREFUSED/.test(err.message) ? 'refused' : err.message),
+            ),
+          );
+
+          const code = await exited;
+          const exitMs = Date.now() - sentAt;
+
+          // The readiness flip, answered by the HEALTH CONTROLLER: the gate's 503
+          // would carry `Connection: close` and count a drain rejection.
+          const r = await readyz;
+          expect({ status: r.status, raw: r.raw }).toEqual({ status: 503, raw: r.raw });
+          const json = JSON.parse(r.body) as Record<string, unknown>;
+          expect(json.errorCode).toBe('SERVICE_DRAINING');
+          expect(r.headers['retry-after']).toBe('1');
+          expect(r.headers.connection).not.toBe('close');
+          expect(r.headers['content-type']).toMatch(/application\/acdp\+json/);
+
+          // Everything else keeps serving during the delay (pool still alive).
+          const runsRes = await runs;
+          expect({ status: runsRes.status, raw: runsRes.raw }).toEqual({ status: 200, raw: runsRes.raw });
+
+          // A new SSE request: 200 + `event: shutdown` + retry + end.
+          const s = await newSse;
+          expect({ status: s.status, raw: s.raw }).toEqual({ status: 200, raw: s.raw });
+          expect(s.raw).toMatch(/event: shutdown\n(?:id: \d+\n)?retry: \d+\n/);
+          expect(s.raw.lastIndexOf('0\r\n\r\n')).toBeGreaterThan(s.raw.indexOf('event: shutdown'));
+
+          // The open stream ended at the START of the delay, not after it.
+          expectShutdownThenTerminator(sse);
+          expect((await sse.terminated) - sentAt).toBeLessThan(500);
+
+          expect([503, 'refused']).toContain(await late);
+          expect(code).toBe(0);
+          expect(exitMs).toBeGreaterThanOrEqual(1500);
+          expect(exitMs).toBeLessThan(2500);
+
+          const out = stripAnsi(app.output());
+          expect(out).toContain('draining before close');
+          expect(out).toMatch(/"?drainDelayMs"?:\s*1[45]\d\d\b/);
+          // Nothing during the delay was a gate rejection.
+          expect(out).toMatch(/"?drainRejections"?:\s*0\b/);
+          expect(out).not.toContain('forcing shutdown');
+        } finally {
+          sse.socket.destroy();
+        }
+      });
+
+      it('a second signal skips the rest of the delay; close() runs once and the exit is 0', async () => {
+        app = await startApp({ ...DRAIN_ENV, SHUTDOWN_DRAIN_DELAY_MS: '5000' });
+
+        const sentAt = Date.now();
+        app.child.kill('SIGTERM');
+        const exited = exitCodeWithin(app.child, 20_000);
+        setTimeout(() => app?.child.kill('SIGTERM'), 200);
+
+        const code = await exited;
+        const exitMs = Date.now() - sentAt;
+        const out = stripAnsi(app.output());
+
+        expect(code).toBe(0);
+        // Well under the 5000 ms delay: close() started at about +200 ms.
+        expect(exitMs).toBeLessThan(1500);
+        expect(out).toContain('second signal — skipping drain delay');
+        const waited = Number(/"?drainDelayMs"?:\s*(\d+)/.exec(out)?.[1]);
+        expect(waited).toBeGreaterThanOrEqual(150);
+        expect(waited).toBeLessThan(1000);
+        // close() ran exactly once: one summary, no double pool end (#158).
+        expect(out.split('shutdown drain complete').length - 1).toBe(1);
+        expect(out).not.toContain('Called end on pool more than once');
+        expect(out).not.toContain('forcing shutdown');
+      });
+
+      it('fails boot on a negative SHUTDOWN_DRAIN_DELAY_MS', async () => {
+        const started = startApp({ SHUTDOWN_DRAIN_DELAY_MS: '-1' }).then((a) => (app = a));
+        await expect(started).rejects.toThrow(
+          /exited during boot with code 1[\s\S]*SHUTDOWN_DRAIN_DELAY_MS/,
+        );
       });
     });
   });

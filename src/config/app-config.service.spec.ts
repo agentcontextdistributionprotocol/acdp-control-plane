@@ -146,6 +146,14 @@ describe('AppConfigService', () => {
         ok: ['0', '500', '60000'],
         bad: ['abc', '', '60001', '-1', '2.5', '1e3'],
       },
+      {
+        // #192 Phase 3: the opt-in pre-close drain delay.
+        name: 'SHUTDOWN_DRAIN_DELAY_MS',
+        field: 'shutdownDrainDelayMs',
+        def: 0,
+        ok: ['0', '1500', ' 5000 ', '15000', '2147483647'],
+        bad: ['abc', '', ' ', '-1', '1.5', '1e3', '0x10', '5s', 'Infinity', '2147483648'],
+      },
     ] as const;
 
     for (const k of KNOBS) {
@@ -192,6 +200,55 @@ describe('AppConfigService', () => {
       expect(() => freshConfig().onModuleInit()).toThrow(
         'SHUTDOWN_TIMEOUT_MS must be an integer in [1000, 2147483647] (got "abc")',
       );
+    });
+
+    describe('SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS budget warning', () => {
+      const WARN = 'SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS exceeds 25000 ms';
+
+      it.each(['development', 'production'])(
+        'warns (does not fail) in %s when delay + timeout > 25000, with structured fields',
+        (env) => {
+          process.env.NODE_ENV = env;
+          process.env.AUTH_API_KEYS = 'k';
+          process.env.WEBHOOK_SECRET = 'shh';
+          process.env.SHUTDOWN_DRAIN_DELAY_MS = '15001';
+          process.env.SHUTDOWN_TIMEOUT_MS = '10000';
+          const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+          try {
+            expect(() => freshConfig().onModuleInit()).not.toThrow();
+            expect(warnSpy).toHaveBeenCalledWith(
+              expect.objectContaining({
+                msg: expect.stringContaining(WARN),
+                shutdownDrainDelayMs: 15001,
+                shutdownTimeoutMs: 10000,
+                worstCaseShutdownMs: 25001,
+              }),
+            );
+          } finally {
+            warnSpy.mockRestore();
+          }
+        },
+      );
+
+      it.each([
+        ['unset delay, default timeout', undefined, undefined],
+        ['exactly 25000', '15000', '10000'],
+      ])('does not warn for %s', (_label, delay, timeout) => {
+        process.env.NODE_ENV = 'development';
+        if (delay === undefined) delete process.env.SHUTDOWN_DRAIN_DELAY_MS;
+        else process.env.SHUTDOWN_DRAIN_DELAY_MS = delay;
+        if (timeout === undefined) delete process.env.SHUTDOWN_TIMEOUT_MS;
+        else process.env.SHUTDOWN_TIMEOUT_MS = timeout;
+        const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+        try {
+          freshConfig().onModuleInit();
+          expect(warnSpy).not.toHaveBeenCalledWith(
+            expect.objectContaining({ msg: expect.stringContaining(WARN) }),
+          );
+        } finally {
+          warnSpy.mockRestore();
+        }
+      });
     });
 
     function throws(fn: () => void, name: string): boolean {

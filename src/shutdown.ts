@@ -123,6 +123,23 @@ export interface ShutdownDeps {
   drainStats?: () => { sseStreamsTerminated: number; drainRejections: number };
   /** Clock for `drainMs`; defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Leave the `draining` phase and enter `closing` (issue #192 Phase 3) — wired to
+   * `DrainState.beginClosing()`. Called after the drain delay (immediately when
+   * there is none), just before `close()`: from here on the drain gate 503s new
+   * non-SSE requests. A throw is logged and does not change the exit code.
+   */
+  beginClosing?: () => void;
+  /**
+   * The opt-in pre-close drain delay, `SHUTDOWN_DRAIN_DELAY_MS` (issue #192
+   * Phase 3). After {@link beginDrain} the handler waits this long — `/readyz`
+   * already 503 so a load balancer deregisters the replica, every other route
+   * still serving — before {@link beginClosing} and `close()`. 0 / absent skips
+   * the wait entirely (the pre-Phase-3 timing). The wait is `unref()`'d and is
+   * cut short by a second signal. It is NOT covered by {@link timeoutMs}, which
+   * bounds only `close()`: the worst case is delay + timeout.
+   */
+  drainDelayMs?: number;
   /** Defaults to {@link DEFAULT_SHUTDOWN_TIMEOUT_MS}. */
   timeoutMs?: number;
   logger?: Pick<Logger, 'error' | 'log'>;
@@ -156,8 +173,9 @@ export interface ShutdownDeps {
  * shutdown hooks by itself. Removing it loses no behaviour.
  *
  * Three properties this handler guarantees, each of which was broken:
- *   1. **Idempotent** — a second signal while shutdown is in flight is ignored,
- *      rather than starting a second pass over the destroy hooks.
+ *   1. **Idempotent** — a second signal while shutdown is in flight never starts
+ *      a second pass over the destroy hooks. Its one effect (#192 Phase 3) is to
+ *      skip whatever remains of the opt-in drain delay.
  *   2. **Error-contained** — a throwing hook cannot prevent the remaining steps.
  *      `stopTelemetry()` runs even if `close()` rejects, because a failed shutdown
  *      is precisely when you want the traces flushed.
@@ -169,6 +187,8 @@ export interface ShutdownDeps {
 export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => Promise<void> {
   const logger = deps.logger ?? new Logger('Shutdown');
   let inFlight: Promise<void> | undefined;
+  // Ends the pending drain delay early; set only while that delay is running.
+  let skipDelay: (() => void) | undefined;
 
   const run = async (signal?: string): Promise<void> => {
     let failed = false;
@@ -191,6 +211,50 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
       try {
         logger.error({
           msg: 'could not begin the shutdown drain — closing anyway',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } catch {
+        // A throwing logger must not abort the shutdown.
+      }
+    }
+
+    // The opt-in drain delay (#192 Phase 3): `/readyz` is already 503 (the
+    // health controller reads the `draining` phase) and SSE streams have ended,
+    // but every other route keeps serving while the load balancer deregisters
+    // this replica. Cancellable — a second signal skips the rest (see the
+    // returned handler) — and `unref()`'d so the timer never holds the loop
+    // open by itself. Skipped entirely at 0: no timer, no extra tick.
+    const delayMs = deps.drainDelayMs ?? 0;
+    let delayWaitedMs = 0;
+    if (delayMs > 0) {
+      try {
+        logger.log({ msg: 'draining before close — readiness now 503', configuredDelayMs: delayMs });
+      } catch {
+        // A throwing logger must not abort the shutdown.
+      }
+      const delayStartedAt = now();
+      await new Promise<void>((resolve) => {
+        // `finish` reads `timer` only when called — by the timer itself or by a
+        // second signal — both strictly after the assignment below.
+        const finish = (): void => {
+          clearTimeout(timer);
+          skipDelay = undefined;
+          resolve();
+        };
+        const timer = setTimeout(finish, delayMs);
+        timer.unref?.();
+        skipDelay = finish;
+      });
+      delayWaitedMs = now() - delayStartedAt;
+    }
+
+    // Enter `closing`: from here the drain gate 503s new non-SSE requests.
+    try {
+      deps.beginClosing?.();
+    } catch (err) {
+      try {
+        logger.error({
+          msg: 'could not enter the closing phase — closing anyway',
           error: err instanceof Error ? err.message : String(err),
         });
       } catch {
@@ -310,6 +374,7 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
       logger.log({
         msg: 'shutdown drain complete',
         drainMs: now() - drainStartedAt,
+        drainDelayMs: delayWaitedMs,
         sseStreamsTerminated: stats?.sseStreamsTerminated ?? null,
         drainRejections: stats?.drainRejections ?? null,
         forcedConnections,
@@ -361,7 +426,22 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
     // Return the SAME promise rather than starting a second pass. A container
     // that sends SIGTERM and then SIGKILL, or a developer pressing ctrl-c twice,
     // must not re-enter the destroy hooks.
-    inFlight ??= run(signal);
+    if (inFlight) {
+      // #192 Phase 3 (plan review #9): a second signal DURING the drain delay
+      // skips the rest of it, so close() starts now — ctrl-c twice in dev. It
+      // never restarts the delay and never re-enters close(); after the delay
+      // it is the plain no-op it always was.
+      if (skipDelay) {
+        try {
+          logger.log({ msg: 'second signal — skipping drain delay', signal: signal ?? 'shutdown' });
+        } catch {
+          // A throwing logger must not stop the skip.
+        }
+        skipDelay();
+      }
+      return inFlight;
+    }
+    inFlight = run(signal);
     return inFlight;
   };
 }
