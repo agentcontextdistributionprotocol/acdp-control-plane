@@ -31,6 +31,10 @@ function readStrictInteger(name: string, defaultValue: number): number {
 // would force-exit every shutdown with code 1.
 const MAX_TIMER_MS = 2_147_483_647;
 
+// SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS above this warns at startup
+// (#192 Phase 3): Kubernetes' default grace period is 30 s, Docker's 10 s.
+const SHUTDOWN_BUDGET_WARN_MS = 25_000;
+
 function assertIntegerInRange(
   name: string,
   value: number,
@@ -408,6 +412,14 @@ export class AppConfigService implements OnModuleInit {
   // `src/events/sse-drain.ts`): how long an EventSource waits before
   // reconnecting — by then, to a live replica. Strict integer in [0, 60000].
   readonly sseShutdownRetryMs = readStrictInteger('STREAM_SSE_SHUTDOWN_RETRY_MS', 1000);
+  // Opt-in pre-close drain delay (ms; #192 Phase 3). On a shutdown signal the
+  // process first spends this long in the `draining` phase — `/readyz` answers
+  // 503 SERVICE_DRAINING so a load balancer deregisters the replica, SSE streams
+  // end with `event: shutdown`, every other route keeps serving — and only then
+  // runs `app.close()` under SHUTDOWN_TIMEOUT_MS. 0 (the default) skips it, which
+  // is the pre-Phase-3 timing exactly. A second signal skips the rest of it.
+  // Strict integer in [0, 2^31-1] (setTimeout's ceiling).
+  readonly shutdownDrainDelayMs = readStrictInteger('SHUTDOWN_DRAIN_DELAY_MS', 0);
 
   // DB pool
   readonly dbPoolMax = readNumber('DB_POOL_MAX', 20);
@@ -656,6 +668,25 @@ export class AppConfigService implements OnModuleInit {
       1,
     );
     assertIntegerInRange('STREAM_SSE_SHUTDOWN_RETRY_MS', this.sseShutdownRetryMs, 0, 60000, 1000);
+    assertIntegerInRange('SHUTDOWN_DRAIN_DELAY_MS', this.shutdownDrainDelayMs, 0, MAX_TIMER_MS, 0);
+    // Delay + close deadline is the worst-case shutdown. Above ~25 s it outlives
+    // a default Kubernetes grace period (30 s) minus margin — and Docker's is only
+    // 10 s — so the platform SIGKILLs (exit 137) before the forced path can run.
+    // A WARNING, not a failure: the operator may well have raised the grace
+    // period (terminationGracePeriodSeconds / stop_grace_period) to match.
+    const worstCaseShutdownMs = this.shutdownDrainDelayMs + this.shutdownTimeoutMs;
+    if (worstCaseShutdownMs > SHUTDOWN_BUDGET_WARN_MS) {
+      this.logger.warn({
+        msg:
+          'SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS exceeds 25000 ms — make sure the ' +
+          'platform termination grace period (Kubernetes terminationGracePeriodSeconds, ' +
+          'default 30 s; Docker stop_grace_period, default 10 s) is at least ' +
+          '(delay + timeout)/1000 + 5 s, or the process is SIGKILLed mid-drain',
+        shutdownDrainDelayMs: this.shutdownDrainDelayMs,
+        shutdownTimeoutMs: this.shutdownTimeoutMs,
+        worstCaseShutdownMs,
+      });
+    }
 
     if (this.isDevelopment) return;
 

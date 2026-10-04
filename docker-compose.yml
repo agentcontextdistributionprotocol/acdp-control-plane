@@ -1,6 +1,10 @@
 services:
   control-plane:
     build: .
+    # Graceful drain (issue #192): Docker's default 10 s stop grace equals the
+    # default SHUTDOWN_TIMEOUT_MS, so the forced-close path would race SIGKILL.
+    # Keep this >= (SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS)/1000 + 5.
+    stop_grace_period: 15s
     ports:
       - "3001:3001"
     environment:

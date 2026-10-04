@@ -490,6 +490,7 @@ describe('shutdown observability (issue #192, Phase 2)', () => {
     expect(find('shutdown drain complete')).toEqual({
       msg: 'shutdown drain complete',
       drainMs: 42,
+      drainDelayMs: 0,
       sseStreamsTerminated: 2,
       drainRejections: 5,
       forcedConnections: 0,
@@ -513,6 +514,201 @@ describe('shutdown observability (issue #192, Phase 2)', () => {
       expect.objectContaining({ sseStreamsTerminated: null, drainRejections: null }),
     );
     expect(deps.exit).toHaveBeenCalledWith(0);
+  });
+});
+
+describe('the opt-in drain delay (issue #192, Phase 3)', () => {
+  beforeEach(() => jest.clearAllMocks());
+  afterEach(() => jest.useRealTimers());
+
+  /** A clock driven by the fake timers, so drainDelayMs is deterministic. */
+  const fakeNow = () => Date.now();
+
+  function delayed(delayMs: number, extra: Partial<ShutdownDeps> = {}) {
+    return build((c) => ({
+      drainDelayMs: delayMs,
+      now: fakeNow,
+      beginDrain: jest.fn(() => {
+        c.push(`beginDrain@${Date.now() - start}`);
+      }),
+      beginClosing: jest.fn(() => {
+        c.push(`beginClosing@${Date.now() - start}`);
+      }),
+      close: jest.fn(async () => {
+        c.push(`close@${Date.now() - start}`);
+      }),
+      ...extra,
+    }));
+  }
+  let start = 0;
+
+  it('sequences beginDrain → wait the delay → beginClosing → close → exit 0', async () => {
+    jest.useFakeTimers();
+    start = Date.now();
+    const { handler, calls, deps } = delayed(1500);
+
+    const done = handler('SIGTERM');
+    await jest.advanceTimersByTimeAsync(1499);
+    // Still draining: nothing past beginDrain has happened.
+    expect(calls).toEqual(['beginDrain@0']);
+    expect(deps.close).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1);
+    await done;
+    expect(calls).toEqual([
+      'beginDrain@0',
+      'beginClosing@1500',
+      'close@1500',
+      'stopTelemetry',
+      'exit:0',
+    ]);
+  });
+
+  it('with no delay (0 or unset) closes in the same tick — the pre-Phase-3 timing', async () => {
+    for (const drainDelayMs of [0, undefined]) {
+      jest.useFakeTimers();
+      start = Date.now();
+      const { handler, calls } = delayed(0, { drainDelayMs });
+
+      const done = handler('SIGTERM');
+      // No timer was armed for the delay: close() already ran synchronously-ish,
+      // before any fake time passed.
+      await Promise.resolve();
+      expect(calls.slice(0, 3)).toEqual(['beginDrain@0', 'beginClosing@0', 'close@0']);
+      await done;
+      jest.useRealTimers();
+    }
+  });
+
+  it('the deadline covers only close(), not the delay', async () => {
+    jest.useFakeTimers();
+    start = Date.now();
+    const forceCloseConnections = jest.fn();
+    const { handler, deps } = delayed(3000, {
+      timeoutMs: 1000,
+      forceCloseConnections,
+      close: jest.fn(() => new Promise<void>(() => undefined)), // never settles
+    });
+
+    const done = handler('SIGTERM');
+    // A delay longer than the timeout must NOT trip the deadline.
+    await jest.advanceTimersByTimeAsync(3000);
+    expect(deps.exit).not.toHaveBeenCalled();
+    expect(forceCloseConnections).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(forceCloseConnections).toHaveBeenCalledTimes(1);
+    expect(deps.exit).toHaveBeenCalledWith(1);
+  });
+
+  it('a second signal skips the REST of the delay, and close() runs exactly once', async () => {
+    jest.useFakeTimers();
+    start = Date.now();
+    const log = jest.fn();
+    const { handler, calls, deps } = delayed(5000, {
+      logger: { error: jest.fn(), log } as unknown as ShutdownDeps['logger'],
+    });
+
+    const first = handler('SIGTERM');
+    await jest.advanceTimersByTimeAsync(200);
+    expect(deps.close).not.toHaveBeenCalled();
+
+    const second = handler('SIGINT');
+    // The SAME memoized promise: never a second pass.
+    expect(second).toBe(first);
+    await jest.advanceTimersByTimeAsync(0);
+    await first;
+
+    expect(calls).toEqual([
+      'beginDrain@0',
+      'beginClosing@200',
+      'close@200',
+      'stopTelemetry',
+      'exit:0',
+    ]);
+    expect(deps.close).toHaveBeenCalledTimes(1);
+    expect(deps.beginDrain).toHaveBeenCalledTimes(1);
+    expect(deps.exit).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith({ msg: 'second signal — skipping drain delay', signal: 'SIGINT' });
+    // The summary reports the delay actually waited, not the configured one.
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ msg: 'shutdown drain complete', drainDelayMs: 200 }));
+
+    // The cancelled timer never fires later and re-runs anything.
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(deps.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second signal AFTER the delay is the existing no-op (no skip log, no re-entry)', async () => {
+    jest.useFakeTimers();
+    start = Date.now();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const log = jest.fn();
+    const { handler, deps } = delayed(500, {
+      close: jest.fn(() => gate),
+      logger: { error: jest.fn(), log } as unknown as ShutdownDeps['logger'],
+    });
+
+    const first = handler('SIGTERM');
+    await jest.advanceTimersByTimeAsync(500);
+    expect(deps.close).toHaveBeenCalledTimes(1);
+
+    expect(handler('SIGTERM')).toBe(first);
+    release();
+    await first;
+
+    expect(deps.close).toHaveBeenCalledTimes(1);
+    expect(log).not.toHaveBeenCalledWith(expect.objectContaining({ msg: 'second signal — skipping drain delay' }));
+  });
+
+  it('the delay timer is unref()d, so it never holds the event loop open by itself', async () => {
+    const unref = jest.fn();
+    const realSetTimeout = global.setTimeout;
+    const spy = jest
+      .spyOn(global, 'setTimeout')
+      .mockImplementation(((fn: () => void, ms?: number) => {
+        const t = realSetTimeout(fn, ms === 5000 ? 0 : ms);
+        if (ms === 5000) return Object.assign(t, { unref: () => (unref(), t) });
+        return t;
+      }) as unknown as typeof setTimeout);
+    try {
+      start = Date.now();
+      const { handler, deps } = delayed(5000, { now: undefined });
+      await handler('SIGTERM');
+      expect(unref).toHaveBeenCalledTimes(1);
+      expect(deps.exit).toHaveBeenCalledWith(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a throwing beginClosing is contained: close() still runs and the exit is 0', async () => {
+    const { handler, deps } = build(() => ({
+      beginClosing: () => {
+        throw new Error('boom');
+      },
+    }));
+
+    await handler('SIGTERM');
+
+    expect(deps.close).toHaveBeenCalledTimes(1);
+    expect(deps.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('the idle reaper does not start until the delay is over (listener open throughout)', async () => {
+    jest.useFakeTimers();
+    start = Date.now();
+    const listenerClosed = jest.fn(() => false);
+    const { handler } = delayed(1000, { reapIdleConnections: jest.fn(), listenerClosed });
+
+    const done = handler('SIGTERM');
+    await jest.advanceTimersByTimeAsync(999);
+    expect(listenerClosed).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    await done;
   });
 });
 

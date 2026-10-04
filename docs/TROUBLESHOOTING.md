@@ -199,8 +199,9 @@ Clients see `event: shutdown` with a `retry:` hint (`STREAM_SSE_SHUTDOWN_RETRY_M
 and should reconnect after it (see `docs/API.md`, SSE).
 
 Every shutdown logs one structured summary line, `shutdown drain complete`, with
-`drainMs`, `sseStreamsTerminated`, `drainRejections` and `forcedConnections`
-(0 on a clean close). An overrun also logs `graceful close timed out — forcing
+`drainMs`, `drainDelayMs` (the `SHUTDOWN_DRAIN_DELAY_MS` wait actually spent,
+0 when unset or skipped at once), `sseStreamsTerminated`, `drainRejections` and
+`forcedConnections` (0 on a clean close). An overrun also logs `graceful close timed out — forcing
 shutdown` with `forcedConnections`: the sockets still open when the deadline
 fired (`null` if they could not be counted). Read the log, not the metrics: a
 dying process is rarely scraped, so `acdp_shutdown_drain_rejections_total` and
@@ -208,8 +209,9 @@ dying process is rarely scraped, so `acdp_shutdown_drain_rejections_total` and
 
 ### `503 SERVICE_DRAINING` during a deploy
 
-Expected (issue #192). Once an instance receives SIGTERM/SIGINT/SIGQUIT, every
-request whose **headers arrive after that moment** gets `503` with
+Expected (issue #192). Once an instance has begun closing after
+SIGTERM/SIGINT/SIGQUIT (immediately, or after `SHUTDOWN_DRAIN_DELAY_MS` when that
+is set), every request whose **headers arrive after that moment** gets `503` with
 `errorCode: "SERVICE_DRAINING"`, `Retry-After` (`SHUTDOWN_RETRY_AFTER_SECONDS`,
 default 1) and `Connection: close`, so the client reconnects, through the load
 balancer, to another replica. It is answered before authentication, so it costs
@@ -234,9 +236,42 @@ silently. A delivery reaches another replica only if your load balancer stops
 routing to the stopping one within that window. If you lose deliveries during
 deploys, raise the registry's webhook `max_retries`.
 
-Today the listener closes within milliseconds of the signal unless a destroy hook
-is slow, so most clients see a refused connection rather than this `503`; the
-`503` is what a client gets while the close is still running.
+Without `SHUTDOWN_DRAIN_DELAY_MS` the listener closes within milliseconds of the
+signal unless a destroy hook is slow, so most clients see a refused connection
+rather than this `503`; the `503` is what a client gets while the close is still
+running. If your load balancer keeps routing to stopping instances, see the next
+section.
+
+### Refused connections / lost webhooks during rolling deploys behind a load balancer
+
+The load balancer is still routing to an instance whose listener has already
+closed. Set `SHUTDOWN_DRAIN_DELAY_MS` (e.g. `5000`; issue #192 Phase 3, default
+`0`). For that long after the signal `/readyz` answers `503 SERVICE_DRAINING`
+(without touching the database) while **every other route keeps serving**, and SSE
+streams end with `event: shutdown` so clients reconnect elsewhere; only then does
+the close begin. The log shows `draining before close — readiness now 503`
+(`configuredDelayMs`) and the summary's `drainDelayMs` is the delay actually waited.
+
+Still seeing it with a delay set? Check, in order:
+
+1. **The probe is too slow to notice.** `periodSeconds × failureThreshold` (ms)
+   must be well below `SHUTDOWN_DRAIN_DELAY_MS` (e.g. `1 × 2 = 2000` < `5000`),
+   leaving time for the endpoint change to reach the load balancer.
+2. **The process is SIGKILLed mid-drain** (exit 137, no `shutdown drain complete`
+   line). The termination grace period must be at least
+   `(SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS)/1000 + 5` seconds: Kubernetes
+   `terminationGracePeriodSeconds` (default 30), Docker/Compose
+   `stop_grace_period` (default 10). Startup warns when delay + timeout exceeds
+   25000 ms.
+3. **A `preStop: sleep` is also configured.** Use one or the other: the two add
+   up, and only the delay flips `/readyz`.
+4. **Shutdown is unexpectedly short** and the log has `second signal — skipping
+   drain delay`: something sent a second SIGTERM/SIGINT (a supervisor, or ctrl-c
+   twice). That skips the rest of the delay by design; the close still runs once.
+
+For local development keep `SHUTDOWN_DRAIN_DELAY_MS=0` (the default): there is no
+load balancer to wait for, and every ctrl-c would otherwise pause. Pressing ctrl-c
+twice skips a configured delay.
 
 ---
 

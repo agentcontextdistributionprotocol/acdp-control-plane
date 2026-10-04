@@ -3775,3 +3775,5 @@ cumulative verify was run.
 ## 2026-10-04 — #192 Phase 1 PASS (Opus verifier, 1 round; minor gaps closed: reaper one-shot error log, docs qualification re JWT/postgres revocation lookup, test comment). SSE exit 6015ms -> ~112ms. Next: Phase 2 (drain gate, SERVICE_DRAINING, knobs), Phase 3.
 
 ## 2026-10-04 — #192 Phase 2 PASS (Opus verifier, complex/solo, 1 round; gap fixed: SHUTDOWN_TIMEOUT_MS upper bound 2^31-1). Verified against native PG/Redis (Docker hung on host). Next: Phase 3.
+
+## 2026-10-04 — #192 Phase 3 PASS (Opus verifier, 1 round, mutation checks). Closes #192 after merge. Next: #210 readyz (keep isDraining() first in readyz(); add Cache-Control no-store to both arms), then #191.

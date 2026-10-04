@@ -1467,3 +1467,57 @@
   CLAUDE.md, and that is left to the user.
 - **Blast radius if wrong:** Low.
 - **Status:** UNCONFIRMED (2026-10-04)
+
+## Drain delay: phase model, wiring and log fields (issue #192, Phase 3)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 3)
+- **Assumed:**
+  - `DrainState` keeps `begin()` (→ `draining`, fires `drained$`) and adds
+    `beginClosing()` (→ `closing`; calls `begin()` first, so `drained$` still fires
+    when entered straight from `serving`). `isDraining()` stays "phase ≠ serving",
+    which is what SSE termination and `/readyz` key on, so SSE ends at the START of
+    `draining` as the plan says.
+  - The arrival marker now stamps the phase string; the gate rejects only a
+    `closing` stamp (`arrivedWhileClosing`). `arrivedDuringDrain` was replaced
+    (internal API, no external callers).
+  - With delay 0 the handler calls `beginDrain()` then `beginClosing()` back to back
+    with no timer, so the Phase 1–2 behaviour and timings are unchanged (the Phase 2
+    integration case still passes and now also asserts `drainDelayMs: 0`).
+  - The idle reaper now starts after the delay (just before `close()`) rather than
+    at drain start. Equivalent in effect: it was gated on `!server.listening`
+    anyway, and the listener is open throughout the delay.
+  - Logging: the delay start logs `draining before close — readiness now 503` with
+    `configuredDelayMs`; the summary gains `drainDelayMs` = the delay actually
+    waited (shorter when skipped). The skip line is logged only when a delay is
+    actually pending — a second signal after the delay stays a silent no-op.
+- **Blast radius if wrong:** Low. Opt-in (default 0); log fields only otherwise.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## `/readyz` drain 503 carries `Retry-After`; no `Connection: close` (issue #192, Phase 3)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 3) says `/readyz` "returns 503
+  `SERVICE_DRAINING`"; headers are unspecified.
+- **Assumed:** the health controller sets `Retry-After`
+  (`SHUTDOWN_RETRY_AFTER_SECONDS`) via `@Res({ passthrough: true })` before throwing
+  the `AppException`, matching the gate's 503 and the `SERVICE_DRAINING` row in
+  `docs/API.md`. It deliberately does NOT set `Connection: close`: during `draining`
+  the instance is still serving, and that header is also how the integration spec
+  tells the controller's 503 apart from the gate's. The DB is never queried once
+  draining. `plans/readyz-db-down-fix.md` (#210) must keep this drain check first.
+- **Blast radius if wrong:** Low. A probe ignores both headers.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## `SHUTDOWN_DRAIN_DELAY_MS` bounds and the 25 s budget warning (issue #192, Phase 3)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 3): strict integer ≥ 0, default 0,
+  warn when delay + timeout > 25000.
+- **Assumed:**
+  - Upper bound 2^31-1 (setTimeout's ceiling, as for `SHUTDOWN_TIMEOUT_MS`):
+    above it Node fires after 1 ms, silently turning a huge delay into none.
+  - Validated in `validate()` before the development early return (every
+    environment); the warning is also emitted in every environment, as one
+    structured `logger.warn` (`shutdownDrainDelayMs`, `shutdownTimeoutMs`,
+    `worstCaseShutdownMs`). Exactly 25000 does not warn (strictly greater).
+  - `docker-compose.yml` now sets `stop_grace_period: 15s` on `control-plane`
+    (the plan's recommendation) — it covers the default 10 s timeout + 5 s, not a
+    delay; anyone setting a delay in compose must raise it.
+- **Blast radius if wrong:** Low. A deployment that set a negative/garbage value now
+  fails boot (intended); the warning never blocks.
+- **Status:** UNCONFIRMED (2026-10-04)

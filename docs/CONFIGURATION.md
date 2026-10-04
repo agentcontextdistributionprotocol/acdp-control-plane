@@ -44,7 +44,8 @@ production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startu
 | `PUBLIC_HOST` | string | `''` | Externally-resolvable host (`example.com` / `example.com:8443`) a consumer's `did:web` resolver hits for `/.well-known/did.json`. Distinct from `HOST`. Used to assert the `did:web` witness↔host binding at boot. |
 | `CORS_ORIGIN` | string | `http://localhost:3000` | Allowed CORS origin. |
 | `SHUTDOWN_TIMEOUT_MS` | integer (ms), 1000–2147483647 | `10000` | Max ms `app.close()` may take on SIGTERM/SIGINT/SIGQUIT before lingering sockets are dropped and the process exits 1 (the overrun log names how many, `forcedConnections`). Keep below the platform termination grace period (Docker 10 s, Kubernetes 30 s). Strict: a non-integer or a value below 1000 fails startup (it used to fall back to 10000 silently). |
-| `SHUTDOWN_RETRY_AFTER_SECONDS` | integer (s), 1–300 | `1` | `Retry-After` on the drain gate's `503 SERVICE_DRAINING`, sent to every new non-SSE request once a shutdown has begun (issue #192, see [API.md](./API.md)). Strict. |
+| `SHUTDOWN_RETRY_AFTER_SECONDS` | integer (s), 1–300 | `1` | `Retry-After` on the `503 SERVICE_DRAINING` sent to every new non-SSE request once the close has begun, and on `/readyz`'s drain 503 (issue #192, see [API.md](./API.md)). Strict. |
+| `SHUTDOWN_DRAIN_DELAY_MS` | integer (ms), 0–2147483647 | `0` | Opt-in pre-close drain delay (issue #192, Phase 3). On SIGTERM/SIGINT/SIGQUIT the process first spends this long *draining*: `/readyz` answers `503 SERVICE_DRAINING` (without querying the DB), SSE streams end with `event: shutdown`, and **every other route keeps serving**, so a load balancer can deregister the instance before the listener closes. Only then does `app.close()` run under `SHUTDOWN_TIMEOUT_MS`, so the worst-case shutdown is delay + timeout; startup **warns** (does not fail) when that exceeds 25000 ms. A second signal skips the rest of the delay. `0` keeps the pre-Phase-3 timing exactly. Use it *or* a Kubernetes `preStop: sleep`, not both. See [ARCHITECTURE.md](./ARCHITECTURE.md#deploying-behind-a-load-balancer) for the grace-period and readiness-probe arithmetic. Strict. |
 
 ## Database
 
@@ -403,8 +404,10 @@ as its fan-out cap. See `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section.
   otherwise be silently disabled — see `src/ingest/hmac.ts`).
 - `DB_POOL_MAX < 2`.
 - `SHUTDOWN_TIMEOUT_MS` not an integer in 1000–2147483647, `SHUTDOWN_RETRY_AFTER_SECONDS` not an
-  integer in [1, 300], or `STREAM_SSE_SHUTDOWN_RETRY_MS` not an integer in [0, 60000]
-  — in every environment (issue #192).
+  integer in [1, 300], `STREAM_SSE_SHUTDOWN_RETRY_MS` not an integer in [0, 60000], or
+  `SHUTDOWN_DRAIN_DELAY_MS` not an integer in [0, 2147483647] (e.g. `-1`, `abc`)
+  — in every environment (issue #192). `SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS`
+  above 25000 only **warns**: check your termination grace period.
 - `DATA_RETENTION_ENABLED=true` with `DATA_RETENTION_TTL_DAYS < 1`.
 - `POLICY_BACKEND` not in {`static`,`opa`}; `JWT_SIGNING_ALG` not in {`HS256`,`EdDSA`}.
 - Issuance + `HS256` with `JWT_SECRET` < 32 bytes.

@@ -2,7 +2,7 @@ import { HttpStatus } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import { AppException } from '../errors/app-exception';
 import { ErrorCode } from '../errors/error-codes';
-import { DRAIN_ARRIVAL, DrainState } from '../shutdown-drain';
+import { DRAIN_ARRIVAL, DrainState, type DrainPhase } from '../shutdown-drain';
 import { DrainGateMiddleware, isSseRequest, requestPath } from './drain-gate.middleware';
 
 function setup(retryAfter = 7) {
@@ -16,7 +16,7 @@ function setup(retryAfter = 7) {
   return { drain, gate, rejections };
 }
 
-function request(url: string, mark?: boolean, method = 'GET'): Request {
+function request(url: string, mark?: DrainPhase, method = 'GET'): Request {
   // `path` deliberately WRONG: inside Nest's forRoutes('*') mount, Express has
   // stripped req.url, so req.path reads '/'. The gate must not rely on it.
   const req: Record<string | symbol, unknown> = { method, originalUrl: url, path: '/' };
@@ -37,7 +37,7 @@ function response() {
 describe('DrainGateMiddleware (issue #192)', () => {
   it('passes an unmarked request (the marker never saw it)', () => {
     const { gate, drain } = setup();
-    drain.begin();
+    drain.beginClosing();
     const next = jest.fn() as NextFunction;
     const { res } = response();
 
@@ -51,34 +51,58 @@ describe('DrainGateMiddleware (issue #192)', () => {
     const next = jest.fn() as NextFunction;
     const { res } = response();
 
-    gate.use(request('/runs', false), res, next);
+    gate.use(request('/runs', 'serving'), res, next);
 
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  it('decides from the ARRIVAL mark, not the live flag: headers before the drain, body after it → next()', () => {
-    // The arrival-marker regression (plan review #1): a POST whose headers
-    // arrived before SIGTERM reaches module middleware only after its body has
-    // been parsed — by then the live flag is already true.
+  it.each(['serving', 'draining'] as const)(
+    'decides from the ARRIVAL mark, not the live phase: headers in %s, body after the close began → next()',
+    (mark) => {
+      // The arrival-marker regression (plan review #1): a POST whose headers
+      // arrived before the close reaches module middleware only after its body
+      // has been parsed — by then the live phase is already `closing`.
+      const { gate, drain, rejections } = setup();
+      drain.beginClosing();
+      const next = jest.fn() as NextFunction;
+      const { res } = response();
+
+      gate.use(request('/ingest/acdp', mark, 'POST'), res, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(rejections.inc).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['GET', '/readyz'],
+    ['GET', '/healthz'],
+    ['GET', '/runs'],
+    ['POST', '/ingest/acdp'],
+  ])('passes EVERYTHING that arrived during the drain delay (phase draining): %s %s', (method, path) => {
+    // #192 Phase 3: the delay exists so a lagging load balancer's requests are
+    // still served. Readiness during the delay is the health controller's 503,
+    // not a gate rule — the gate has no readiness special case.
     const { gate, drain, rejections } = setup();
     drain.begin();
     const next = jest.fn() as NextFunction;
-    const { res } = response();
+    const { res, headers } = response();
 
-    gate.use(request('/ingest/acdp', false, 'POST'), res, next);
+    gate.use(request(path, 'draining', method), res, next);
 
     expect(next).toHaveBeenCalledTimes(1);
+    expect(headers).toEqual({});
     expect(rejections.inc).not.toHaveBeenCalled();
   });
 
-  it('answers a request that arrived during the drain with 503 SERVICE_DRAINING, Retry-After and Connection: close', () => {
+  it('answers a request that arrived during closing with 503 SERVICE_DRAINING, Retry-After and Connection: close', () => {
     const { gate, drain, rejections } = setup(7);
     const next = jest.fn() as NextFunction;
     const { res, headers } = response();
 
     let thrown: unknown;
     try {
-      gate.use(request('/readyz', true), res, next);
+      gate.use(request('/readyz', 'closing'), res, next);
     } catch (err) {
       thrown = err;
     }
@@ -106,7 +130,7 @@ describe('DrainGateMiddleware (issue #192)', () => {
     const next = jest.fn() as NextFunction;
     const { res, headers } = response();
 
-    gate.use(request(path, true), res, next);
+    gate.use(request(path, 'closing'), res, next);
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(headers).toEqual({});
@@ -123,7 +147,7 @@ describe('DrainGateMiddleware (issue #192)', () => {
     ['GET', '/xevents/stream'],
   ])('does not exempt %s %s', (method, path) => {
     const { gate } = setup();
-    expect(() => gate.use(request(path, true, method), response().res, jest.fn())).toThrow(
+    expect(() => gate.use(request(path, 'closing', method), response().res, jest.fn())).toThrow(
       AppException,
     );
   });

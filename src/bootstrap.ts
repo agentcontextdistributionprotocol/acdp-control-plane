@@ -67,8 +67,8 @@ export async function bootstrap(rootModule: Type<unknown> = AppModule): Promise<
 
   // The drain ARRIVAL MARKER (#192 Phase 2). It must be registered BEFORE the
   // body parsers below: Express runs it as soon as Node emits `request` (headers
-  // parsed, no body byte consumed), so it records whether the drain had begun
-  // when the request ARRIVED. The drain gate (module middleware, applied only at
+  // parsed, no body byte consumed), so it records the drain PHASE the request
+  // ARRIVED in (Phase 3: serving / draining / closing; only `closing` is gated). The drain gate (module middleware, applied only at
   // init(), i.e. after the parsers) decides from this mark alone — a request
   // whose headers arrived before SIGTERM but whose body finishes after it must
   // run to completion, not get 503. It never responds and sets no header.
@@ -147,6 +147,10 @@ export async function bootstrap(rootModule: Type<unknown> = AppModule): Promise<
       // `event: shutdown`, then reap sockets that go idle during the close —
       // only once the listener is closed (see ShutdownDeps.listenerClosed).
       beginDrain: () => drainState.begin(),
+      // #192 Phase 3: the opt-in pre-close delay (`draining`: /readyz 503s, the
+      // rest serves), then `closing` (the drain gate 503s new requests).
+      drainDelayMs: config.shutdownDrainDelayMs,
+      beginClosing: () => drainState.beginClosing(),
       listenerClosed: () => !server.listening,
       reapIdleConnections: () => server.closeIdleConnections?.(),
       // Last resort when the graceful close overruns its deadline: an in-flight
