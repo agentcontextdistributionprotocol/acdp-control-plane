@@ -4,6 +4,19 @@ export enum ErrorCode {
   AGENT_NOT_FOUND = "AGENT_NOT_FOUND",
   CONTEXT_NOT_FOUND = "CONTEXT_NOT_FOUND",
   FEDERATION_UPSTREAM_RATE_LIMITED = "FEDERATION_UPSTREAM_RATE_LIMITED",
+  // 502 from the federation proxy (`GET /contexts/*`, #200): NO usable
+  // upstream response was obtained — the SSRF policy refused the registry's
+  // base_url, the fetch failed or timed out, a redirect was rejected
+  // (cross-authority / too many), or the body exceeded the 1 MiB cap
+  // (`FederationFetchError` SSRF | FETCH | REDIRECT | BODY_TOO_LARGE; the
+  // specific cause is logged, never put on the wire). Disjoint from its
+  // siblings: an upstream 429 is FEDERATION_UPSTREAM_RATE_LIMITED (503), and a
+  // 2xx whose served ctx_id fails the binding is CONTEXT_ID_MISMATCH /
+  // CONTEXT_BINDING_UNVERIFIABLE (502). Before #200 this case reported the
+  // 5xx fallback INTERNAL_ERROR, blaming the control plane for an upstream
+  // fault. Deliberately SCREAMING_SNAKE, not the registry's lowercase
+  // RFC-ACDP-0007 `cross_registry_resolution_failed`.
+  FEDERATION_UPSTREAM_ERROR = "FEDERATION_UPSTREAM_ERROR",
   // RFC-ACDP-0006 §4.1 step 7 (NORMATIVE): the federation proxy compares the
   // `ctx_id` a registry SERVED against the `ctx_id` that was REQUESTED.
   // `ctx_id` is registry-assigned and excluded from both `content_hash` and

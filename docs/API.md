@@ -72,6 +72,7 @@ wherever one exists. `INTERNAL_ERROR` is reserved for genuine server faults
 | `INVALID_SIGNATURE` | 401 | specific | Ed25519/ECDSA-P256 signature over a challenge or capability assertion failed. |
 | `VALIDATION_ERROR` | 400 | specific | Malformed witness query parameter (`schema_violation`). |
 | `FEDERATION_UPSTREAM_RATE_LIMITED` | 503 | specific | The federated registry answered 429. |
+| `FEDERATION_UPSTREAM_ERROR` | 502 | specific | No usable response from the federated registry: SSRF-refused base URL, transport/timeout failure, rejected redirect, or body over 1 MiB. |
 | `CONTEXT_ID_MISMATCH` | 502 | specific | The registry served a different `ctx_id` than requested. |
 | `CONTEXT_BINDING_UNVERIFIABLE` | 502 | specific | The served body's `ctx_id` could not be checked. |
 | `INVALID_LOG_PROOF` | — | verdict | Transparency-log proof/checkpoint failed (audit verdict/alert category). |
@@ -335,7 +336,7 @@ the request is forwarded to `<base_url>/contexts/<ctxId>` through the
 RFC-ACDP-0006 §7 / RFC-ACDP-0008):
 
 - HTTPS-only; DNS-resolved IPs must not be private/loopback/link-local/IMDS.
-- Redirects followed manually, max 3, same-authority only (else `502`).
+- Redirects followed manually, max 3, same-authority only (else `502 FEDERATION_UPSTREAM_ERROR`).
 - Response body capped at 1 MiB; 10 s deadline.
 
 **`ctx_id` binding (RFC-ACDP-0006 §4.1 step 7).** On a `2xx` the proxy verifies
@@ -360,7 +361,7 @@ Status mapping:
 | Upstream `429` | `503` `FEDERATION_UPSTREAM_RATE_LIMITED` (upstream `Retry-After` logged). |
 | Unknown / unenrolled authority | `404 REGISTRY_NOT_FOUND` |
 | Malformed / non-canonical `ctxId` | `400` |
-| SSRF / transport / oversized / cross-authority redirect | `502` |
+| SSRF / transport / oversized / cross-authority redirect | `502` `FEDERATION_UPSTREAM_ERROR` (cause logged as `fetchErrorCode`, not returned). |
 
 `CONTEXT_ID_MISMATCH` and `CONTEXT_BINDING_UNVERIFIABLE` are deliberately
 distinct: the first means the proxy checked and the registry served the wrong

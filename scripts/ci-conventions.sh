@@ -28,6 +28,10 @@
 #    an explicit AppException with a specific ErrorCode (issue #182), so a
 #    client can tell "admin required" from "tenant mismatch" from "policy".
 #    No file exemptions: a ratchet that starts at zero.
+# 8. No `new BadGatewayException(` / `new ServiceUnavailableException(` /
+#    `new GatewayTimeoutException(` — an unlabelled 502/503/504 falls back to
+#    INTERNAL_ERROR, blaming the control plane for an upstream fault (#200).
+#    Throw AppException with a specific ErrorCode. Ratchet at zero.
 #
 # Usage: ci-conventions.sh [SOURCE_DIR]   (SOURCE_DIR defaults to ./src; the
 # argument exists so the unit spec can point the script at a scratch tree and
@@ -123,6 +127,15 @@ check "no Acdp* laundered through 'as unknown as' (SDK surface shims)" \
 #    (UNAUTHORIZED, INVALID_PAYLOAD) are accurate. Comment lines are exempt.
 check "no unlabelled NotFound/Forbidden exceptions (see #182)" \
   'new \(NotFound\|Forbidden\)Exception(' \
+  '(\.spec\.ts|:[0-9]+: *(//|\*))'
+
+# 8. Unlabelled gateway-family 5xx (#200). Same BRE caveat as rule 7 — the ERE
+#    spelling would be a malformed BRE that grep rejects with exit 2 and the
+#    rule would pass forever; src/ci-conventions.spec.ts proves it fires for
+#    each class name. Known gap: a string-bodied `new HttpException('x', 502)`
+#    is not matched (ASSUMPTIONS.md, #200). Comment lines are exempt.
+check "no unlabelled BadGateway/ServiceUnavailable/GatewayTimeout exceptions (see #200)" \
+  'new \(BadGateway\|ServiceUnavailable\|GatewayTimeout\)Exception(' \
   '(\.spec\.ts|:[0-9]+: *(//|\*))'
 
 exit $fail

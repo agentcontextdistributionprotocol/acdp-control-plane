@@ -48,6 +48,8 @@ const SHIPPED: readonly string[] = [
   "REGISTRY_NOT_ENROLLED",
   "POLICY_DENIED",
   "QUOTA_EXCEEDED",
+  // #200 — federation proxy upstream failure (502).
+  "FEDERATION_UPSTREAM_ERROR",
 ];
 
 describe("ErrorCode public surface", () => {

@@ -3709,3 +3709,18 @@ proves a rotating-/64 caller gets 429 `RATE_LIMITED` + `Retry-After` and that
 gate: fresh Opus verifier PASS round 1. Checks: typecheck (TS7+TS6), lint,
 conventions, check:build ok; unit 83 suites/1220 passed; integration 32
 suites/224 passed. 3 ASSUMPTIONS.md entries UNCONFIRMED (#187).
+
+## Issue #200 — federation proxy upstream 502 code (`plans/federation-502-code-200.md`) — 2026-10-03
+
+`GET /contexts/*` upstream failure (`FederationFetchError` SSRF/FETCH/REDIRECT/
+BODY_TOO_LARGE) now throws `AppException(FEDERATION_UPSTREAM_ERROR, <unchanged
+message>, 502)` instead of a bare `BadGatewayException` (which the filter labelled
+`INTERNAL_ERROR`); the failure log is a structured object (`fetchErrorCode`,
+`detail`, `registryAuthority`, `ctxId`, `upstream`). New CI rule 8 bans bare
+`BadGateway/ServiceUnavailable/GatewayTimeoutException` (BRE, ratchet at zero,
+spec fires per class). Filter unchanged (unlabelled 5xx stays `INTERNAL_ERROR`).
+Code pinned in `error-codes.spec.ts` + `docs/API.md` table; TROUBLESHOOTING updated.
+Plan review: 1 round (APPROVE w/ fixes); gate: fresh Opus verifier PASS round 1.
+Checks: typecheck (TS7+TS6), lint, conventions (8 ✓), check:build ok; unit 83
+suites/1229 passed; integration 32 suites/228 passed. 3 ASSUMPTIONS.md entries
+UNCONFIRMED (#200); #182's "federation proxy's 502" entry resolved.

@@ -13,9 +13,15 @@
  * behind, and the substitution attack this check exists for can only be
  * exercised end-to-end through the real route + exception filter.
  */
-import { SafeFederationClient } from '../../src/contexts/safe-federation-client';
+import { HttpStatus } from '@nestjs/common';
+import {
+  FederationFetchError,
+  SafeFederationClient,
+} from '../../src/contexts/safe-federation-client';
+import { AppException } from '../../src/errors/app-exception';
+import { ErrorCode } from '../../src/errors/error-codes';
 import { createTestApp, TestAppContext } from '../helpers/test-app';
-import { TestClient } from '../helpers/test-client';
+import { RawResponse, TestClient } from '../helpers/test-client';
 
 describe('Federation proxy (integration)', () => {
   let ctx: TestAppContext;
@@ -62,6 +68,25 @@ describe('Federation proxy (integration)', () => {
     expect((resp.body as { errorCode: string }).errorCode).toBe('REGISTRY_NOT_FOUND');
   });
 
+  /**
+   * #200: an upstream failure is a LABELLED 502 — never the 5xx fallback
+   * INTERNAL_ERROR — through the real route, guards and exception filter, with
+   * the client-visible message unchanged and the internal cause not exposed.
+   */
+  function expectUpstreamError(resp: RawResponse): void {
+    expect(resp.status).toBe(502);
+    expect(resp.headers['content-type']).toContain('application/acdp+json');
+    expect(resp.body).toMatchObject({
+      statusCode: 502,
+      errorCode: 'FEDERATION_UPSTREAM_ERROR',
+      message: `Upstream registry ${AUTHORITY} unreachable for ${CTX_ID}`,
+      error: {
+        code: 'FEDERATION_UPSTREAM_ERROR',
+        message: `Upstream registry ${AUTHORITY} unreachable for ${CTX_ID}`,
+      },
+    });
+  }
+
   it('propagates registry_base_url from the payload, then SSRF-blocks loopback (502)', async () => {
     // A loopback base_url is rejected by the SSRF guard — proves both that
     // the base_url propagated (else 404) and that the guard runs (502, not a
@@ -70,7 +95,7 @@ describe('Federation proxy (integration)', () => {
     await new Promise((r) => setTimeout(r, 100));
 
     const resp = await ctx.client.requestRaw('GET', CTX_PATH);
-    expect(resp.status).toBe(502);
+    expectUpstreamError(resp);
   });
 
   it('falls back to the Origin header for the registry base_url (502 once proxied)', async () => {
@@ -85,7 +110,7 @@ describe('Federation proxy (integration)', () => {
     await new Promise((r) => setTimeout(r, 100));
 
     const resp = await ctx.client.requestRaw('GET', CTX_PATH);
-    expect(resp.status).toBe(502); // base_url came from Origin; SSRF-blocked
+    expectUpstreamError(resp); // base_url came from Origin; SSRF-blocked
   });
 
   it('rejects a malformed ctx_id with 400', async () => {
@@ -142,16 +167,62 @@ describe('Federation proxy (integration)', () => {
       await new Promise((r) => setTimeout(r, 100));
 
       const resp = await ctx.client.requestRaw('GET', CTX_PATH);
-      expect(resp.status).toBe(502);
+      expectUpstreamError(resp);
     },
   );
+
+  // The stubbed seam: SafeFederationClient.get rejecting the way a real
+  // transport failure, rejected redirect, or oversize body does.
+  it.each(['FETCH', 'REDIRECT', 'BODY_TOO_LARGE'] as const)(
+    'labels a %s upstream failure 502 FEDERATION_UPSTREAM_ERROR (cause not exposed)',
+    async (code) => {
+      await ctx.client.ingest(ingestBody({ registry_base_url: `https://${AUTHORITY}` }));
+      await new Promise((r) => setTimeout(r, 100));
+      const fed = jest
+        .spyOn(ctx.module.get(SafeFederationClient), 'get')
+        .mockRejectedValue(new FederationFetchError(code, 'secret-internal-detail'));
+      try {
+        const resp = await ctx.client.requestRaw('GET', CTX_PATH);
+        expectUpstreamError(resp);
+        expect(JSON.stringify(resp.body)).not.toContain('secret-internal-detail');
+        expect(JSON.stringify(resp.body)).not.toContain('INTERNAL_ERROR');
+      } finally {
+        fed.mockRestore();
+      }
+    },
+  );
+
+  it('keeps an upstream 429 as 503 FEDERATION_UPSTREAM_RATE_LIMITED (not re-wrapped)', async () => {
+    await ctx.client.ingest(ingestBody({ registry_base_url: `https://${AUTHORITY}` }));
+    await new Promise((r) => setTimeout(r, 100));
+    const fed = jest
+      .spyOn(ctx.module.get(SafeFederationClient), 'get')
+      .mockRejectedValue(
+        new AppException(
+          ErrorCode.FEDERATION_UPSTREAM_RATE_LIMITED,
+          `upstream '${AUTHORITY}' is rate limiting`,
+          HttpStatus.SERVICE_UNAVAILABLE,
+        ),
+      );
+    try {
+      const resp = await ctx.client.requestRaw('GET', CTX_PATH);
+      expect(resp.status).toBe(503);
+      expect(resp.body).toMatchObject({
+        statusCode: 503,
+        errorCode: 'FEDERATION_UPSTREAM_RATE_LIMITED',
+        error: { code: 'FEDERATION_UPSTREAM_RATE_LIMITED' },
+      });
+    } finally {
+      fed.mockRestore();
+    }
+  });
 
   it('rejects a plaintext http base_url (https-only; 502)', async () => {
     await ctx.client.ingest(ingestBody({ registry_base_url: 'http://registry-a.example' }));
     await new Promise((r) => setTimeout(r, 100));
 
     const resp = await ctx.client.requestRaw('GET', CTX_PATH);
-    expect(resp.status).toBe(502);
+    expectUpstreamError(resp);
   });
 
   // ── ctx_id binding (RFC-ACDP-0006 §4.1 step 7) ────────────────────────────
