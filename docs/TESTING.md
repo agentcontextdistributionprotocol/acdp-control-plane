@@ -96,6 +96,11 @@ npm run test:integration -- ingest.integration # single spec (regex against path
   Note `REDIS_URL` is NOT exported by `global-setup`: setting it process-wide
   would flip `QuotaModule` onto the Redis store for every other spec. The live
   spec connects on its own.
+  The same file also boots the app with `STREAM_HUB_STRATEGY=redis` (issue #210
+  Phase 3): against a port nothing listens on — "Redis stopped", without ever
+  stopping the shared Redis — `/readyz` must stay 200 with
+  `checks.streamHub.status: "down"`; against the live Redis it must report `up`
+  (that case follows the same skip policy).
 - `test/setup/global-teardown.ts` tears the container down **unless** `CI` or
   `KEEP_TEST_DB` is set — keep it up for fast re-runs:
 
@@ -110,8 +115,8 @@ npm run test:integration -- ingest.integration # single spec (regex against path
 
 | Spec | Covers |
 |------|--------|
-| `health.integration.spec.ts` | `/healthz`, `/readyz`, `/metrics` shape + public access; `/readyz` `no-store` + HEAD; probes public under strict tenancy |
-| `readiness.integration.spec.ts` | Issue #210: `/readyz` 503 `DEPENDENCY_UNAVAILABLE` with the DB refused / black-holed (via `test/helpers/pg-fault-proxy.ts`), recovery bounds incl. a connect pending at restore, ≤ 1 probe pool client under 50 concurrent probes, probes never `429`, metrics, boot validation of the readiness knobs |
+| `health.integration.spec.ts` | `/healthz`, `/readyz`, `/metrics` shape + public access; both probes `no-store` + HEAD; the pool diagnostics series (`acdp_db_pool_connections`, `acdp_db_pool_errors_total`); probes public under strict tenancy |
+| `readiness.integration.spec.ts` | Issue #210: `/readyz` 503 `DEPENDENCY_UNAVAILABLE` with the DB refused / black-holed (via `test/helpers/pg-fault-proxy.ts`), recovery bounds incl. a connect pending at restore, ≤ 1 probe pool client under 50 concurrent probes, probes never `429`, metrics, boot validation of the readiness knobs; `/healthz` liveness (Phase 2): < 200 ms and 200 while the DB is black-holed, `ok` mirrors the verdict and returns to `true` after recovery with no restart and no latch |
 | `auth.integration.spec.ts` | Missing / wrong / valid bearer; `@Public()` bypass |
 | `auth-persistence.integration.spec.ts` | Postgres-backed challenge / revocation / ledger |
 | `pinned-keys-admin.integration.spec.ts` | Admin pinned-key reload |

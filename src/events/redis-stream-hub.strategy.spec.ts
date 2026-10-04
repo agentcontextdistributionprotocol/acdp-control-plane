@@ -9,6 +9,12 @@ import { AcdpStreamEvent } from '../contracts/acdp';
 const channelHandlers = new Map<string, Array<(ch: string, msg: string) => void>>();
 
 class FakeRedis {
+  /** Every constructed client, so a test can drive ioredis's `status`. */
+  static instances: FakeRedis[] = [];
+  /** ioredis connection state; `ready` once connected. */
+  status = 'ready';
+  quits = 0;
+  disconnects = 0;
   private subscribedChannel: string | null = null;
   private handler: ((ch: string, msg: string) => void) | null = null;
 
@@ -39,7 +45,17 @@ class FakeRedis {
   }
 
   async quit(): Promise<string> {
+    this.quits++;
     return 'OK';
+  }
+
+  disconnect(): void {
+    this.disconnects++;
+    this.status = 'end';
+  }
+
+  constructor() {
+    FakeRedis.instances.push(this);
   }
 }
 
@@ -73,6 +89,7 @@ describe('RedisStreamHubStrategy', () => {
 
   beforeEach(async () => {
     channelHandlers.clear();
+    FakeRedis.instances = [];
     hub = new RedisStreamHubStrategy('redis://localhost:6379');
     // connect() is fire-and-forget in the constructor; let it run.
     await new Promise((r) => setImmediate(r));
@@ -107,5 +124,43 @@ describe('RedisStreamHubStrategy', () => {
     sub.unsubscribe();
 
     expect(received.map((e) => e.ts)).toEqual(['a-evt']);
+  });
+  // ── issue #210 Phase 3: report-only transport health ──────────────────
+  describe('health()', () => {
+    it('is "up" only when BOTH the publisher and the subscriber are ready', () => {
+      expect(FakeRedis.instances).toHaveLength(2);
+      expect(hub.health()).toEqual({ status: 'up' });
+      for (const which of [0, 1]) {
+        for (const state of ['connecting', 'reconnecting', 'wait', 'close', 'end']) {
+          FakeRedis.instances[which].status = state;
+          expect({ which, state, health: hub.health() }).toEqual({
+            which,
+            state,
+            health: { status: 'down' },
+          });
+        }
+        FakeRedis.instances[which].status = 'ready';
+      }
+      expect(hub.health()).toEqual({ status: 'up' });
+    });
+
+    it('is "down" before the clients exist (connect() still pending at boot)', () => {
+      const fresh = new RedisStreamHubStrategy('redis://localhost:6379');
+      // The constructor's connect() has not run its dynamic import yet.
+      expect(fresh.health()).toEqual({ status: 'down' });
+      fresh.destroy();
+    });
+  });
+
+  describe('destroy()', () => {
+    it('QUITs a ready client but disconnect()s one that is not (no reconnect loop left behind)', () => {
+      const [pub, sub] = FakeRedis.instances;
+      sub.status = 'reconnecting';
+      hub.destroy();
+      expect(pub.quits).toBe(1);
+      expect(pub.disconnects).toBe(0);
+      expect(sub.quits).toBe(0);
+      expect(sub.disconnects).toBe(1);
+    });
   });
 });

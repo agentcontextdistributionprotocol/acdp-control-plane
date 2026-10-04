@@ -58,6 +58,13 @@ production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startu
 | `READINESS_DB_TIMEOUT_MS` | integer (ms), 50–30000 | `1000` | `GET /readyz` database probe deadline (issue #210): `SELECT 1` with this `query_timeout`, raced against an outer deadline of the same length that also covers the checkout and connect wait. Past it, `/readyz` answers `503 DEPENDENCY_UNAVAILABLE` with `reason: "timeout"`. Keep it below your probe's own timeout — with the default, a Kubernetes `readinessProbe` needs `timeoutSeconds: 2` (the k8s default of 1 would time out first). A value ≥ `DB_POOL_CONNECTION_TIMEOUT` only **warns**: the pool's bound then fires first and a slow connect reads as `reason: "error"`. Strict. |
 | `READINESS_CACHE_MS` | integer (ms), 0–60000 | `1000` | How long a readiness verdict is reused (issue #210). Caps probe-driven database load at about one `SELECT 1` per window per replica, whatever the probe rate (which is why the probes are not throttled). `0` disables the cache; the probe stays single-flight (never more than one probe query, so never more than one pool connection). Strict. |
 
+`GET /healthz` reads none of these at request time: it is liveness and never
+touches the database (issue #210). It mirrors the last readiness verdict, and
+refreshes it in the background once that verdict is older than
+`max(READINESS_CACHE_MS, 5000)` ms. Point Kubernetes `livenessProbe` /
+`startupProbe` at `/healthz` and `readinessProbe` at `/readyz`
+(`timeoutSeconds ≥ 2`); see [API.md](./API.md#observability).
+
 ## Authentication & issuance
 
 See [AUTH.md](./AUTH.md).

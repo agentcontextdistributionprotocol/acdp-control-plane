@@ -41,6 +41,25 @@ describe('Health Probes (integration)', () => {
     expect(head.body).toBe('');
   });
 
+  it('GET and HEAD /healthz: 200 with Cache-Control: no-store and the unchanged 3-key body (issue #210 Phase 2)', async () => {
+    const noAuth = new TestClient(ctx.url);
+    const get = await noAuth.requestRaw('GET', '/healthz');
+    expect(get.status).toBe(200);
+    expect(get.headers['cache-control']).toBe('no-store');
+    expect(Object.keys(get.body as object).sort()).toEqual(['ok', 'service', 'version']);
+    const head = await noAuth.requestRaw('HEAD', '/healthz');
+    expect(head.status).toBe(200);
+    expect(head.headers['cache-control']).toBe('no-store');
+  });
+
+  it('GET /metrics exposes the pool diagnostics (issue #210 Phases 2-3)', async () => {
+    const text = await client.metrics();
+    expect(text).toMatch(/^acdp_db_pool_connections\{state="waiting"\} \d+$/m);
+    expect(text).toMatch(/^acdp_db_pool_connections\{state="total"\} \d+$/m);
+    expect(text).toMatch(/^acdp_db_pool_connections\{state="idle"\} \d+$/m);
+    expect(text).toMatch(/^acdp_db_pool_errors_total \d+$/m);
+  });
+
   it('GET /metrics returns Prometheus text', async () => {
     const text = await client.metrics();
     expect(typeof text).toBe('string');

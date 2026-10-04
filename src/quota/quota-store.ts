@@ -34,6 +34,12 @@ export interface QuotaStore {
    * "store unavailable; fail open").
    */
   increment(key: string, windowSeconds: number): Promise<QuotaIncrementResult>;
+  /**
+   * Transport health for the readiness body (issue #210 Phase 3). REPORT-ONLY:
+   * the store fails open, so it never gates readiness. Synchronous, no
+   * round-trip. Omitted by a store with no transport (in-memory).
+   */
+  health?(): 'up' | 'down';
 }
 
 /** Process-local store. Lost on restart. */
@@ -87,6 +93,8 @@ return {v, ttl}
     private readonly redis: {
       eval: (script: string, numKeys: number, ...args: (string | number)[]) => Promise<unknown>;
       quit: () => Promise<unknown>;
+      /** ioredis connection state (`ready` once connected); read by `health()`. */
+      status?: string;
     },
     private readonly logger?: Pick<Logger, 'warn'>,
   ) {}
@@ -106,6 +114,11 @@ return {v, ttl}
         error: e instanceof Error ? e.message : String(e),
       });
     }
+  }
+
+  /** `up` when the ioredis client is `ready` (issue #210 Phase 3). */
+  health(): 'up' | 'down' {
+    return this.redis.status === 'ready' ? 'up' : 'down';
   }
 
   async increment(

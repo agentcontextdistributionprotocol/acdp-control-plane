@@ -1,6 +1,16 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import * as client from 'prom-client';
 
+/** The pg pool counters `acdp_db_pool_connections` reports (a `pg.Pool` satisfies it). */
+export interface DbPoolCounts {
+  readonly totalCount: number;
+  readonly idleCount: number;
+  readonly waitingCount: number;
+}
+
+/** A report-only dependency's state; `n/a` = not in use in this deployment. */
+export type DependencyStatus = 'up' | 'down' | 'n/a';
+
 @Injectable()
 export class InstrumentationService implements OnModuleInit {
   readonly httpRequestDuration = new client.Histogram({
@@ -52,11 +62,55 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['dependency', 'result'] as const,
   });
 
-  /** #210: 1 when the dependency's last real readiness probe succeeded, else 0. */
+  /** #210 Phase 3: scrape-time sources for the NON-required (report-only)
+   *  dependencies, keyed by the `dependency` label. Registered by
+   *  `ReadinessService`; `'n/a'` reports nothing for that label. */
+  private readonly dependencySources = new Map<string, () => DependencyStatus>();
+
+  /** #210 Phase 3: scrape-time source for the pg pool counters (D12 — the
+   *  pool's owner `DatabaseService` cannot inject this service, so
+   *  `ReadinessService` registers it). */
+  private dbPoolSource: (() => DbPoolCounts) | undefined;
+
+  /** #210: 1 when the dependency is up, else 0. `database` is set on every
+   *  REAL readiness probe; the report-only dependencies (e.g.
+   *  `redis_stream_hub`, Phase 3) are read at scrape time from their source. */
   readonly dependencyUp = new client.Gauge({
     name: 'acdp_dependency_up',
-    help: 'Whether the last readiness probe of a dependency succeeded (1) or not (0) (issue #210)',
+    help: 'Whether a dependency is up (1) or not (0): database = its last real readiness probe; report-only dependencies (redis_stream_hub, redis_quota_store) are read at scrape time (issue #210)',
     labelNames: ['dependency'] as const,
+    collect: () => {
+      for (const [dependency, source] of this.dependencySources) {
+        const status = source();
+        if (status === 'n/a') this.dependencyUp.remove({ dependency });
+        else this.dependencyUp.set({ dependency }, status === 'up' ? 1 : 0);
+      }
+    },
+  });
+
+  /** #210 Phase 2 (D12): pool `'error'` events — an IDLE pooled client lost
+   *  its socket (e.g. a Postgres restart or failover). pg-pool already drops
+   *  that client and reconnects on demand; a persistent outage shows up on
+   *  the readiness probe instead. */
+  readonly dbPoolErrorsTotal = new client.Counter({
+    name: 'acdp_db_pool_errors_total',
+    help: "pg pool 'error' events: an idle pooled client lost its connection (recoverable; issue #210)",
+  });
+
+  /** #210 Phase 3: pg pool clients by state, read at scrape time. `waiting`
+   *  > 0 means requests are queued for a connection (saturation). Reports
+   *  nothing (not zeros) until a source is registered. */
+  readonly dbPoolConnections = new client.Gauge({
+    name: 'acdp_db_pool_connections',
+    help: 'pg pool clients by state at scrape time: total, idle, waiting (queued checkouts) (issue #210)',
+    labelNames: ['state'] as const,
+    collect: () => {
+      const pool = this.dbPoolSource?.();
+      if (!pool) return;
+      this.dbPoolConnections.set({ state: 'total' }, pool.totalCount);
+      this.dbPoolConnections.set({ state: 'idle' }, pool.idleCount);
+      this.dbPoolConnections.set({ state: 'waiting' }, pool.waitingCount);
+    },
   });
 
   readonly eventsIngestedTotal = new client.Counter({
@@ -189,6 +243,17 @@ export class InstrumentationService implements OnModuleInit {
 
   onModuleInit(): void {
     client.collectDefaultMetrics();
+  }
+
+  /** #210 Phase 3: read `acdp_db_pool_connections` from `source` at scrape time. */
+  registerDbPoolSource(source: () => DbPoolCounts): void {
+    this.dbPoolSource = source;
+  }
+
+  /** #210 Phase 3: read `acdp_dependency_up{dependency}` from `source` at
+   *  scrape time (report-only dependencies; `database` is probe-driven). */
+  registerDependencySource(dependency: string, source: () => DependencyStatus): void {
+    this.dependencySources.set(dependency, source);
   }
 
   async getMetrics(): Promise<string> {

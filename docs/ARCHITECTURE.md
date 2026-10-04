@@ -398,11 +398,33 @@ only on full success.
   and **cached** for `READINESS_CACHE_MS`. Not ready → `503
   DEPENDENCY_UNAVAILABLE` with an enum reason (`error`/`timeout`), never driver
   text. Because cost is bounded by the cache rather than the request rate, the
-  `/readyz` is `@SkipThrottle()` (`/healthz` stays throttled until #210 Phase 2); successful probe request-log lines are
-  `debug`. State changes log once (`readiness changed`) and move
+  whole `HealthController` is `@SkipThrottle()`; successful probe request-log
+  lines are `debug`. State changes log once (`readiness changed`) and move
   `acdp_dependency_up` / `acdp_readiness_checks_total`. Single-flight relies on
   the pool's own bounds releasing a stuck probe, hence `DB_POOL_CONNECTION_TIMEOUT
-  > 0` at boot. `/healthz` is unchanged in this phase.
+  > 0` at boot.
+- **Liveness** (issue #210 Phase 2): `GET /healthz` answers "is this process
+  wedged?" and **never awaits I/O** — the CP equivalent of the registry's
+  `/livez`. A database outage is not fixed by a restart, so its status is 200
+  whenever the process can answer (only the #192 drain gate 503s it, in
+  `closing`). Its in-band `ok` mirrors `ReadinessService.snapshot()`, the last
+  readiness verdict; a missing or stale (older than `max(READINESS_CACHE_MS,
+  5000)` ms) snapshot starts a fire-and-forget `evaluate()` — the same
+  single-flight probe — except while draining. There is no pool-error latch: a
+  pool `'error'` (an idle client lost its socket; pg-pool reconnects on demand)
+  is logged by `DatabaseService` and counted on `acdp_db_pool_errors_total` by
+  a second listener `ReadinessService` attaches (it, not the global
+  `DatabaseModule`, can see `InstrumentationService`).
+- **Report-only dependencies and pool gauges** (issue #210 Phase 3):
+  `ReadinessService` adds `checks.streamHub` / `checks.quotaStore`
+  (`{ status, required: false }`) when Redis backs the stream hub or the quota
+  store, read synchronously from the ioredis connection state. They **never**
+  affect `ready`: Redis loss degrades cross-replica SSE fan-out (quota fails
+  open) and hits every replica alike, so gating would turn a partial
+  degradation into a total outage. The same sources feed
+  `acdp_dependency_up{dependency="redis_stream_hub"|"redis_quota_store"}`, and
+  `acdp_db_pool_connections{state="total"|"idle"|"waiting"}` reads the pool at
+  scrape time, so operators can tell "DB down" from "pool saturated".
 - **Graceful shutdown** via `src/shutdown.ts`: a single idempotent handler on
   SIGINT/SIGTERM first **begins the drain** (issue #192), optionally waits
   `SHUTDOWN_DRAIN_DELAY_MS`, and then calls `app.close()`. `DrainState` moves
@@ -570,7 +592,18 @@ readinessProbe:
   periodSeconds: 1
   timeoutSeconds: 2                 # > READINESS_DB_TIMEOUT_MS (default 1000 ms, #210)
   failureThreshold: 2               # 2 s to notice < 5 s delay
+livenessProbe:
+  httpGet: { path: /healthz, port: 3001 }   # never touches the DB (#210)
+startupProbe:
+  httpGet: { path: /healthz, port: 3001 }
 ```
+
+**Which probe goes where (issue #210).** Point `livenessProbe` and
+`startupProbe` at `/healthz` — it never awaits the database, so a DB outage can
+never restart-storm the fleet — and `readinessProbe` at `/readyz` with
+`timeoutSeconds ≥ 2`. Docker has no readiness concept, so the image's
+`HEALTHCHECK` stays on `/healthz` (2xx = healthy); read `/readyz` (or the
+`ok` field of `/healthz`) for dependency health.
 
 Registry webhooks benefit too: the registry's default webhook `max_retries = 3`
 gives a retry window of only ~750 ms. During the delay `/ingest/acdp` is still

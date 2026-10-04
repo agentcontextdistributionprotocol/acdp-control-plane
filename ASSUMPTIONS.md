@@ -1600,3 +1600,77 @@
     `/healthz` still hangs until Phase 2 (by design of this phase).
 - **Blast radius if wrong:** Low (test-only).
 - **Status:** UNCONFIRMED (2026-10-04)
+
+## `/healthz` staleness, injection and synchronous handler (issue #210, Phase 2)
+- **Plan:** Phase 2 Files: `healthz()` reads `readiness.snapshot()`, starts a
+  background `evaluate()` when the snapshot is absent or `isStale` (older than
+  `max(READINESS_CACHE_MS, 5000)` ms) and not draining; returns
+  `{ ok: v?.ready ?? true, service, version }` with `Cache-Control: no-store`.
+- **Assumed:** `isStale(v)` lives on `ReadinessService` (it owns the config) as
+  `Date.now() - v.checkedAt >= max(cacheMs, 5000)` (inclusive), with the 5000 ms
+  floor exported as `HEALTHZ_STALE_FLOOR_MS`. "Draining" is `DrainState.isDraining()`
+  (= `phase !== 'serving'`, the plan's wording). `healthz()` is a synchronous
+  handler (it returns an object, not a promise). `HealthController` no longer
+  injects `DatabaseService` at all, so it structurally cannot touch the pool.
+- **Blast radius if wrong:** Low. At most one extra or one fewer background probe
+  per 5 s; the status code never depends on it.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## Report-only checks: shape, omission, freshness (issue #210, Phase 3)
+- **Plan:** Phase 3: `StreamHubStrategy.health?()` returning `up|down|n/a`, memory
+  "returns nothing (`n/a`)"; `checks.streamHub` (and `checks.quotaStore` "if
+  `src/quota/` exposes an equivalent cheaply") with `required: false`; the quota
+  memory path "reports nothing"; non-required checks never affect `ready`.
+- **Assumed:**
+  - Body member shape `{ status: 'up' | 'down', required: false }` (no `latencyMs`:
+    no round-trip is made). `checks.database` is NOT given `required: true`, so the
+    Phase 1 body is byte-for-byte unchanged in a memory/in-memory deployment.
+  - `n/a` (memory strategy) and an in-memory quota store **omit** their member
+    rather than emitting `status: "n/a"`, matching "reports nothing".
+  - The quota store is cheap enough: `RedisQuotaStore.health()` reads the ioredis
+    `status` field (duck type gained an optional `status`), so `checks.quotaStore`
+    is implemented and reported only when the Redis store is active
+    (`TENANT_QUOTAS` + `REDIS_URL`). Its gauge label is `redis_quota_store`.
+  - The report-only members are read FRESH on every `evaluate()` (cache hit or
+    not) and are never stored in the cached verdict / `snapshot()`; `/healthz`'s
+    `ok` therefore ignores them by construction.
+  - `acdp_dependency_up{dependency="redis_stream_hub"|"redis_quota_store"}` is set
+    at SCRAPE time via a `collect()` source `ReadinessService` registers (like the
+    pool gauge), not on probe, so it is current even when nothing probes `/readyz`;
+    an `n/a` source removes its series. The metric's HELP text changed (HELP is not
+    a contract; name and labels are unchanged).
+- **Blast radius if wrong:** Low. Additive, report-only; reversible body shape.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## Redis stream hub teardown disconnects a client that is not ready (issue #210, Phase 3)
+- **Plan:** not in the plan (Phase 3 touches `redis-stream-hub.strategy.ts` only
+  for `health()`).
+- **Assumed:** `RedisStreamHubStrategy.destroy()` now `quit()`s only a `ready`
+  client and `disconnect()`s any other. Found by the new Phase 3 integration case:
+  with Redis down, `quit()` queues behind ioredis's endless reconnect loop, so the
+  app's clients kept the event loop alive after `app.close()` and jest never
+  exited. In production `bootstrap`'s shutdown path exits the process anyway, so
+  the user-visible effect is limited to embedded/test use; a ready client keeps
+  its graceful `QUIT`.
+- **Blast radius if wrong:** Low. Shutdown of an already-disconnected client only.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## Integration modelling for Phases 2-3 (issue #210)
+- **Plan:** Phase 2 integration: `/healthz` < 200 ms (20x) during a black-hole;
+  `ok` back to `true` "within one stale window" after refuse → restore. Phase 3:
+  "Redis stopped (`redis-live` suite pattern, :6380)".
+- **Assumed:**
+  - Each black-holed `/healthz` is raced against a 2 s client-side deadline so a
+    hang (the pre-#210 behaviour) fails as an assertion, not a jest timeout.
+  - "Within one stale window" is asserted as `5000 + READINESS_DB_TIMEOUT_MS +
+    1000` ms from `restore()`, polling `/healthz` ONLY (no `/readyz` traffic), so
+    the recovery is proved to come from `/healthz`'s own background refresh.
+  - The same case asserts `acdp_db_pool_errors_total` rose by ≥ 1 when `refuse()`
+    destroyed the warm idle client's socket (the event that used to latch).
+  - "Redis stopped" = `REDIS_URL` pointing at a just-freed local port; the shared
+    Redis is never stopped. The "Redis up" case follows the file's skip policy.
+  - Red-first on `main`: the refuse → restore case failed at the new metric
+    assertion before reaching the latch check; the latch itself is the plan's
+    measured evidence (`ok:false` forever).
+- **Blast radius if wrong:** Low (test-only).
+- **Status:** UNCONFIRMED (2026-10-04)

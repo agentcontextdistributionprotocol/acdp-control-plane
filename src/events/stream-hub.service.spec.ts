@@ -21,6 +21,17 @@ function makeStrategy(extra: Partial<StreamHubStrategy> = {}) {
 const EVT = { type: 'context_published' } as unknown as AcdpStreamEvent;
 
 describe('StreamHubService', () => {
+  describe('health() (issue #210 Phase 3)', () => {
+    it("passes the strategy's health through", () => {
+      const strategy = makeStrategy({ health: () => ({ status: 'down' }) });
+      expect(new StreamHubService(strategy).health()).toEqual({ status: 'down' });
+    });
+
+    it('is n/a when the strategy has no health() (memory strategy)', () => {
+      expect(new StreamHubService(makeStrategy()).health()).toEqual({ status: 'n/a' });
+    });
+  });
+
   it('delegates publishToRun to the strategy with run, event, tenant', () => {
     const strategy = makeStrategy();
     new StreamHubService(strategy).publishToRun('run-1', EVT, 'tenant-a');
