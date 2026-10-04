@@ -2,20 +2,25 @@
 
 Every environment variable the control plane reads is parsed in **one place** —
 `AppConfigService` (`src/config/app-config.service.ts`). The only files allowed to
-read `process.env` directly are `main.ts`, `db/migrate.ts`, `telemetry/telemetry.ts`,
+read `process.env` directly are `main.ts`, `load-env.ts`, `db/migrate.ts`, `telemetry/telemetry.ts`,
 the `auth/{pinned-keys.service,pinned-keys-admin.controller,auth.module}.ts` set,
 and `domain-packs/domain-packs.module.ts`. Start from `.env.example`.
 
-`.env` is loaded automatically at process start via a `dotenv/config` preload —
-the first import in `main.ts`, before anything else runs — so it's populated
+`.env` is loaded automatically at process start by `src/load-env.ts` — the
+first import in `main.ts`, before anything else runs — so it's populated
 before `AppConfigService` is ever constructed (including the manual instance
 `bootstrap()` (`src/bootstrap.ts`) uses to drive database migrations, ahead of
-Nest's own bootstrap).
-A variable already set in the environment wins over `.env` (unless
-`DOTENV_OVERRIDE=true` is set);
-a missing `.env` is not an error; and since dotenv 18 the preload is silent
-(set `DOTENV_QUIET=false` to see its "injected env" line, which goes to
-stderr). `src/dotenv-preload.spec.ts` pins all of this.
+Nest's own bootstrap). It uses Node's built-in `util.parseEnv` (the parser
+behind `node --env-file`) via `src/env-file.ts`; no `dotenv` package.
+A variable already set in the environment wins over `.env` (an empty value
+still wins); a missing `.env` is not an error and the load is silent; an
+`.env` that exists but cannot be read (permissions, a directory) **fails boot**
+rather than silently dropping config. A UTF-8 BOM is tolerated, there is no
+`${VAR}` expansion, and `KEY: value` lines are not supported. The former
+`DOTENV_OVERRIDE` / `DOTENV_QUIET` / `DOTENV_CONFIG_PATH` knobs no longer have
+any effect; for a different file, export the variables or run
+`node --env-file=<file> dist/main.js`. `src/env-file.spec.ts` and
+`src/load-env.spec.ts` pin all of this.
 
 Defaults below are the code defaults. Several variables are **fail-fast in
 production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startup-validation).

@@ -11,7 +11,7 @@
  *
  * It lives under `test/` so production code carries no fault-injection knob.
  */
-import 'dotenv/config';
+import '../../src/load-env';
 import { Injectable, Module, OnModuleInit } from '@nestjs/common';
 import { AppModule } from '../../src/app.module';
 import { bootstrap, reportBootstrapFailure } from '../../src/bootstrap';

@@ -1129,7 +1129,18 @@
   typings resolve, so the planned loader module adds nothing. If the repo ever
   returned to node10 resolution the TS2882 would come back loudly in `tsc`.
 - **Blast radius if wrong:** Low — one import line; the preload spec pins behaviour.
-- **Status:** CONFIRMED (2026-10-03) — decided by Opus; stands or falls with the bundler entry
+- **Status:** SUPERSEDED (#193, 2026-10-04) — dotenv removed; see the `.env` loader entry below
+
+## `.env` loaded via a `util.parseEnv` helper, not a bare `process.loadEnvFile` (issue #193)
+- **Plan:** `plans/dotenv-to-loadenvfile-193.md`
+- **Assumed:** `src/env-file.ts` (read + BOM strip + `parseEnv` + explicit no-override merge)
+  behind a 3-line `src/load-env.ts` preload (one rule-3 exemption) is better than
+  `if (existsSync('.env')) process.loadEnvFile()`: Node maps EACCES to ENOENT, a BOM
+  corrupts the first key, and no-override is documented only for `--env-file`.
+- **Behaviour change:** an unreadable/directory `.env` now fails boot (dotenv ignored it);
+  `KEY: value` lines and `DOTENV_*` knobs are no longer supported.
+- **Blast radius if wrong:** Low — one helper; the spec pins the semantics.
+- **Status:** UNCONFIRMED (2026-10-04)
 
 ## Jest runs under Node's experimental `--experimental-vm-modules` (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 3)
