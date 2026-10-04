@@ -345,7 +345,7 @@ describe('AppConfigService', () => {
       process.env.NODE_ENV = 'development';
       process.env.DB_POOL_CONNECTION_TIMEOUT = '0';
       expect(() => freshConfig().onModuleInit()).toThrow(
-        /DB_POOL_CONNECTION_TIMEOUT must be an integer > 0 \(got "0"\); 0 disables pg-pool's checkout and connect timeouts/,
+        /DB_POOL_CONNECTION_TIMEOUT must be an integer in \[1, 2147483647\] \(got "0"\); 0 disables pg-pool's checkout and connect timeouts/,
       );
     });
 
@@ -355,7 +355,7 @@ describe('AppConfigService', () => {
       const cfg = freshConfig();
       expect(cfg.dbPoolConnectionTimeout).toBeNaN();
       expect(() => cfg.onModuleInit()).toThrow(
-        /^DB_POOL_CONNECTION_TIMEOUT must be an integer > 0 \(got "5s"\)/,
+        /^DB_POOL_CONNECTION_TIMEOUT must be an integer in \[1, 2147483647\] \(got "5s"\)/,
       );
       process.env.DB_POOL_CONNECTION_TIMEOUT = ' 3000 ';
       const ok = freshConfig();
