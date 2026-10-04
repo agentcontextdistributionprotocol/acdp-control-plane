@@ -389,7 +389,38 @@ only on full success.
   files committed under `drizzle/` (no `drizzle-kit` at runtime). Applied
   migrations are tracked in `_migrations`.
 - **Graceful shutdown** via `src/shutdown.ts`: a single idempotent handler on
-  SIGINT/SIGTERM calls `app.close()` — which runs every `OnModuleDestroy`, so
+  SIGINT/SIGTERM first **begins the drain** (issue #192) and then calls
+  `app.close()`. Drain sequence:
+  1. `DrainState.begin()` (`src/shutdown-drain.ts`, a global provider with no
+     lifecycle hooks, resolved once in `bootstrap.ts`) flips the single "are we
+     shutting down?" flag and fires its replaying `drained$`. Every open SSE
+     stream (both routes share `src/events/sse-drain.ts`) writes a terminal
+     `event: shutdown` with a `retry:` hint and completes. A stream opened
+     *after* this point gets the same event at once and never subscribes to the
+     stream hub, and `/runs/:runId/events/stream` skips its DB lookup. This runs
+     before any destroy hook, so it does not depend on module destroy order or
+     on the stream-hub strategy. `StreamHubService`'s teardown stays as the
+     backstop.
+  2. `app.close()` runs the destroy hooks, then Nest's `dispose()` calls
+     `httpServer.close()`. That stops the listener and closes the sockets that
+     are idle at that moment, once. A 100 ms idle-socket reaper started at drain
+     time calls `server.closeIdleConnections()` on every tick, but **only once
+     `server.listening` is false**: `closeIdleConnections()` also destroys a
+     just-accepted socket that has not sent its request line yet. Sockets that go
+     idle during the close (every SSE stream after its `shutdown` event, every
+     request that finishes) are reaped within ~100 ms. Without the reaper they
+     would linger for `keepAliveTimeout` + buffer (~6 s), which made shutdowns
+     with SSE clients take ~6 s and, with `SHUTDOWN_TIMEOUT_MS` below that,
+     exit 1 spuriously. Measured: SIGTERM → exit 0 in ~110 ms with two open
+     streams, down from ~6000 ms. In-flight requests are never touched by the
+     reaper and keep their full grace.
+
+  Nest's `forceCloseConnections` and `return503OnClosing` adapter options stay
+  off: the first drops in-flight requests and still exits 0, and the second's
+  bare `text/html` 503 bypasses the error envelope (see
+  `plans/graceful-drain-192.md`).
+
+  `app.close()` runs every `OnModuleDestroy`, so
   `DatabaseService` drains its pool, `StreamHubService` completes all Subjects and
   background timers are cleared — then flushes OpenTelemetry, then exits 0. The
   close is bounded by `SHUTDOWN_TIMEOUT_MS` (default 10s, keep it below the

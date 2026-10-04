@@ -1346,3 +1346,60 @@
   an ESLint rule (more machinery than the script-based conventions).
 - **Blast radius if wrong:** Low — log shape only; reversible.
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (known minor false negative: a nested backtick inside `${}` ends the `[^`]*` match early; accepted — a rule-9 hit fails CI, so false positives surface immediately)
+
+## SSE `retry:` hint is a 1000 ms constant until Phase 2 (issue #192, Phase 1)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 1)
+- **Assumed:** Phase 1's helper can ship with `SSE_SHUTDOWN_RETRY_MS = 1000`
+  (`src/events/sse-drain.ts`). The `STREAM_SSE_SHUTDOWN_RETRY_MS` knob is listed under
+  Phase 2's config work, and Open question 2 (confirm 1000 against the dashboard and
+  playground reconnect behaviour) is still open.
+- **Chose:** the constant, with `retryMs` already an option on `createSseStream`, so Phase 2
+  only has to thread `config.sseShutdownRetryMs` through both controllers.
+- **Blast radius if wrong:** Low. A client reconnects 1 s after the drain. Reversible.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## `DrainState` lives in a sibling global module (issue #192, Phase 1)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 1). The plan allowed either option.
+- **Assumed:** a separate `@Global() DrainStateModule` (`src/shutdown-drain.ts`), imported
+  right after `ShutdownFailuresModule`, is clearer than adding the provider to
+  `ShutdownFailuresModule`. One concern per module, and both are hook-free, so both outlive
+  `close()`.
+- **Blast radius if wrong:** Low. It is a provider move.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## Idle-socket reaper: interval injectable, absent probe means never reap (issue #192, Phase 1)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 1)
+- **Assumed:**
+  - `ShutdownDeps` gains `reapIntervalMs?` (default `DEFAULT_REAP_INTERVAL_MS = 100`). The
+    plan names only the three deps; the extra one is for tests.
+  - When `reapIdleConnections` is wired but `listenerClosed` is not, the reaper never fires.
+    This is the fail-safe reading of "only once `listenerClosed()` is true".
+  - A throwing `beginDrain` is logged (`could not begin the shutdown drain — closing anyway`)
+    but does **not** turn the exit into 1. The teardown itself was not affected, and the
+    plan says the exit follows "the existing contract".
+  - A throwing reaper or probe tick is swallowed silently, as with `forceCloseConnections`.
+- **Also:** `forceCloseConnections` now uses the `server` captured once after
+  `NestFactory.create` (Round 2 #3) instead of calling `app.getHttpServer()` inside the
+  lambda. It is the same object, because Nest creates the server in the `NestApplication`
+  constructor.
+- **Blast radius if wrong:** Low. These are shutdown-path details pinned by `src/shutdown.spec.ts`.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## SSE helper metrics and backstop semantics (issue #192, Phase 1)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 1)
+- **Assumed:**
+  - `active_sse_connections` is incremented for every subscription, including one opened
+    during the drain, which goes inc → terminate → dec in the same tick.
+  - `acdp_sse_streams_terminated_total{reason="shutdown"}` counts every `shutdown` event
+    written, including those for subscribe-after-drain streams. A client disconnect is not
+    counted.
+  - The stream hub's own completion (`strategy.destroy()`, the backstop) still ends a stream
+    **without** a `shutdown` event, exactly as before.
+  - The explicit `isDraining()` early return is kept (Round 2 #1) even though the replaying
+    `drained$` + `subscriber.closed` check alone already prevents the hub subscription. Both
+    paths are covered by `src/events/sse-drain.spec.ts`. A mutation run showed that removing
+    the early return alone fails no test, because the replay path covers it. Removing the
+    post-subscribe `closed` check does fail a test.
+- **Blast radius if wrong:** Low. Metric semantics only, and the metrics are best effort on a
+  dying process.
+- **Status:** UNCONFIRMED (2026-10-04)

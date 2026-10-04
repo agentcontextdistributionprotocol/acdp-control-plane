@@ -114,6 +114,19 @@ export interface AcdpWebhookEvent {
   [k: string]: unknown;
 }
 
+/**
+ * Payload of the `shutdown` SSE event (issue #192). Besides `AcdpStreamEvent`s
+ * (event = their `type`) and `heartbeat` (`{ ts }`), both SSE routes emit
+ * `event: shutdown` with this payload and a `retry:` hint as the LAST event
+ * before the server ends the stream on a graceful shutdown — including for a
+ * stream opened while the server is already draining. Clients should reconnect
+ * after `retry` ms (EventSource does so on its own), landing on a live replica.
+ * Built by `src/events/sse-drain.ts`.
+ */
+export interface SseShutdownEventData {
+  reason: 'server_shutdown';
+}
+
 /** Stream event broadcast over SSE (per-run and global feeds). */
 export interface AcdpStreamEvent {
   type: string;

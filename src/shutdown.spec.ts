@@ -225,6 +225,182 @@ describe('the shutdown deadline', () => {
   });
 });
 
+describe('the drain and idle-socket reaper (issue #192)', () => {
+  beforeEach(() => jest.clearAllMocks());
+  afterEach(() => jest.useRealTimers());
+
+  /** A close() the test releases by hand, so the reaper's window is controlled. */
+  function gatedClose(calls?: string[]) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const close = jest.fn(() => {
+      calls?.push('close');
+      return gate;
+    });
+    return { close, release };
+  }
+
+  it('begins the drain BEFORE close() runs any destroy hook', async () => {
+    const { handler, calls } = build((c) => ({
+      beginDrain: jest.fn(() => {
+        c.push('beginDrain');
+      }),
+    }));
+
+    await handler('SIGTERM');
+
+    expect(calls).toEqual(['beginDrain', 'close', 'stopTelemetry', 'exit:0']);
+  });
+
+  it('never reaps while the listener is still open, then polls once it closes', async () => {
+    jest.useFakeTimers();
+    let listenerClosed = false;
+    const reapIdleConnections = jest.fn();
+    const { close, release } = gatedClose();
+    const { handler, deps } = build(() => ({
+      close,
+      reapIdleConnections,
+      listenerClosed: () => listenerClosed,
+    }));
+
+    const done = handler('SIGTERM');
+    // closeIdleConnections() would reset a just-accepted socket that has not sent
+    // its request line yet — so no tick may reap while the listener accepts.
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(reapIdleConnections).not.toHaveBeenCalled();
+
+    // Nest's dispose() has called httpServer.close(): the NEXT tick reaps.
+    listenerClosed = true;
+    await jest.advanceTimersByTimeAsync(100);
+    expect(reapIdleConnections).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(200);
+    expect(reapIdleConnections).toHaveBeenCalledTimes(3);
+
+    // close() settles → the poll stops for good.
+    release();
+    await done;
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(reapIdleConnections).toHaveBeenCalledTimes(3);
+    expect(deps.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('stops polling on the forced (deadline) path too', async () => {
+    jest.useFakeTimers();
+    const reapIdleConnections = jest.fn();
+    const forceCloseConnections = jest.fn();
+    const { handler, deps } = build(() => ({
+      close: jest.fn(() => new Promise<void>(() => undefined)), // never settles
+      reapIdleConnections,
+      listenerClosed: () => true,
+      forceCloseConnections,
+      timeoutMs: 450,
+    }));
+
+    const done = handler('SIGTERM');
+    await jest.advanceTimersByTimeAsync(450);
+    await done;
+    const ticks = reapIdleConnections.mock.calls.length;
+    expect(ticks).toBe(4);
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(reapIdleConnections).toHaveBeenCalledTimes(ticks);
+    expect(forceCloseConnections).toHaveBeenCalledTimes(1);
+    expect(deps.exit).toHaveBeenCalledWith(1);
+  });
+
+  it('never reaps when no listenerClosed probe is wired (fail-safe)', async () => {
+    jest.useFakeTimers();
+    const reapIdleConnections = jest.fn();
+    const { close, release } = gatedClose();
+    const { handler } = build(() => ({ close, reapIdleConnections }));
+
+    const done = handler('SIGTERM');
+    await jest.advanceTimersByTimeAsync(1000);
+    release();
+    await done;
+
+    expect(reapIdleConnections).not.toHaveBeenCalled();
+  });
+
+  it('honours a custom reap interval', async () => {
+    jest.useFakeTimers();
+    const reapIdleConnections = jest.fn();
+    const { close, release } = gatedClose();
+    const { handler } = build(() => ({
+      close,
+      reapIdleConnections,
+      listenerClosed: () => true,
+      reapIntervalMs: 25,
+    }));
+
+    const done = handler('SIGTERM');
+    await jest.advanceTimersByTimeAsync(100);
+    release();
+    await done;
+
+    expect(reapIdleConnections).toHaveBeenCalledTimes(4);
+  });
+
+  it('still closes and exits 0 when beginDrain throws', async () => {
+    const { handler, deps, calls } = build(() => ({
+      beginDrain: jest.fn(() => {
+        throw new Error('drain exploded');
+      }),
+    }));
+
+    await expect(handler('SIGTERM')).resolves.toBeUndefined();
+
+    // A failed drain loses the `shutdown` event, not the teardown: the exit code
+    // contract is unchanged.
+    expect(calls).toEqual(['close', 'stopTelemetry', 'exit:0']);
+    expect(deps.logger?.error).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'drain exploded' }),
+    );
+  });
+
+  it('still exits 0 when the reaper or the listener probe throws', async () => {
+    jest.useFakeTimers();
+    const reapIdleConnections = jest.fn(() => {
+      throw new Error('reap failed');
+    });
+    const { close, release } = gatedClose();
+    const { handler, deps } = build(() => ({
+      close,
+      reapIdleConnections,
+      listenerClosed: () => true,
+    }));
+
+    const done = handler('SIGTERM');
+    await jest.advanceTimersByTimeAsync(300);
+    // A throwing tick does not stop later ticks.
+    expect(reapIdleConnections).toHaveBeenCalledTimes(3);
+    release();
+    await expect(done).resolves.toBeUndefined();
+    expect(deps.exit).toHaveBeenCalledWith(0);
+
+    const probe = build(() => ({
+      reapIdleConnections: jest.fn(),
+      listenerClosed: () => {
+        throw new Error('probe failed');
+      },
+    }));
+    const probeDone = probe.handler('SIGTERM');
+    await jest.advanceTimersByTimeAsync(300);
+    await probeDone;
+    expect(probe.deps.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('begins the drain once across repeated signals', async () => {
+    const beginDrain = jest.fn();
+    const { handler } = build(() => ({ beginDrain }));
+
+    await Promise.all([handler('SIGTERM'), handler('SIGTERM'), handler('SIGINT')]);
+
+    expect(beginDrain).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('signal threading', () => {
   it('passes the signal to close(), for Before/OnApplicationShutdown hooks', async () => {
     const { handler, deps } = build();
