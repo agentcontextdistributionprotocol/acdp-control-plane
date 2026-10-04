@@ -51,8 +51,17 @@ jobs:
         run: bash scripts/ci-conventions.sh
       - name: Lint (ESLint)
         run: npm run lint -- --max-warnings 0
-      - name: TypeScript compile
-        run: npx tsc --noEmit -p tsconfig.json
+      - name: TypeScript typecheck (TS 7, both tsconfigs)
+        # Two compilers on purpose (issue #156 Phase 2): `typescript` stays 6.x
+        # because nest build / ts-jest / ts-node / typescript-eslint all load
+        # its JS API, which TS 7.0 does not ship; TS 7 is installed alongside
+        # as the `@typescript/native` alias and only typechecks, so a
+        # TS-7-only divergence fails the PR that introduces it. Never call a
+        # bare tsc via npx here -- both packages declare a `tsc` bin and npm
+        # links whichever wins the collision; the scripts use explicit paths.
+        run: npm run typecheck
+      - name: TypeScript typecheck (TS 6, the compiler that builds)
+        run: npm run typecheck:ts6
       - name: Build emit shape (builds TWICE -- see script header)
         # Guards two states where dist/ ends up unusable, both of which
         # shipped as real regressions in the TypeScript 6 bump (issue #137

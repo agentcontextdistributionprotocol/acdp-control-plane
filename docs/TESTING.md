@@ -189,7 +189,8 @@ it needs Docker plus an OpenAI key and is **not** wired into CI. See
 `.github/workflows/ci.yml` runs on every PR/push to `main`:
 
 1. **unit** — convention greps (`scripts/ci-conventions.sh`), ESLint
-   (`--max-warnings 0`), `tsc --noEmit`, then the unit suite with coverage
+   (`--max-warnings 0`), `npm run typecheck` (TS 7) + `npm run typecheck:ts6`,
+   the build-emit check, then the unit suite with coverage
    thresholds enforced; the lcov report uploads as an artifact.
 2. **integration** — the full integration suite against a `postgres:16`
    service container on port 5433.

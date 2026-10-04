@@ -11,6 +11,13 @@ updates:
       # resolve (npm ci ERESOLVE). Stay on 6.x majors until typescript-eslint
       # supports a newer major, then lift this. Minor/patch still flow.
       # (Said "5.x" until issue #137 Phase 8 moved the repo to TypeScript 6.)
+      # `typescript` is now explicitly "the API package" every tool loads.
+      # The TS 7 line is the separate `@typescript/native` devDependency
+      # (`npm:typescript@^7.x` alias, typecheck-only gate, issue #156
+      # Phase 2); it MAY take majors. Note Dependabot's npm parser SKIPS
+      # `npm:` alias specifiers entirely (unless its opt-in dealias
+      # experiment is on), so it will neither bump nor break on that entry --
+      # bump it by hand (`npm install -D @typescript/native@npm:typescript@^7.x`).
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
     # Pattern groups stay (they collapse their own churn); the two

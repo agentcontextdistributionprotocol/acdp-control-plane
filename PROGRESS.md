@@ -3537,6 +3537,25 @@ OPEN with a progress comment (Phase 1 shipped; Phase 2 decision-gated, Phase 3
 gated on the TS 7.1 compiler API). 2 ASSUMPTIONS.md entries tagged
 `Plan: plans/typescript-7-156.md`, UNCONFIRMED.
 
+### Phase 2 — TS 7 typecheck gate, side-by-side with TS 6 — 2026-10-03
+
+DONE, gate PASS round 2 (fresh Opus; round 1 gaps: criterion-6 grep hit the new
+warning comments → reworded; TROUBLESHOOTING lead-in nit). Decision gate cleared by
+the user. `package.json`: devDependency `"@typescript/native": "npm:typescript@^7.0.2"`
+(`typescript` stays `^6.0.3`), scripts `typecheck` (TS 7, both tsconfigs, explicit
+path) and `typecheck:ts6`. ci.yml + release.yml: `npx tsc` → `npm run typecheck` +
+`npm run typecheck:ts6` (divergence: plan had only `typecheck`, which would drop the
+TS 6 check of `test/**`). Re-measured on Nest 12 main: `npm ci` exit 0 / 0 ERESOLVE,
+`npm ls` 0; TS 7 bin 7.0.2, `require('typescript')` + Nest loader 6.0.3; live gate
+(injected error → exit 1 / 2; shared tsbuildinfo does not short-circuit). lint,
+conventions, check:build 11 ok (146 `.js`), unit 83 suites/1200 passed, integration
+31 suites/219 passed. Dependabot: dependabot-core skips `npm:` alias specifiers
+(`alias_package?`) unless the opt-in dealias experiment is on — not broken, not
+bumped (hand-bump documented). TS 7.1 `next` (7.1.0-dev.20261003.1): root export still
+version-only; only the new `./unstable/*` API — Phase 3 stays gated. Docs:
+TROUBLESHOOTING, TESTING, dependabot.yml comment, CLAUDE.md (local). ASSUMPTIONS
+deferral entry → CONFIRMED/SUPERSEDED. #156 stays open.
+
 ## NestJS 11 → 12 — issue #155 (`plans/nestjs-12-155.md`)
 
 Risk: Phase 0 simple (scratch probe, non-committing), Phase 1 simple, Phase 2
