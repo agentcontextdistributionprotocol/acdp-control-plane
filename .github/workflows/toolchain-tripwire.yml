@@ -1,0 +1,121 @@
+name: toolchain tripwire (TypeScript 7)
+
+# Issue #156 Phase 3 is gated on upstream: the `typescript` package itself can
+# only move to 7.x once the TS 7.1 compiler API ships AND nest build, ts-jest,
+# typescript-eslint and ts-node (or their replacements) work against it. Dependabot
+# cannot watch for that (the major is ignored, and it skips the `npm:` alias), so
+# this weekly job installs the newest `typescript` ON TOP of a clean `npm ci` and
+# runs each gate as a probe.
+#
+# INVERTED SIGNAL — read this before "fixing" a green run:
+#   * green  = still blocked (the expected state): at least one probe fails.
+#   * RED    = every probe passed: Phase 3 is unblocked. That is the one
+#              actionable event; GitHub emails on a failed scheduled run.
+# It is never a required check and never touches the repo (`--no-save`).
+# Unblock checklist + evidence: plans/typescript-7-156.md ("Dated re-check").
+# To retire it: delete this file when Phase 3 lands.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1' # Mondays 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      typescript_spec:
+        description: 'typescript version/tag to probe (blank = latest)'
+        required: false
+        default: ''
+      min_major:
+        description: 'minimum installed major that counts (7 = real run; 6 only to prove the red path with typescript_spec=6.0.3)'
+        required: false
+        default: '7'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe typescript@latest against the toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Install the candidate TypeScript (plain install, never --force)
+        id: install
+        env:
+          SPEC: ${{ github.event.inputs.typescript_spec }}
+        run: |
+          set +e
+          spec="typescript@${SPEC:-latest}"
+          # `--no-save`: the working tree and lockfile are never modified.
+          # A plain install (measured exit 0 with ERESOLVE warnings for 7.0.2);
+          # `--force` of a dev build once spun at 100% CPU / 2 GB.
+          timeout 600 npm install --no-save "$spec" > install.log 2>&1
+          echo "install_exit=$?" >> "$GITHUB_OUTPUT"
+          tail -n 20 install.log
+
+      - name: Run probes
+        env:
+          MIN_MAJOR: ${{ github.event.inputs.min_major }}
+        run: |
+          set +e
+          : > matrix.md
+          pass=0; fail=0
+          probe() { # name, command...
+            name="$1"; shift
+            slug=$(printf %s "$name" | tr -c 'A-Za-z0-9' _)
+            if timeout 900 "$@" > "probe-$slug.log" 2>&1; then
+              echo "| $name | PASS |" >> matrix.md; pass=$((pass+1))
+            else
+              echo "| $name | FAIL |" >> matrix.md; fail=$((fail+1))
+            fi
+          }
+
+          ver=$(node -p "require('typescript/package.json').version" 2>/dev/null)
+          major=${ver%%.*}
+          echo "installed typescript: ${ver:-none}"
+          # Guard: if the install failed the tree is still TS 6 and every probe
+          # below would pass for the wrong reason. A TS < 7 is a FAILED probe.
+          probe "typescript major >= ${MIN_MAJOR:-7} installed" bash -c "[ \"${major:-0}\" -ge \"${MIN_MAJOR:-7}\" ]"
+          probe "npm ci strictness (npm ls typescript)" npm ls typescript
+          probe "nest build (npm run build)" npm run build
+          probe "ts-jest (npm test)" npm test -- --ci
+          probe "typescript-eslint (npm run lint)" npm run lint -- --max-warnings 0
+          probe "ts-node" node -r ts-node/register/transpile-only -e "1"
+          probe "classic compiler API exposed" node -e "const t=require('typescript');process.exit(typeof t.createProgram==='function'&&typeof t.transpileModule==='function'?0:1)"
+
+          {
+            echo "### TypeScript 7 toolchain tripwire (#156)"
+            echo
+            echo "Candidate: \`typescript@${ver:-none}\` (install exit ${{ steps.install.outputs.install_exit }})"
+            echo
+            echo "| Probe | Result |"
+            echo "|---|---|"
+            cat matrix.md
+            echo
+            echo "Peer ranges (informational):"
+            echo '```'
+            for p in @typescript-eslint/parser ts-jest @nestjs/cli @nestjs/swagger; do
+              printf '%s: ' "$p"; npm view "$p" peerDependencies.typescript dependencies.typescript 2>/dev/null | tr '\n' ' '; echo
+            done
+            echo '```'
+            echo
+            if [ "$fail" -eq 0 ]; then
+              echo "**ALL PROBES PASSED — Phase 3 of #156 looks unblocked. This run is red on purpose.** Follow plans/typescript-7-156.md."
+            else
+              echo "Still blocked ($fail probe(s) failing, $pass passing). This run is green on purpose."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat matrix.md
+          echo "all_pass=$([ "$fail" -eq 0 ] && echo true || echo false)" >> "$GITHUB_ENV"
+
+      - name: Fail ONLY when everything passes (the actionable event)
+        if: env.all_pass == 'true'
+        run: |
+          echo "::error title=#156 Phase 3 unblocked::every toolchain probe passed against the candidate typescript. See the step summary and plans/typescript-7-156.md."
+          exit 1
