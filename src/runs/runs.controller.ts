@@ -26,12 +26,15 @@ import { ListEventsQueryDto } from '../dto/list-events-query.dto';
 import { ListRunsQueryDto } from '../dto/list-runs-query.dto';
 import { RunCompleteDto } from '../dto/run-complete.dto';
 import { RunStartedDto } from '../dto/run-started.dto';
+import { createSseStream } from '../events/sse-drain';
 import { StreamHubService } from '../events/stream-hub.service';
 import { verifyWebhookSignature } from '../ingest/hmac';
 import { CheckPolicy } from '../policy/check-policy.decorator';
+import { DrainState } from '../shutdown-drain';
 import { ContextEventRepository } from '../storage/context-event.repository';
 import { ContextLifecycleRepository } from '../storage/context-lifecycle.repository';
 import { LineageEdgeRepository } from '../storage/lineage-edge.repository';
+import { InstrumentationService } from '../telemetry/instrumentation.service';
 import {
   assertNotReservedTenant,
   tenantOf,
@@ -50,6 +53,8 @@ export class RunsController {
     private readonly lifecycleRepo: ContextLifecycleRepository,
     private readonly streamHub: StreamHubService,
     private readonly config: AppConfigService,
+    private readonly drain: DrainState,
+    private readonly metrics: InstrumentationService,
   ) {}
 
   @Get()
@@ -143,6 +148,20 @@ export class RunsController {
     @Req() req: TenantedRequest,
   ): Promise<Observable<MessageEvent>> {
     const tenantId = tenantOf(req);
+    // Hub feed + heartbeat + the #192 drain termination (`event: shutdown`).
+    const stream = (): Observable<MessageEvent> =>
+      createSseStream({
+        source: () => this.streamHub.streamRun(runId, tenantId),
+        drain: this.drain,
+        heartbeatMs: this.config.streamSseHeartbeatMs,
+        metrics: this.metrics,
+      });
+    // Draining (#192): answer with the terminal stream (200 + `event: shutdown`
+    // + `retry:` + end) BEFORE the DB lookup below. After `pool.end()` that
+    // lookup would throw, and the resulting 5xx kills an EventSource for good —
+    // exactly what the `retry:` hint exists to avoid. The shutdown event carries
+    // no run data, so skipping the tenant check leaks nothing.
+    if (this.drain.isDraining()) return stream();
     // 404 if a leaked runId belongs to another tenant. We allow subscribing
     // to a not-yet-created run (a caller watching its own run before the
     // first event arrives); the per-run feed is itself tenant-scoped below,
@@ -156,29 +175,7 @@ export class RunsController {
         HttpStatus.NOT_FOUND,
       );
     }
-    const heartbeatMs = this.config.streamSseHeartbeatMs;
-
-    return new Observable<MessageEvent>((subscriber) => {
-      const sub = this.streamHub.streamRun(runId, tenantId).subscribe({
-        next: (event) =>
-          subscriber.next({ type: event.type, data: event } as MessageEvent),
-        error: (err) => subscriber.error(err),
-        complete: () => subscriber.complete(),
-      });
-
-      const heartbeat = setInterval(() => {
-        subscriber.next({
-          type: 'heartbeat',
-          data: { ts: new Date().toISOString() },
-        } as MessageEvent);
-      }, heartbeatMs);
-      if (typeof heartbeat === 'object' && 'unref' in heartbeat) heartbeat.unref();
-
-      return () => {
-        clearInterval(heartbeat);
-        sub.unsubscribe();
-      };
-    });
+    return stream();
   }
 
   @Post('started')

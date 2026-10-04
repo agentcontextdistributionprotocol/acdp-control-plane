@@ -16,9 +16,16 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['method', 'path', 'status_code'] as const,
   });
 
+  /** Live since #192: inc on SSE subscribe, dec on teardown (src/events/sse-drain.ts). */
   readonly activeSseConnections = new client.Gauge({
     name: 'active_sse_connections',
     help: 'Number of active SSE connections',
+  });
+
+  readonly sseStreamsTerminatedTotal = new client.Counter({
+    name: 'acdp_sse_streams_terminated_total',
+    help: 'SSE streams ended by the server, by reason (shutdown = graceful drain, issue #192)',
+    labelNames: ['reason'] as const,
   });
 
   readonly eventsIngestedTotal = new client.Counter({

@@ -175,6 +175,29 @@ Raise `STREAM_SSE_HEARTBEAT_MS` if your proxy is aggressive about idle connectio
 Expected. Use `STREAM_HUB_STRATEGY=redis` + `REDIS_URL`. The CP warns at boot when
 it detects production + memory strategy.
 
+### Shutdown takes ~6 s / exits 1 with SSE clients
+
+Fixed by issue #192. Before the fix, every SIGTERM with an open SSE stream (or a
+request that finished during the close) took about 6 s, the
+`keepAliveTimeout` + buffer. With `SHUTDOWN_TIMEOUT_MS` below that, it exited **1**
+and logged "graceful close timed out — forcing shutdown" even though nothing was
+dropped. The handler now begins a drain before `app.close()`. Every stream gets
+`event: shutdown` and ends, and sockets that go idle during the close are reaped
+every 100 ms once the listener has closed (see `docs/ARCHITECTURE.md`,
+Operational concerns). If you still see it:
+
+1. A **slow client** (full TCP buffer) never finishes its last write, so its
+   socket stays active and the deadline + forced close still apply. That exit 1 is
+   honest, because a connection really was cut.
+2. A genuinely **in-flight request** that outlives `SHUTDOWN_TIMEOUT_MS` is still
+   forced, and the process exits 1. That is the documented contract.
+3. Check the log for `could not begin the shutdown drain`: if the drain itself
+   failed, streams fall back to the stream-hub teardown, which ends them without
+   a `shutdown` event.
+
+Clients see `event: shutdown` with a `retry:` hint and should reconnect after it
+(see `docs/API.md`, SSE).
+
 ---
 
 ## Federation proxy

@@ -11,6 +11,7 @@ import { AppConfigService } from './config/app-config.service';
 import { runMigrations } from './db/migrate';
 import { GlobalExceptionFilter } from './errors/exception.filter';
 import { createShutdownHandler, registerShutdownHandlers } from './shutdown';
+import { DrainState } from './shutdown-drain';
 import { ShutdownFailures } from './shutdown-failures';
 import { startTelemetry, stopTelemetry } from './telemetry/telemetry';
 
@@ -41,6 +42,17 @@ export async function bootstrap(rootModule: Type<unknown> = AppModule): Promise<
     logger: pinoLogger,
     rawBody: true,
   });
+
+  // Resolved ONCE, here, before any signal can arrive (#192) — the same pattern
+  // as ShutdownFailures below: no container lookup ever happens during teardown.
+  // DrainState has no lifecycle hooks, so it outlives close(). The HTTP server is
+  // created in the NestApplication constructor, so it is the one listen() uses.
+  const drainState = app.get(DrainState);
+  const server = app.getHttpServer() as {
+    listening: boolean;
+    closeIdleConnections?: () => void;
+    closeAllConnections?: () => void;
+  };
 
   // Opt-in reverse-proxy trust (TRUST_PROXY, parsed and validated by
   // AppConfigService at construction above). Unset leaves Express's default.
@@ -116,12 +128,15 @@ export async function bootstrap(rootModule: Type<unknown> = AppModule): Promise<
       hookFailed: () => shutdownFailures.any(),
       exit: (code) => process.exit(code),
       timeoutMs: config.shutdownTimeoutMs,
+      // #192: raise the drain before close() so every SSE stream ends with
+      // `event: shutdown`, then reap sockets that go idle during the close —
+      // only once the listener is closed (see ShutdownDeps.listenerClosed).
+      beginDrain: () => drainState.begin(),
+      listenerClosed: () => !server.listening,
+      reapIdleConnections: () => server.closeIdleConnections?.(),
       // Last resort when the graceful close overruns its deadline: an in-flight
       // request otherwise holds http.Server.close() open indefinitely.
-      forceCloseConnections: () => {
-        const server = app.getHttpServer() as { closeAllConnections?: () => void };
-        server.closeAllConnections?.();
-      },
+      forceCloseConnections: () => server.closeAllConnections?.(),
     }),
   );
 }

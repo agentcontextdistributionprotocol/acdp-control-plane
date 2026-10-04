@@ -30,6 +30,18 @@ export const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGQUIT'] as const;
  * common 30s termination grace period, leaving room for the forced path below.
  */
 export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10_000;
+
+/**
+ * How often the idle-socket reaper ticks during a close (issue #192).
+ *
+ * `http.Server.close()` closes only the connections that are idle AT THAT MOMENT.
+ * A socket that goes idle later — every SSE stream once the drain has ended it,
+ * and every request that finishes during the close — is otherwise reaped only by
+ * `keepAliveTimeout` + `keepAliveTimeoutBuffer` (~6 s on Node 26), which made every
+ * shutdown with an SSE client take ~6 s and, with a deadline below that, exit 1
+ * for nothing dropped. Measured: polling every 100 ms brings that to ~0.1 s.
+ */
+export const DEFAULT_REAP_INTERVAL_MS = 100;
 export type ShutdownSignal = (typeof SHUTDOWN_SIGNALS)[number];
 
 /** Everything the handler touches, injected so the sequencing can be tested
@@ -66,6 +78,34 @@ export interface ShutdownDeps {
    * handler stays usable without a Nest app.
    */
   hookFailed?: () => boolean;
+  /**
+   * Enter the drain (issue #192). Called FIRST — before `close()` runs any destroy
+   * hook — so every SSE stream ends with `event: shutdown` regardless of module
+   * destroy order or stream-hub strategy. Wired to `DrainState.begin()`. A throw
+   * is logged and does not change the exit code.
+   */
+  beginDrain?: () => void;
+  /**
+   * Whether the HTTP listener has stopped accepting connections — wired to
+   * `!server.listening`, which flips when Nest's `dispose()` calls
+   * `httpServer.close()`. The reaper is GATED on this: `closeIdleConnections()`
+   * also destroys a freshly accepted socket that has not sent its request line
+   * yet, so reaping while the listener is open would reset brand-new connections.
+   * Once it is closed no socket can be accepted, so the reaper only ever hits
+   * sockets that went idle. Absent → the reaper never runs (fail-safe).
+   */
+  listenerClosed?: () => boolean;
+  /**
+   * Close every connection with no request in flight — wired to
+   * `http.Server.closeIdleConnections()`. It never touches a socket with an
+   * active request, so in-flight requests keep their full grace. Polled every
+   * {@link reapIntervalMs} from drain start until `close()` settles or the
+   * deadline fires, but only once {@link listenerClosed} reports true. A throw is
+   * swallowed (best effort, like `forceCloseConnections`).
+   */
+  reapIdleConnections?: () => void;
+  /** Defaults to {@link DEFAULT_REAP_INTERVAL_MS}. */
+  reapIntervalMs?: number;
   /** Defaults to {@link DEFAULT_SHUTDOWN_TIMEOUT_MS}. */
   timeoutMs?: number;
   logger?: Pick<Logger, 'error' | 'log'>;
@@ -123,6 +163,53 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
       // A logger that throws must not abort the shutdown it is narrating.
     }
 
+    // Drain first (#192): before any destroy hook runs, so the SSE streams end
+    // with `event: shutdown` at a module-order-independent point. Contained, like
+    // every other step: a failed drain must not abort the close.
+    try {
+      deps.beginDrain?.();
+    } catch (err) {
+      try {
+        logger.error({
+          msg: 'could not begin the shutdown drain — closing anyway',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } catch {
+        // A throwing logger must not abort the shutdown.
+      }
+    }
+
+    // Reap sockets that go idle DURING the close (#192; see
+    // DEFAULT_REAP_INTERVAL_MS). Started now, but each tick only reaps once the
+    // listener is closed (see ShutdownDeps.listenerClosed). `unref()` so it never
+    // holds the loop open; cleared after the race below on BOTH paths.
+    let reaper: NodeJS.Timeout | undefined;
+    let reaperErrorLogged = false;
+    if (deps.reapIdleConnections) {
+      const reap = deps.reapIdleConnections;
+      reaper = setInterval(() => {
+        try {
+          if (deps.listenerClosed?.() === true) reap();
+        } catch (err) {
+          // Best effort: the deadline + forceCloseConnections still bound the close.
+          // Log once so a probe that throws every tick is visible rather than a
+          // silent return to the old ~6 s / exit-1 shutdown.
+          if (!reaperErrorLogged) {
+            reaperErrorLogged = true;
+            try {
+              logger.error({
+                msg: 'idle-socket reaper failed — relying on the shutdown deadline',
+                error: err instanceof Error ? err.message : String(err),
+              });
+            } catch {
+              // A throwing logger must not abort the shutdown.
+            }
+          }
+        }
+      }, deps.reapIntervalMs ?? DEFAULT_REAP_INTERVAL_MS);
+      reaper.unref?.();
+    }
+
     const closePhase = (async () => {
       try {
         await deps.close(signal);
@@ -154,6 +241,7 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
 
     await Promise.race([closePhase, deadline]);
     if (timer) clearTimeout(timer);
+    if (reaper) clearInterval(reaper);
 
     if (timedOut) {
       failed = true;

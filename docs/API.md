@@ -305,6 +305,28 @@ event: heartbeat
 data: {"ts":"2026-05-24T12:00:00Z"}
 ```
 
+**Graceful shutdown (`event: shutdown`).** Both SSE routes (this one and
+`GET /events/stream`) end every stream with a final `shutdown` event when the
+instance is shutting down, then close the response cleanly:
+
+```
+event: shutdown
+id: 7
+retry: 1000
+data: {"reason":"server_shutdown"}
+```
+
+A stream opened while the instance is already draining gets `200` (for requests that reach
+the handler), this event and then the end of the stream at once. A JWT client under
+`AUTH_PERSISTENCE=postgres` can still see a non-2xx in the brief window after the
+database pool has ended, because the auth guard's revocation lookup runs first. It is never a `503`, because a non-2xx
+response makes `EventSource` give up for good. Clients should treat `shutdown`
+as "reconnect after `retry` ms". A browser `EventSource` does this on its own
+when the stream ends, and the `retry:` line sets the delay, so the reconnect
+lands on a live replica. A non-browser consumer that treats an unknown event
+type as fatal must ignore or handle `shutdown`. The `retry` value is 1000 ms
+for now.
+
 ---
 
 ## Events (cross-run)
@@ -832,7 +854,8 @@ Key metrics (all constructed in `InstrumentationService`):
 |--------|------|--------|----------|
 | `http_request_duration_seconds` | histogram | `method`, `path`, `status_code` | Request latency (buckets 0.01–10 s) |
 | `http_requests_total` | counter | `method`, `path`, `status_code` | Request count |
-| `active_sse_connections` | gauge | — | Live SSE connections |
+| `active_sse_connections` | gauge | — | Live SSE connections (both stream routes) |
+| `acdp_sse_streams_terminated_total` | counter | `reason` | SSE streams ended by the server (`shutdown` = graceful drain, issue #192). Best effort: a dying process is rarely scraped. |
 | `acdp_events_ingested_total` | counter | `event_type` | Ingested events |
 | `acdp_webhook_deliveries_total` | counter | `status` | Outbound deliveries by status |
 | `acdp_ingest_rejected_total` | counter | `reason` | Ingest rejections (e.g. `pack_gate`) |

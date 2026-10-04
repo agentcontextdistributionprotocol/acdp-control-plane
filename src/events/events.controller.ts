@@ -11,8 +11,11 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Observable } from 'rxjs';
 import { AppConfigService } from '../config/app-config.service';
 import { ListEventsQueryDto } from '../dto/list-events-query.dto';
+import { DrainState } from '../shutdown-drain';
 import { ContextEventRepository } from '../storage/context-event.repository';
+import { InstrumentationService } from '../telemetry/instrumentation.service';
 import { tenantOf, TenantedRequest } from '../tenant/request-tenant';
+import { createSseStream } from './sse-drain';
 import { StreamHubService } from './stream-hub.service';
 
 @ApiTags('events')
@@ -22,6 +25,8 @@ export class EventsController {
     private readonly contextEventRepo: ContextEventRepository,
     private readonly streamHub: StreamHubService,
     private readonly config: AppConfigService,
+    private readonly drain: DrainState,
+    private readonly metrics: InstrumentationService,
   ) {}
 
   @Get()
@@ -58,29 +63,13 @@ export class EventsController {
     summary: 'Global SSE feed — all events for the caller’s tenant, live.',
   })
   streamGlobal(@Req() req: TenantedRequest): Observable<MessageEvent> {
-    const heartbeatMs = this.config.streamSseHeartbeatMs;
     const tenantId = tenantOf(req);
-
-    return new Observable<MessageEvent>((subscriber) => {
-      const sub = this.streamHub.streamGlobal(tenantId).subscribe({
-        next: (event) =>
-          subscriber.next({ type: event.type, data: event } as MessageEvent),
-        error: (err) => subscriber.error(err),
-        complete: () => subscriber.complete(),
-      });
-
-      const heartbeat = setInterval(() => {
-        subscriber.next({
-          type: 'heartbeat',
-          data: { ts: new Date().toISOString() },
-        } as MessageEvent);
-      }, heartbeatMs);
-      if (typeof heartbeat === 'object' && 'unref' in heartbeat) heartbeat.unref();
-
-      return () => {
-        clearInterval(heartbeat);
-        sub.unsubscribe();
-      };
+    // Hub feed + heartbeat + the #192 drain termination (`event: shutdown`).
+    return createSseStream({
+      source: () => this.streamHub.streamGlobal(tenantId),
+      drain: this.drain,
+      heartbeatMs: this.config.streamSseHeartbeatMs,
+      metrics: this.metrics,
     });
   }
 }

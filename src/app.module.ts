@@ -36,6 +36,7 @@ import { IngestService } from './ingest/ingest.service';
 import { MetricsController } from './metrics/metrics.controller';
 import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware';
 import { RequestLoggerMiddleware } from './middleware/request-logger.middleware';
+import { DrainStateModule } from './shutdown-drain';
 import { ShutdownFailuresModule } from './shutdown-failures';
 import { PolicyModule } from './policy/policy.module';
 import { PolicyGuard } from './policy/policy.guard';
@@ -73,6 +74,9 @@ import { WitnessSigningService } from './witness/witness-signing.service';
     // Global, and first: every resource-owning destroy hook records its
     // failures here so main.ts can exit 1 on a failed teardown (#155).
     ShutdownFailuresModule,
+    // Global: the drain signal the shutdown handler raises before close(), read
+    // by the SSE routes so every stream ends with `event: shutdown` (#192).
+    DrainStateModule,
     ConfigModule,
     DatabaseModule,
     // PinnedKeysModule is @Global() and must be imported before AuthModule so

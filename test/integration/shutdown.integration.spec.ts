@@ -188,4 +188,127 @@ describe('graceful shutdown (real process, real signal)', () => {
       socket.destroy();
     }
   });
+
+  describe('SSE-aware drain (issue #192, Phase 1)', () => {
+    // Red on `main` (recorded 2026-10-04, before Phase 1): the hub teardown ended
+    // each stream with a bare `0\r\n\r\n` (no `shutdown` event), and the now-idle
+    // keep-alive socket lingered for keepAliveTimeout+buffer (~6 s), so the first
+    // case exceeded its 1000 ms bound and the 3000 ms-deadline case exited 1 via
+    // "graceful close timed out — forcing shutdown".
+    const API_KEY = 'drain-probe-key';
+    const DRAIN_ENV = { AUTH_API_KEYS: API_KEY };
+
+    async function openSocket(): Promise<ReturnType<typeof connect>> {
+      const socket = connect(PORT, '127.0.0.1');
+      await new Promise<void>((resolve, reject) => {
+        socket.once('connect', () => resolve());
+        socket.once('error', reject);
+      });
+      socket.on('error', () => undefined);
+      return socket;
+    }
+
+    interface RawStream {
+      raw: () => string;
+      /** Resolves with the time the peer's FIN arrived. */
+      fin: Promise<number>;
+      socket: ReturnType<typeof connect>;
+    }
+
+    /** A raw-socket SSE subscription (so the chunked terminator and the FIN are
+     *  observable, which an HTTP client would hide). Resolves once the response
+     *  header block has arrived, i.e. the stream is subscribed to the hub. */
+    async function openSse(path: string): Promise<RawStream> {
+      const socket = await openSocket();
+      let raw = '';
+      const fin = new Promise<number>((resolve) => socket.once('end', () => resolve(Date.now())));
+      const headersIn = new Promise<void>((resolve) => {
+        socket.on('data', (c: Buffer) => {
+          raw += c.toString('latin1');
+          if (raw.includes('\r\n\r\n')) resolve();
+        });
+      });
+      socket.write(
+        `GET ${path} HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n` +
+          `Authorization: Bearer ${API_KEY}\r\n\r\n`,
+      );
+      await headersIn;
+      return { raw: () => raw, fin, socket };
+    }
+
+    function expectShutdownThenTerminator(stream: RawStream): void {
+      const raw = stream.raw();
+      expect(raw).toMatch(/^HTTP\/1\.1 200/);
+      const event = raw.indexOf('event: shutdown\n');
+      const terminator = raw.lastIndexOf('0\r\n\r\n');
+      expect(event).toBeGreaterThan(-1);
+      expect(raw).toMatch(/event: shutdown\n(?:id: \d+\n)?retry: \d+\n/);
+      expect(raw).toContain('"reason":"server_shutdown"');
+      expect(terminator).toBeGreaterThan(event);
+    }
+
+    it('SSE clients get a shutdown event and the process exits promptly', async () => {
+      app = await startApp(DRAIN_ENV);
+      const global = await openSse('/events/stream');
+      const perRun = await openSse('/runs/drain-r1/events/stream');
+
+      try {
+        const sentAt = Date.now();
+        app.child.kill('SIGTERM');
+        const code = await exitCodeWithin(app.child, 20_000);
+        const exitMs = Date.now() - sentAt;
+        const finMs = Math.max(await global.fin, await perRun.fin) - sentAt;
+
+        expect(code).toBe(0);
+        // Was >= 6000 ms on main: the idle keep-alive socket lingered until
+        // keepAliveTimeout+buffer instead of being reaped once the listener closed.
+        expect(exitMs).toBeLessThan(1000);
+        expect(finMs).toBeLessThan(1000);
+        expectShutdownThenTerminator(global);
+        expectShutdownThenTerminator(perRun);
+        expect(app.output()).not.toContain('forcing shutdown');
+      } finally {
+        global.socket.destroy();
+        perRun.socket.destroy();
+      }
+    });
+
+    it('a short deadline no longer exits 1 spuriously, and an in-flight request keeps its grace', async () => {
+      app = await startApp({ ...DRAIN_ENV, SHUTDOWN_TIMEOUT_MS: '3000' });
+      const sse = await openSse('/events/stream');
+
+      // An in-flight request whose HEADERS arrive before SIGTERM and whose body
+      // completes 1500 ms after it. Not DB-backed (Round 2 #2): the body fails
+      // DTO validation, so the expected answer is a 400, never a reset or 5xx.
+      const post = await openSocket();
+      let postRaw = '';
+      post.on('data', (c: Buffer) => (postRaw += c.toString('latin1')));
+      const body = '{"not_a_run":true}';
+      post.write(
+        'POST /runs/started HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n' +
+          `Content-Length: ${body.length}\r\n\r\n` +
+          body.slice(0, 5),
+      );
+      // Let the request line + headers be parsed before the signal.
+      await new Promise((r) => setTimeout(r, 200));
+
+      try {
+        const sentAt = Date.now();
+        app.child.kill('SIGTERM');
+        setTimeout(() => post.write(body.slice(5)), 1500);
+        const code = await exitCodeWithin(app.child, 20_000);
+        const exitMs = Date.now() - sentAt;
+
+        // Was 1 on main: the lingering idle sockets outlived the 3000 ms deadline.
+        expect(code).toBe(0);
+        expect(app.output()).not.toContain('forcing shutdown');
+        expectShutdownThenTerminator(sse);
+        expect(postRaw).toMatch(/^HTTP\/1\.1 400 /);
+        expect(exitMs).toBeLessThan(1500 + 500);
+      } finally {
+        sse.socket.destroy();
+        post.destroy();
+      }
+    });
+  });
 });
