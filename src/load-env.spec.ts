@@ -76,5 +76,9 @@ describe('load-env preload (main.ts first import)', () => {
 
     expect(res.status).not.toBe(0);
     expect(res.stderr).toContain('EISDIR');
+    // Actionable: names the likely cause, not just the errno.
+    expect(res.stderr).toContain('".env" is a directory, not a file');
+    expect(res.stderr).toContain('Docker bind mount such as `-v ./.env:/app/.env`');
+    expect(res.stderr.split('Likely cause').length).toBe(2); // exactly once, not doubled
   });
 });

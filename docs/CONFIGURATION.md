@@ -15,7 +15,8 @@ behind `node --env-file`) via `src/env-file.ts`; no `dotenv` package.
 A variable already set in the environment wins over `.env` (an empty value
 still wins); a missing `.env` is not an error and the load is silent; an
 `.env` that exists but cannot be read (permissions, a directory) **fails boot**
-rather than silently dropping config. A UTF-8 BOM is tolerated, there is no
+rather than silently dropping config (an `EISDIR` names the usual cause: a Docker
+bind mount `-v ./.env:/app/.env` of a host file that does not exist). A UTF-8 BOM is tolerated, there is no
 `${VAR}` expansion, and `KEY: value` lines are not supported. The former
 `DOTENV_OVERRIDE` / `DOTENV_QUIET` / `DOTENV_CONFIG_PATH` knobs no longer have
 any effect; for a different file, export the variables or run
@@ -54,7 +55,7 @@ production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startu
 | `DATABASE_URL` | string | `postgres://postgres:postgres@localhost:5432/acdp_control_plane` | Postgres connection string. |
 | `DB_POOL_MAX` | number | `20` | Max pool connections per replica. **Must be ≥ 2.** |
 | `DB_POOL_IDLE_TIMEOUT` | number (ms) | `30000` | Idle connection timeout. |
-| `DB_POOL_CONNECTION_TIMEOUT` | number (ms) | `5000` | Connection-acquisition timeout: bounds both waiting for a pool checkout and opening a new connection. **Must be an integer > 0** (every environment, issue #210); 0 would disable pg-pool's checkout/connect timeouts — an unbounded wait on a black-holed database — and a negative value makes every connect fail at once. |
+| `DB_POOL_CONNECTION_TIMEOUT` | integer (ms), 1–2147483647 | `5000` | Connection-acquisition timeout: bounds both waiting for a pool checkout and opening a new connection. **Must be an integer > 0** (every environment, issue #210); 0 would disable pg-pool's checkout/connect timeouts — an unbounded wait on a black-holed database — and a negative value makes every connect fail at once. Strict: a set value that is not a plain decimal integer (`5s`, `1.5`, empty) fails startup instead of falling back to `5000`. |
 | `READINESS_DB_TIMEOUT_MS` | integer (ms), 50–30000 | `1000` | `GET /readyz` database probe deadline (issue #210): `SELECT 1` with this `query_timeout`, raced against an outer deadline of the same length that also covers the checkout and connect wait. Past it, `/readyz` answers `503 DEPENDENCY_UNAVAILABLE` with `reason: "timeout"`. Keep it below your probe's own timeout — with the default, a Kubernetes `readinessProbe` needs `timeoutSeconds: 2` (the k8s default of 1 would time out first). A value ≥ `DB_POOL_CONNECTION_TIMEOUT` only **warns**: the pool's bound then fires first and a slow connect reads as `reason: "error"`. Strict. |
 | `READINESS_CACHE_MS` | integer (ms), 0–60000 | `1000` | How long a readiness verdict is reused (issue #210). Caps probe-driven database load at about one `SELECT 1` per window per replica, whatever the probe rate (which is why the probes are not throttled). `0` disables the cache; the probe stays single-flight (never more than one probe query, so never more than one pool connection). Strict. |
 
@@ -412,8 +413,8 @@ as its fan-out cap. See `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section.
 - Production with empty `WEBHOOK_SECRET` (inbound webhook HMAC verification would
   otherwise be silently disabled — see `src/ingest/hmac.ts`).
 - `DB_POOL_MAX < 2`.
-- `DB_POOL_CONNECTION_TIMEOUT` not an integer > 0 (`0`, `-1`, `1.5`) — in every environment
-  (issue #210). A non-numeric value still falls back to `5000`.
+- `DB_POOL_CONNECTION_TIMEOUT` not an integer in 1–2147483647 (`0`, `-1`, `1.5`, `5s`, empty) — in every
+  environment (issue #210). Strict parse: a non-integer value no longer falls back to `5000`.
 - `READINESS_DB_TIMEOUT_MS` not an integer in [50, 30000], or `READINESS_CACHE_MS` not an
   integer in [0, 60000] (e.g. `abc`, `-1`) — in every environment (issue #210).
   `READINESS_DB_TIMEOUT_MS >= DB_POOL_CONNECTION_TIMEOUT` only **warns**.

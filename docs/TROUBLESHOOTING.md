@@ -461,6 +461,13 @@ the raw HTTP request body before any framework re-serialization.
 `NODE_ENV !== 'development'`. Set `NODE_ENV=development` or supply the required
 vars. See [CONFIGURATION.md](./CONFIGURATION.md#startup-validation).
 
+### Boot fails with `EISDIR: illegal operation on a directory, read … the .env path ".env" is a directory`
+
+`./.env` is a directory. Almost always a Docker bind mount (`-v ./.env:/app/.env` or a compose
+`volumes:` entry) of a file that did not exist on the host, so Docker created a directory.
+Create the file on the host (or drop the mount), delete the stray `.env/` directory, and
+recreate the container. See [CONFIGURATION.md](./CONFIGURATION.md).
+
 ### Integration tests fail with `ECONNREFUSED localhost:5433`
 
 The test Postgres isn't running. `globalSetup` starts it via

@@ -319,6 +319,13 @@ describe('AppConfigService', () => {
         ['DB_POOL_CONNECTION_TIMEOUT', '0'],
         ['DB_POOL_CONNECTION_TIMEOUT', '-1'],
         ['DB_POOL_CONNECTION_TIMEOUT', '1.5'],
+        // Strict parse (#210 reconcile): these used to fall back to 5000 silently.
+        ['DB_POOL_CONNECTION_TIMEOUT', '5s'],
+        ['DB_POOL_CONNECTION_TIMEOUT', ''],
+        ['DB_POOL_CONNECTION_TIMEOUT', '1e3'],
+        ['DB_POOL_CONNECTION_TIMEOUT', '0x10'],
+        ['DB_POOL_CONNECTION_TIMEOUT', 'abc'],
+        ['DB_POOL_CONNECTION_TIMEOUT', '2147483648'],
       ];
       for (const [name, v] of cases) {
         process.env = { ...process.env };
@@ -340,6 +347,20 @@ describe('AppConfigService', () => {
       expect(() => freshConfig().onModuleInit()).toThrow(
         /DB_POOL_CONNECTION_TIMEOUT must be an integer > 0 \(got "0"\); 0 disables pg-pool's checkout and connect timeouts/,
       );
+    });
+
+    it('DB_POOL_CONNECTION_TIMEOUT is strict: a non-integer is refused, not defaulted', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.DB_POOL_CONNECTION_TIMEOUT = '5s';
+      const cfg = freshConfig();
+      expect(cfg.dbPoolConnectionTimeout).toBeNaN();
+      expect(() => cfg.onModuleInit()).toThrow(
+        /^DB_POOL_CONNECTION_TIMEOUT must be an integer > 0 \(got "5s"\)/,
+      );
+      process.env.DB_POOL_CONNECTION_TIMEOUT = ' 3000 ';
+      const ok = freshConfig();
+      expect(ok.dbPoolConnectionTimeout).toBe(3000);
+      expect(() => ok.onModuleInit()).not.toThrow();
     });
 
     it('warns (does not fail) when the readiness timeout >= DB_POOL_CONNECTION_TIMEOUT', () => {

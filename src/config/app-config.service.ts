@@ -428,7 +428,10 @@ export class AppConfigService implements OnModuleInit {
   // (validate(), every environment, #210 D10): pg-pool and pg skip both timers
   // when it is 0, so a checkout or a connect to a black-holed host would wait
   // forever — and the single-flight readiness probe would stick at `down`.
-  readonly dbPoolConnectionTimeout = readNumber('DB_POOL_CONNECTION_TIMEOUT', 5000);
+  // Strict (#210 reconcile): a set value that is not a plain decimal integer
+  // ("5s", "1.5", "") arrives as NaN and fails validate() instead of silently
+  // running at 5000.
+  readonly dbPoolConnectionTimeout = readStrictInteger('DB_POOL_CONNECTION_TIMEOUT', 5000);
 
   // Readiness probe (#210, `src/health/readiness.service.ts`). The DB check is
   // `SELECT 1` with a `query_timeout` of READINESS_DB_TIMEOUT_MS raced against
@@ -709,11 +712,15 @@ export class AppConfigService implements OnModuleInit {
     assertIntegerInRange('READINESS_CACHE_MS', this.readinessCacheMs, 0, 60000, 1000);
     // D10: 0 disables pg-pool's checkout and connect timeouts (both guarded by
     // a truthiness check), so a stuck connect never settles; a negative value
-    // makes every connect fail at once. Read leniently (readNumber), so a
-    // non-numeric value still falls back to 5000 — pre-existing and bounded.
-    if (!Number.isInteger(this.dbPoolConnectionTimeout) || this.dbPoolConnectionTimeout <= 0) {
+    // makes every connect fail at once. Read strictly (readStrictInteger), so a
+    // non-integer value ("5s", "1.5", "") arrives as NaN and fails here too.
+    if (
+      !Number.isInteger(this.dbPoolConnectionTimeout) ||
+      this.dbPoolConnectionTimeout <= 0 ||
+      this.dbPoolConnectionTimeout > MAX_TIMER_MS
+    ) {
       throw new Error(
-        `DB_POOL_CONNECTION_TIMEOUT must be an integer > 0 ` +
+        `DB_POOL_CONNECTION_TIMEOUT must be an integer in [1, ${MAX_TIMER_MS}] ` +
           `(got ${JSON.stringify(process.env.DB_POOL_CONNECTION_TIMEOUT ?? this.dbPoolConnectionTimeout)}); ` +
           `0 disables pg-pool's checkout and connect timeouts (an unbounded wait). Default 5000 when unset.`,
       );

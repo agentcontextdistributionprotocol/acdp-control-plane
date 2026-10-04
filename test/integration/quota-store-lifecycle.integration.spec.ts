@@ -39,7 +39,10 @@
  * suite into a job timeout. It must not reproduce that in its own failure path, so
  * cleanup runs in `withApp`'s `finally` — never as a test's last statement, which a
  * failed assertion would skip — and is itself time-bounded, falling back to
- * `disconnect()` when a `quit()` against a dead server stalls.
+ * `disconnect()` if the close stalls. `RedisQuotaStore.close()` now quits only a
+ * `ready` client and disconnects any other (#210 reconcile), so a stall there is a
+ * regression; the bound stays as the backstop that keeps such a regression a
+ * failed test rather than a hung job.
  */
 import Redis from 'ioredis';
 import { Test } from '@nestjs/testing';
@@ -131,9 +134,10 @@ async function buildWith(env: {
 /**
  * Always-runs cleanup. A test's trailing `await close()` is skipped the moment an
  * assertion above it throws, leaking the very client this spec guards — so the app
- * is closed in a `finally` instead. The close is also bounded: a `quit()` issued
- * against a server that has gone away can stall indefinitely, and a stalled cleanup
- * is the same job timeout by another route.
+ * is closed in a `finally` instead. The close is also bounded: `close()` no longer
+ * sends a `quit()` to a client that is not `ready` (which is what used to stall),
+ * but a stalled cleanup would be the same job timeout by another route, so the
+ * bound stays as a regression backstop.
  */
 async function withApp<T>(
   env: { REDIS_URL?: string; TENANT_QUOTAS?: string },

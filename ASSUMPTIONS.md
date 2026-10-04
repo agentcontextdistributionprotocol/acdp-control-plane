@@ -1140,7 +1140,7 @@
 - **Behaviour change:** an unreadable/directory `.env` now fails boot (dotenv ignored it);
   `KEY: value` lines and `DOTENV_*` knobs are no longer supported.
 - **Blast radius if wrong:** Low — one helper; the spec pins the semantics.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by user (Fable analysis); follow-up: EISDIR error hint
 
 ## Jest runs under Node's experimental `--experimental-vm-modules` (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 3)
@@ -1359,7 +1359,7 @@
   controllers pass it. The constant remains only as the helper's fallback. Open question 2
   (whether 1000 is the right default) is still open.
 - **Blast radius if wrong:** Low. A client reconnects 1 s after the drain. Reversible.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by user (Fable analysis)
 
 ## `DrainState` lives in a sibling global module (issue #192, Phase 1)
 - **Plan:** `plans/graceful-drain-192.md` (Phase 1). The plan allowed either option.
@@ -1368,7 +1368,7 @@
   `ShutdownFailuresModule`. One concern per module, and both are hook-free, so both outlive
   `close()`.
 - **Blast radius if wrong:** Low. It is a provider move.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (`src/shutdown-drain.ts:160-165`, wired at `src/app.module.ts:81`; one concern per hook-free global module, outlives `close()`)
 
 ## Idle-socket reaper: interval injectable, absent probe means never reap (issue #192, Phase 1)
 - **Plan:** `plans/graceful-drain-192.md` (Phase 1)
@@ -1386,7 +1386,7 @@
   lambda. It is the same object, because Nest creates the server in the `NestApplication`
   constructor.
 - **Blast radius if wrong:** Low. These are shutdown-path details pinned by `src/shutdown.spec.ts`.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus; entry text corrected: a throwing reaper/probe tick is NOT swallowed silently — it is logged ONCE (`idle-socket reaper failed — relying on the shutdown deadline`, `src/shutdown.ts:276-291`), which is the better behaviour (a probe failing every tick stays visible)
 
 ## SSE helper metrics and backstop semantics (issue #192, Phase 1)
 - **Plan:** `plans/graceful-drain-192.md` (Phase 1)
@@ -1405,7 +1405,7 @@
     post-subscribe `closed` check does fail a test.
 - **Blast radius if wrong:** Low. Metric semantics only, and the metrics are best effort on a
   dying process.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (`terminated_total{reason="shutdown"}` reads as "shutdown events written", which includes reconnects into the drain window — accepted; the redundant `isDraining()` early return is kept as a cheap, explicit statement of the hub-untouched invariant)
 
 ## Drain gate reads the path from `req.originalUrl`, not `req.path` (issue #192, Phase 2)
 - **Plan:** `plans/graceful-drain-192.md` (Phase 2) says the SSE exemption matches "on `req.path`".
@@ -1419,7 +1419,7 @@
 - **Blast radius if wrong:** Low. In the worst case an odd request-target form for an SSE
   route gets a 503 instead of `event: shutdown`. Pinned by `drain-gate.middleware.spec.ts`
   and the integration case.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (`originalUrl` is the only un-rewritten path inside `forRoutes('*')` middleware; the case-insensitive / optional-trailing-slash match mirrors Express 5's default non-strict, case-insensitive routing)
 
 ## Shutdown summary line and forced-connection count semantics (issue #192, Phase 2)
 - **Plan:** `plans/graceful-drain-192.md` (Phase 2, review item 7)
@@ -1437,7 +1437,7 @@
     `DrainState` (`noteSseTermination`, `noteRejection`, `stats()`), not prom-client
     reads, because `Counter.get()` is async and the shutdown path never awaits for a log.
 - **Blast radius if wrong:** Low. These are log fields only. Reversible.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by user; log strings FROZEN
 
 ## Drain knob validation lives in `validate()`, every environment (issue #192, Phase 2)
 - **Plan:** `plans/graceful-drain-192.md` (Phase 2)
@@ -1455,7 +1455,7 @@
 - **Blast radius if wrong:** Low. A deployment that set a garbage or sub-second
   `SHUTDOWN_TIMEOUT_MS` now refuses to boot instead of silently using 10000. That is
   the intended change, and it is called out in `docs/CONFIGURATION.md`.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by user; follow-up: DB_POOL_CONNECTION_TIMEOUT strict parse
 
 ## Drain gate side effects precede the throw (issue #192, Phase 2)
 - **Plan:** `plans/graceful-drain-192.md` (Phase 2)
@@ -1466,7 +1466,7 @@
   CLAUDE.md's "Env vars" list was **not** updated: agent sessions may not edit
   CLAUDE.md, and that is left to the user.
 - **Blast radius if wrong:** Low.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (headers-then-throw is the established pattern, same as `/readyz`'s drain arm; the CLAUDE.md env-var gap is since closed — CLAUDE.md now lists the four drain knobs)
 
 ## Drain delay: phase model, wiring and log fields (issue #192, Phase 3)
 - **Plan:** `plans/graceful-drain-192.md` (Phase 3)
@@ -1490,7 +1490,7 @@
     waited (shorter when skipped). The skip line is logged only when a delay is
     actually pending — a second signal after the delay stays a silent no-op.
 - **Blast radius if wrong:** Low. Opt-in (default 0); log fields only otherwise.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (`src/shutdown-drain.ts:54-76`, `src/shutdown.ts:208-294`; monotone three-phase model, delay 0 is byte-for-byte the Phase 2 path)
 
 ## `/readyz` drain 503 carries `Retry-After`; no `Connection: close` (issue #192, Phase 3)
 - **Plan:** `plans/graceful-drain-192.md` (Phase 3) says `/readyz` "returns 503
@@ -1503,7 +1503,7 @@
   tells the controller's 503 apart from the gate's. The DB is never queried once
   draining. `plans/readyz-db-down-fix.md` (#210) must keep this drain check first.
 - **Blast radius if wrong:** Low. A probe ignores both headers.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by user (Fable analysis)
 
 ## `SHUTDOWN_DRAIN_DELAY_MS` bounds and the 25 s budget warning (issue #192, Phase 3)
 - **Plan:** `plans/graceful-drain-192.md` (Phase 3): strict integer ≥ 0, default 0,
@@ -1520,7 +1520,7 @@
     delay; anyone setting a delay in compose must raise it.
 - **Blast radius if wrong:** Low. A deployment that set a negative/garbage value now
   fails boot (intended); the warning never blocks.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by user (Fable analysis)
 
 ## Readiness late-settle semantics: late success refreshes, late failure does not (issue #210, Phase 1)
 - **Plan:** `plans/readyz-db-down-fix.md` (Phase 1, Edge cases): "The timed-out query
@@ -1543,7 +1543,7 @@
     verdict logs one `readiness changed` warn.
 - **Blast radius if wrong:** Low. Only affects which verdict a probe sees for at most
   one cache window, and counter-vs-gauge bookkeeping on a late success.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (`src/health/readiness.service.ts:192-282`; one probe = one counter increment, the gauge tracks truth; the unreachable seq guard stays as a cheap defence should single-flight ever be relaxed)
 
 ## `/readyz` `Cache-Control: no-store` set before the drain check; `/healthz` untouched (issue #210, Phase 1)
 - **Plan:** D9 says both arms of both probes send `no-store`; Phase 1's Files say
@@ -1557,7 +1557,7 @@
   (= `phase() !== 'serving'`, identical semantics to the plan's wording).
 - **Blast radius if wrong:** Low. A cache in front of `/healthz` could serve a stale
   liveness body until Phase 2.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (`src/health/health.controller.ts:91` first line of `readyz()`; the interim gap is closed — Phase 2 shipped `no-store` on `/healthz`, line 56)
 
 ## Probe log demotion threshold and path matching (issue #210, Phase 1, D11)
 - **Plan:** D11: successful `GET`/`HEAD` `/healthz`, `/readyz` lines at `debug` when
@@ -1568,7 +1568,7 @@
   `/readyz/x` stays `info`). Only the log level changes; `http_requests_total` /
   `http_request_duration_seconds` are untouched.
 - **Blast radius if wrong:** Low. Log volume/visibility only.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (`src/middleware/request-logger.middleware.ts:51-60`; exact-path match errs toward visibility — an odd-cased or trailing-slash probe logs at `info`, never hides a failure)
 
 ## The pool-error counter (D12) lands with Phase 2, not Phase 1 (issue #210)
 - **Plan:** D12 says `ReadinessService` attaches its own pool `'error'` listener to
@@ -1581,7 +1581,7 @@
   to `/readyz`) are untouched until Phase 2.
 - **Blast radius if wrong:** Low. Idle-client pool losses stay log-only for one more
   phase.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (moot: Phase 2 landed the listener at `src/health/readiness.service.ts:114` and removed the latch)
 
 ## Integration criteria measured through an in-process TCP fault proxy (issue #210, Phase 1)
 - **Plan:** Phase 1 Tests: `test/helpers/pg-fault-proxy.ts`; the
@@ -1599,7 +1599,7 @@
   - "`/healthz` stays fast" is asserted with the DB *refused* only; a black-holed
     `/healthz` still hangs until Phase 2 (by design of this phase).
 - **Blast radius if wrong:** Low (test-only).
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (the black-holed `/healthz` gap is closed by Phase 2's case at `test/integration/readiness.integration.spec.ts:175`)
 
 ## `/healthz` staleness, injection and synchronous handler (issue #210, Phase 2)
 - **Plan:** Phase 2 Files: `healthz()` reads `readiness.snapshot()`, starts a
@@ -1614,7 +1614,7 @@
   injects `DatabaseService` at all, so it structurally cannot touch the pool.
 - **Blast radius if wrong:** Low. At most one extra or one fewer background probe
   per 5 s; the status code never depends on it.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by user (Fable analysis)
 
 ## Report-only checks: shape, omission, freshness (issue #210, Phase 3)
 - **Plan:** Phase 3: `StreamHubStrategy.health?()` returning `up|down|n/a`, memory
@@ -1640,7 +1640,7 @@
     an `n/a` source removes its series. The metric's HELP text changed (HELP is not
     a contract; name and labels are unchanged).
 - **Blast radius if wrong:** Low. Additive, report-only; reversible body shape.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by user; optional additive checks.database.required:true DEFERRED
 
 ## Redis stream hub teardown disconnects a client that is not ready (issue #210, Phase 3)
 - **Plan:** not in the plan (Phase 3 touches `redis-stream-hub.strategy.ts` only
@@ -1653,7 +1653,7 @@
   the user-visible effect is limited to embedded/test use; a ready client keeps
   its graceful `QUIT`.
 - **Blast radius if wrong:** Low. Shutdown of an already-disconnected client only.
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus; FOLLOW-UP (IMPLEMENTED 2026-10-04, reconcile follow-up PR): `RedisQuotaStore.close()` (`src/quota/quota-store.ts`) used to AWAIT an unconditional `quit()`, so with Redis down at shutdown `QuotaModule.onModuleDestroy` can stall `app.close()` until `SHUTDOWN_TIMEOUT_MS` (forced close, exit 1) — the same hazard, worse because awaited; apply the same `status === 'ready'` → `quit()` else `disconnect()` rule there
 
 ## Integration modelling for Phases 2-3 (issue #210)
 - **Plan:** Phase 2 integration: `/healthz` < 200 ms (20x) during a black-hole;
@@ -1673,7 +1673,7 @@
     assertion before reaching the latch check; the latch itself is the plan's
     measured evidence (`ok:false` forever).
 - **Blast radius if wrong:** Low (test-only).
-- **Status:** UNCONFIRMED (2026-10-04)
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus
 
 ## Jest down-compiles `@nestjs/*` ESM to CJS via `@swc/jest`; production keeps native `require(esm)` (issue #191)
 - **Plan:** `plans/jest-esm-no-flag-191.md` (Phases 1-2, Variant C)
@@ -1702,4 +1702,4 @@
   `dist/main.js`), `test/integration/shutdown.integration.spec.ts` (spawns the app
   outside Jest) and the release image smoke test. `src/test-harness.spec.ts` fails
   if the flag returns or Nest starts resolving `require` to a CJS file.
-- **Status:** UNCONFIRMED (2026-10-04) — Variant C decided by Opus in plan review round 1
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (Variant C first chosen in plan review round 1); re-evaluation TRIGGER recorded: when #156 Phase 3 (TS 7 package move) is planned, decide Option D there — if D is rejected, revisit C vs. the flag

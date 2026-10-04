@@ -98,6 +98,22 @@ describe('applyEnvFile', () => {
     expect(() => applyEnvFile({}, dir)).toThrow(expect.objectContaining({ code: 'EISDIR' }));
   });
 
+  it('names the likely Docker bind-mount cause on EISDIR, keeping code and stack', () => {
+    let caught: NodeJS.ErrnoException | undefined;
+    try {
+      applyEnvFile({}, dir);
+    } catch (err) {
+      caught = err as NodeJS.ErrnoException;
+    }
+    expect(caught).toMatchObject({ code: 'EISDIR', syscall: 'read' });
+    expect(caught?.message).toMatch(/^EISDIR: /);
+    expect(caught?.message).toContain(`${JSON.stringify(dir)} is a directory, not a file`);
+    expect(caught?.message).toContain('Docker bind mount such as `-v ./.env:/app/.env`');
+    // An uncaught error prints its stack, so the hint must be there too.
+    expect(caught?.stack).toContain(caught?.message);
+    expect(caught?.stack?.split('Docker bind mount').length).toBe(2); // exactly once
+  });
+
   const itNonRoot = process.getuid?.() === 0 ? it.skip : it;
   itNonRoot('throws EACCES (not ENOENT) for an unreadable file', () => {
     const p = file('locked.env', 'A=1\n');
