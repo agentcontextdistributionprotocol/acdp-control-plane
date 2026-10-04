@@ -13,4 +13,14 @@ export interface StreamHubStrategy {
   /** Subscribe to the global feed for `tenantId` only. */
   streamGlobal(tenantId: string): Observable<AcdpStreamEvent>;
   destroy?(): void;
+  /**
+   * Transport health for the readiness body (issue #210 Phase 3). REPORT-ONLY:
+   * it never gates readiness. Synchronous, no network round-trip. A strategy
+   * with no external transport (memory) omits it, which reads as `n/a`.
+   */
+  health?(): StreamHubHealth;
+}
+
+export interface StreamHubHealth {
+  status: 'up' | 'down' | 'n/a';
 }

@@ -11,7 +11,6 @@ export class DatabaseService implements OnModuleDestroy {
   private readonly logger = new Logger(DatabaseService.name);
   readonly pool: Pool;
   readonly db: NodePgDatabase<typeof schema>;
-  hasFatalError = false;
 
   constructor(
     config: AppConfigService,
@@ -25,9 +24,15 @@ export class DatabaseService implements OnModuleDestroy {
       idleTimeoutMillis: config.dbPoolIdleTimeout,
       connectionTimeoutMillis: config.dbPoolConnectionTimeout,
     });
+    // An idle pooled client lost its socket (a Postgres restart, a failover).
+    // pg-pool has already discarded that client and reconnects on demand, so
+    // this is recoverable: log it, never latch it (issue #210 — the old
+    // fatal-error latch kept /healthz at ok:false until a restart). This
+    // listener is also what stops the event from being an unhandled
+    // EventEmitter 'error'. ReadinessService counts it on
+    // acdp_db_pool_errors_total with a listener of its own (D12).
     this.pool.on('error', (err) => {
       this.logger.error({ msg: 'database pool error', error: err.message });
-      this.hasFatalError = true;
     });
     this.db = drizzle(this.pool, { schema });
   }

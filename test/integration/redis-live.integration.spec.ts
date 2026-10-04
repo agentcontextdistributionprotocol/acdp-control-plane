@@ -23,7 +23,10 @@
  * (published on 6380 so it cannot collide with a developer's own local Redis),
  * which `test/setup/global-setup.ts` starts alongside postgres-test.
  */
+import * as net from 'node:net';
 import Redis from 'ioredis';
+import { createTestApp, TestAppContext } from '../helpers/test-app';
+import { TestClient } from '../helpers/test-client';
 
 const DEFAULT_LOCAL_URL = 'redis://127.0.0.1:6380';
 const IS_CI = Boolean(process.env.CI);
@@ -53,6 +56,21 @@ return {v, ttl}
 `;
 
 const CHANNEL = 'acdp:stream-hub';
+
+/** Save the given env vars, set new values, and return a restorer. */
+function withEnv(env: Record<string, string>): () => void {
+  const prev: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(env)) {
+    prev[k] = process.env[k];
+    process.env[k] = v;
+  }
+  return () => {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+}
 
 describe('ioredis live contract (RESP3)', () => {
   let pub: Redis;
@@ -174,5 +192,89 @@ describe('ioredis live contract (RESP3)', () => {
     expect(second[1]).toBeLessThanOrEqual(60);
 
     await pub.del(key);
+  });
+});
+
+/**
+ * Issue #210 Phase 3: the Redis stream hub is REPORTED in the readiness body
+ * and on `acdp_dependency_up`, but never gates readiness — a Redis outage
+ * degrades cross-replica SSE fan-out only, and hits every replica alike, so
+ * gating on it would turn a partial degradation into a total LB outage.
+ * "Redis stopped" is modelled by a port nothing listens on: the shared Redis
+ * is never stopped.
+ */
+describe('Readiness reports the Redis stream hub without gating on it (issue #210 Phase 3)', () => {
+  let ctx: TestAppContext | undefined;
+  let restoreEnv: (() => void) | undefined;
+
+  afterEach(async () => {
+    await ctx?.app.close();
+    ctx = undefined;
+    restoreEnv?.();
+    restoreEnv = undefined;
+  });
+
+  async function deadPort(): Promise<number> {
+    const srv = net.createServer();
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    const port = (srv.address() as net.AddressInfo).port;
+    await new Promise<void>((r) => srv.close(() => r()));
+    return port;
+  }
+
+  async function bootWithRedis(url: string): Promise<TestAppContext> {
+    restoreEnv = withEnv({ STREAM_HUB_STRATEGY: 'redis', REDIS_URL: url });
+    ctx = await createTestApp();
+    return ctx;
+  }
+
+  it('Redis down: /readyz stays 200 with checks.streamHub "down" (required: false); gauge 0', async () => {
+    const app = await bootWithRedis(`redis://127.0.0.1:${await deadPort()}`);
+    const anon = new TestClient(app.url);
+
+    const res = await anon.requestRaw('GET', '/readyz');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      ok: true,
+      database: 'ok',
+      checks: {
+        database: { status: 'up' },
+        streamHub: { status: 'down', required: false },
+      },
+    });
+    const metrics = await anon.metrics();
+    expect(metrics).toMatch(/^acdp_dependency_up\{dependency="redis_stream_hub"\} 0$/m);
+    expect(metrics).toMatch(/^acdp_dependency_up\{dependency="database"\} 1$/m);
+    // Liveness is untouched by it too.
+    expect((await anon.requestRaw('GET', '/healthz')).body).toMatchObject({ ok: true });
+  });
+
+  it('Redis up: checks.streamHub "up"; gauge 1', async () => {
+    if (!REDIS_URL) return;
+    const probe = new Redis(REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 1 });
+    probe.on('error', () => undefined);
+    const up = await probe.connect().then(
+      () => true,
+      () => false,
+    );
+    probe.disconnect();
+    if (!up) {
+      if (IS_CI) throw new Error('REDIS_URL is set in CI but unreachable');
+      return; // local, no Redis: the contract suite above already warned
+    }
+
+    const app = await bootWithRedis(REDIS_URL);
+    const anon = new TestClient(app.url);
+    // The hub's clients connect asynchronously after boot.
+    let body: unknown;
+    for (let i = 0; i < 100; i++) {
+      const res = await anon.requestRaw('GET', '/readyz');
+      expect(res.status).toBe(200);
+      body = res.body;
+      if ((body as { checks?: { streamHub?: { status?: string } } }).checks?.streamHub?.status === 'up') break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(body).toMatchObject({ checks: { streamHub: { status: 'up', required: false } } });
+    expect(await anon.metrics()).toMatch(/^acdp_dependency_up\{dependency="redis_stream_hub"\} 1$/m);
   });
 });

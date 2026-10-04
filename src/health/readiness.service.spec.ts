@@ -1,9 +1,12 @@
 import { Logger } from '@nestjs/common';
+import { EventEmitter } from 'node:events';
 import * as client from 'prom-client';
 import { AppConfigService } from '../config/app-config.service';
 import { DatabaseService } from '../db/database.service';
+import { StreamHubService } from '../events/stream-hub.service';
+import type { QuotaStore } from '../quota/quota-store';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
-import { ReadinessService } from './readiness.service';
+import { HEALTHZ_STALE_FLOOR_MS, ReadinessService } from './readiness.service';
 
 /** A pool.query fake whose calls the test settles by hand. */
 function controllablePool() {
@@ -46,13 +49,33 @@ describe('ReadinessService (issue #210)', () => {
     client.register.clear();
   });
 
-  function make(query: jest.Mock, opts: { timeoutMs?: number; cacheMs?: number } = {}) {
+  function make(
+    query: jest.Mock,
+    opts: {
+      timeoutMs?: number;
+      cacheMs?: number;
+      streamHub?: StreamHubService;
+      quotaStore?: QuotaStore;
+      pool?: EventEmitter;
+    } = {},
+  ) {
     const config = {
       readinessDbTimeoutMs: opts.timeoutMs ?? 1000,
       readinessCacheMs: opts.cacheMs ?? 1000,
     } as AppConfigService;
-    const database = { pool: { query } } as unknown as DatabaseService;
-    return new ReadinessService(database, config, instrumentation);
+    // A real pg.Pool (opts.pool) keeps its own read-only counters; only its
+    // query() is replaced.
+    const pool = opts.pool
+      ? Object.assign(opts.pool, { query })
+      : Object.assign(new EventEmitter(), { query, totalCount: 3, idleCount: 2, waitingCount: 1 });
+    const database = { pool } as unknown as DatabaseService;
+    return new ReadinessService(database, config, instrumentation, opts.streamHub, opts.quotaStore);
+  }
+
+  function hub(status: 'up' | 'down' | 'n/a' | (() => never)): StreamHubService {
+    return {
+      health: typeof status === 'function' ? status : () => ({ status }),
+    } as unknown as StreamHubService;
   }
 
   async function metric(name: string, labels: Record<string, string>): Promise<number | undefined> {
@@ -306,5 +329,133 @@ describe('ReadinessService (issue #210)', () => {
     const query = jest.fn();
     expect(make(query).snapshot()).toBeUndefined();
     expect(query).not.toHaveBeenCalled();
+  });
+  // ── Phase 2: liveness staleness + the pool-error counter (D12) ───────────
+
+  it.each([
+    [1000, HEALTHZ_STALE_FLOOR_MS],
+    [0, HEALTHZ_STALE_FLOOR_MS],
+    [8000, 8000],
+  ])('isStale(): READINESS_CACHE_MS=%d -> stale from %d ms', async (cacheMs, staleAt) => {
+    const svc = make(jest.fn().mockResolvedValue({ rows: [] }), { cacheMs });
+    const v = await svc.evaluate();
+    jest.advanceTimersByTime(staleAt - 1);
+    expect(svc.isStale(v)).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(svc.isStale(v)).toBe(true);
+  });
+
+  it("a pool 'error' increments acdp_db_pool_errors_total exactly once, the DatabaseService listener still logs, and no probe answer changes", async () => {
+    const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    // A REAL DatabaseService: its own 'error' listener is attached first.
+    // pg.Pool connects lazily, so nothing touches the network here.
+    const real = new DatabaseService({
+      databaseUrl: 'postgres://u:p@127.0.0.1:1/x',
+      dbPoolMax: 2,
+      dbPoolIdleTimeout: 1000,
+      dbPoolConnectionTimeout: 1000,
+    } as AppConfigService);
+    try {
+      const query = jest.fn().mockResolvedValue({ rows: [] });
+      const svc = make(query, { pool: real.pool as unknown as EventEmitter });
+      const before = await svc.evaluate();
+      expect(real.pool.listenerCount('error')).toBe(2);
+
+      real.pool.emit('error', new Error('Connection terminated unexpectedly'));
+
+      expect(await metric('acdp_db_pool_errors_total', {})).toBe(1);
+      expect(error).toHaveBeenCalledWith({
+        msg: 'database pool error',
+        error: 'Connection terminated unexpectedly',
+      });
+      // No latch: the readiness answer is unchanged, and no new probe ran.
+      expect(svc.snapshot()).toBe(before);
+      expect((await svc.evaluate()).ready).toBe(true);
+      expect(query).toHaveBeenCalledTimes(1);
+      // ...and after the cache window a fresh probe still decides alone.
+      jest.advanceTimersByTime(1000);
+      expect((await svc.evaluate()).ready).toBe(true);
+    } finally {
+      error.mockRestore();
+      await real.pool.end();
+    }
+  });
+
+  // ── Phase 3: report-only dependencies + pool gauges ──────────────────────
+
+  it('a NON-required check that is down never flips ready (cached, in-flight and fresh paths)', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+    const svc = make(query, { streamHub: hub('down') });
+    const v = await svc.evaluate(); // fresh probe
+    expect(v.ready).toBe(true);
+    expect(v.checks.streamHub).toEqual({ status: 'down', required: false });
+    const cached = await svc.evaluate(); // cache hit
+    expect(cached.ready).toBe(true);
+    expect(cached.checks.streamHub).toEqual({ status: 'down', required: false });
+    // The cached database verdict is reused, never mutated.
+    expect(svc.snapshot()?.checks.streamHub).toBeUndefined();
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the stream hub and the quota store fresh on every call; n/a and absent report nothing', async () => {
+    let hubStatus: 'up' | 'down' = 'up';
+    const quotaStore = {
+      increment: jest.fn(),
+      health: jest.fn<'up' | 'down', []>().mockReturnValue('down'),
+    } as QuotaStore;
+    const svc = make(jest.fn().mockResolvedValue({ rows: [] }), {
+      streamHub: { health: () => ({ status: hubStatus }) } as unknown as StreamHubService,
+      quotaStore,
+    });
+    expect((await svc.evaluate()).checks).toEqual({
+      database: { status: 'up', latencyMs: 0 },
+      streamHub: { status: 'up', required: false },
+      quotaStore: { status: 'down', required: false },
+    });
+    hubStatus = 'down';
+    expect((await svc.evaluate()).checks.streamHub).toEqual({ status: 'down', required: false });
+
+    // Memory strategy (n/a) + in-memory quota store (no health): the Phase 1 body.
+    client.register.clear();
+    instrumentation = new InstrumentationService();
+    const plain = make(jest.fn().mockResolvedValue({ rows: [] }), {
+      streamHub: hub('n/a'),
+      quotaStore: { increment: jest.fn() },
+    });
+    const v = await plain.evaluate();
+    expect(Object.keys(v.checks)).toEqual(['database']);
+    expect(v).toBe(plain.snapshot());
+  });
+
+  it('a throwing report-only source is left out; evaluate() still resolves', async () => {
+    const svc = make(jest.fn().mockResolvedValue({ rows: [] }), {
+      streamHub: hub(() => {
+        throw new Error('boom');
+      }),
+    });
+    const v = await svc.evaluate();
+    expect(v.ready).toBe(true);
+    expect(v.checks.streamHub).toBeUndefined();
+  });
+
+  it('registers the scrape-time gauges: acdp_db_pool_connections{state} and acdp_dependency_up for the report-only deps', async () => {
+    let hubStatus: 'up' | 'down' = 'down';
+    make(jest.fn(), {
+      streamHub: { health: () => ({ status: hubStatus }) } as unknown as StreamHubService,
+      quotaStore: { increment: jest.fn(), health: () => 'up' },
+    });
+    expect(await metric('acdp_db_pool_connections', { state: 'total' })).toBe(3);
+    expect(await metric('acdp_db_pool_connections', { state: 'idle' })).toBe(2);
+    expect(await metric('acdp_db_pool_connections', { state: 'waiting' })).toBe(1);
+    expect(await metric('acdp_dependency_up', { dependency: 'redis_stream_hub' })).toBe(0);
+    expect(await metric('acdp_dependency_up', { dependency: 'redis_quota_store' })).toBe(1);
+    hubStatus = 'up';
+    expect(await metric('acdp_dependency_up', { dependency: 'redis_stream_hub' })).toBe(1);
+  });
+
+  it('a memory stream hub (n/a) and an in-memory quota store add no acdp_dependency_up series', async () => {
+    make(jest.fn(), { streamHub: hub('n/a'), quotaStore: { increment: jest.fn() } });
+    expect(await metric('acdp_dependency_up', { dependency: 'redis_stream_hub' })).toBeUndefined();
+    expect(await metric('acdp_dependency_up', { dependency: 'redis_quota_store' })).toBeUndefined();
   });
 });

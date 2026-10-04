@@ -161,7 +161,7 @@ fields also appear as `error.details`.
 | GET  | `/.well-known/acdp-witness.json` | Public | Witness capabilities (RFC-ACDP-0015 §9) |
 | GET  | `/.well-known/did.json` | Public | Witness DID document (assertionMethod key) |
 | POST | `/admin/pinned-keys/reload` | admin | Reload pinned keys from env |
-| GET  | `/healthz` `/readyz` `/metrics` | Public | Probes / Prometheus (`/readyz` unthrottled, 503 when not ready; `/healthz` still throttled until #210 Phase 2) |
+| GET  | `/healthz` `/readyz` `/metrics` | Public | Probes / Prometheus (probes unthrottled; `/healthz` = liveness, never touches the DB; `/readyz` 503 when not ready) |
 | GET  | `/docs` | dev | Swagger UI |
 
 > The list is authoritative against the controllers as of this writing, but
@@ -873,10 +873,18 @@ the `did:web` document to resolve.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET`  | `/healthz` | Liveness (`{ ok, service, version }`); pings DB. **Public**; throttled until #210 Phase 2. |
-| `GET`  | `/readyz` | Readiness. **Public**, not throttled (issue #210), `Cache-Control: no-store` on every arm. Drain first: once a shutdown signal has arrived it answers `503 SERVICE_DRAINING` (with `Retry-After`) without consulting readiness or the database, so a load balancer stops routing here; with `SHUTDOWN_DRAIN_DELAY_MS` set that happens while every other route still serves (issue #192). Otherwise **200** `{ ok: true, database: "ok", checks }` when Postgres answers `SELECT 1` within `READINESS_DB_TIMEOUT_MS` (default 1000 ms), else **503** `DEPENDENCY_UNAVAILABLE` (standard envelope; `error.details` = `{ ok: false, database: "unhealthy", checks }`). `checks.database` = `{ status: "up" \| "down", reason?: "error" \| "timeout", latencyMs }`. The verdict is cached for `READINESS_CACHE_MS` (default 1000 ms) and the probe is single-flight, so any probe rate costs at most one DB query per window and at most one pool connection. `HEAD` gets the same status. |
+| `GET`  | `/healthz` | Liveness (`{ ok, service, version }`). **Public**, not throttled, `Cache-Control: no-store`. **Never touches the database** (issue #210): it never awaits any I/O, so it is **200** whenever the process can answer, whatever the state of Postgres — the only non-200 is the drain gate's `503 SERVICE_DRAINING` once a shutdown has entered `closing` (issue #192). `ok` mirrors the **last readiness verdict** (`true` before the first probe), so `200` + `ok: false` means "alive but degraded". When that verdict is missing or older than `max(READINESS_CACHE_MS, 5000 ms)` the request starts a background refresh (single-flight, bounded; never while draining) and still answers from the old verdict at once. `HEAD` gets the same status. |
+| `GET`  | `/readyz` | Readiness. **Public**, not throttled (issue #210), `Cache-Control: no-store` on every arm. Drain first: once a shutdown signal has arrived it answers `503 SERVICE_DRAINING` (with `Retry-After`) without consulting readiness or the database, so a load balancer stops routing here; with `SHUTDOWN_DRAIN_DELAY_MS` set that happens while every other route still serves (issue #192). Otherwise **200** `{ ok: true, database: "ok", checks }` when Postgres answers `SELECT 1` within `READINESS_DB_TIMEOUT_MS` (default 1000 ms), else **503** `DEPENDENCY_UNAVAILABLE` (standard envelope; `error.details` = `{ ok: false, database: "unhealthy", checks }`). `checks.database` = `{ status: "up" \| "down", reason?: "error" \| "timeout", latencyMs }`. Report-only members (issue #210 Phase 3) appear only where the dependency is in use and **never** affect the status: `checks.streamHub` (`STREAM_HUB_STRATEGY=redis`) and `checks.quotaStore` (`TENANT_QUOTAS` with `REDIS_URL`), each `{ status: "up" \| "down", required: false }`, read from the Redis client's connection state on every request (no round-trip). The verdict is cached for `READINESS_CACHE_MS` (default 1000 ms) and the probe is single-flight, so any probe rate costs at most one DB query per window and at most one pool connection. `HEAD` gets the same status. |
 | `GET`  | `/metrics` | Prometheus text-format metrics. **Public.** |
 | `GET`  | `/docs` | Swagger UI (dev / opt-in). |
+
+**Deploying the probes (issue #210).** Kubernetes: `livenessProbe` → `/healthz`,
+`startupProbe` → `/healthz`, `readinessProbe` → `/readyz` with `timeoutSeconds ≥ 2`
+(the default `READINESS_DB_TIMEOUT_MS` is 1000 ms). `/healthz` never touches the
+database, so a database outage pulls replicas out of rotation via `/readyz` but never
+restarts them. Docker has no readiness concept: the image's `HEALTHCHECK` stays on
+`/healthz`. See [ARCHITECTURE.md](./ARCHITECTURE.md#deploying-behind-a-load-balancer)
+for the drain-delay arithmetic.
 
 Key metrics (all constructed in `InstrumentationService`):
 
@@ -889,7 +897,9 @@ Key metrics (all constructed in `InstrumentationService`):
 | `acdp_shutdown_drain_rejections_total` | counter | — | New requests answered `503 SERVICE_DRAINING` by the drain gate (issue #192). Best effort; the `shutdown drain complete` log line is the primary signal. |
 | `acdp_shutdown_forced_connections_total` | counter | — | Sockets still open when a graceful close overran `SHUTDOWN_TIMEOUT_MS` and was forced (issue #192). Best effort. |
 | `acdp_readiness_checks_total` | counter | `dependency`, `result` | Readiness probes actually executed (not cache hits) by result `ok` \| `error` \| `timeout` (issue #210). `dependency` is `database`. |
-| `acdp_dependency_up` | gauge | `dependency` | 1 if the dependency's last real readiness probe succeeded, else 0 (issue #210). Alert on `acdp_dependency_up{dependency="database"} == 0` for 1m. |
+| `acdp_dependency_up` | gauge | `dependency` | 1 if the dependency is up, else 0 (issue #210). `database`: its last real readiness probe; alert on `acdp_dependency_up{dependency="database"} == 0` for 1m. Report-only, read at scrape time, present only where in use: `redis_stream_hub`, `redis_quota_store` (never gate readiness). |
+| `acdp_db_pool_errors_total` | counter | — | pg pool `'error'` events: an *idle* pooled client lost its connection (a Postgres restart or failover). Recoverable — pg-pool reconnects on demand — and it changes no probe answer (issue #210). |
+| `acdp_db_pool_connections` | gauge | `state` | pg pool clients at scrape time: `total`, `idle`, `waiting` (checkouts queued for a connection; `> 0` = saturation) (issue #210). |
 | `acdp_events_ingested_total` | counter | `event_type` | Ingested events |
 | `acdp_webhook_deliveries_total` | counter | `status` | Outbound deliveries by status |
 | `acdp_ingest_rejected_total` | counter | `reason` | Ingest rejections (e.g. `pack_gate`) |

@@ -2,7 +2,7 @@ import { Logger } from '@nestjs/common';
 import { Observable, Subject } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
 import { AcdpStreamEvent } from '../contracts/acdp';
-import { StreamHubStrategy } from './stream-hub.interface';
+import { StreamHubHealth, StreamHubStrategy } from './stream-hub.interface';
 import type { Redis as RedisClient } from 'ioredis';
 
 interface RedisEnvelope {
@@ -135,10 +135,28 @@ export class RedisStreamHubStrategy implements StreamHubStrategy {
     );
   }
 
+  /**
+   * `up` only when BOTH clients are `ready` (issue #210 Phase 3): a dead
+   * publisher drops fan-out, a dead subscriber drops delivery. Reads ioredis's
+   * `status` field — synchronous, no round-trip. `down` while still connecting
+   * at boot; report-only, so that never flaps the load balancer.
+   */
+  health(): StreamHubHealth {
+    const ready = this.publisher?.status === 'ready' && this.subscriber?.status === 'ready';
+    return { status: ready ? 'up' : 'down' };
+  }
+
   destroy(): void {
     this.localSubject.complete();
-    if (this.publisher) void this.publisher.quit().catch(() => {});
-    if (this.subscriber) void this.subscriber.quit().catch(() => {});
+    for (const client of [this.publisher, this.subscriber]) {
+      if (!client) continue;
+      // A graceful QUIT needs a live connection. A client that is not `ready`
+      // (Redis down, or still connecting) would queue the QUIT behind its
+      // reconnect loop, which keeps retrying — and keeps the event loop alive —
+      // forever; disconnect() stops that loop at once.
+      if (client.status === 'ready') void client.quit().catch(() => {});
+      else client.disconnect();
+    }
   }
 
   private publish(envelope: RedisEnvelope): void {

@@ -2,7 +2,7 @@ import { Inject, Injectable, OnModuleDestroy, Optional } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { AcdpStreamEvent } from '../contracts/acdp';
 import { ShutdownFailures } from '../shutdown-failures';
-import { STREAM_HUB_STRATEGY, StreamHubStrategy } from './stream-hub.interface';
+import { STREAM_HUB_STRATEGY, StreamHubHealth, StreamHubStrategy } from './stream-hub.interface';
 
 @Injectable()
 export class StreamHubService implements OnModuleDestroy {
@@ -23,6 +23,11 @@ export class StreamHubService implements OnModuleDestroy {
     } else {
       destroy();
     }
+  }
+
+  /** The strategy's transport health, or `n/a` when it has none (memory). Issue #210 Phase 3. */
+  health(): StreamHubHealth {
+    return this.strategy.health?.() ?? { status: 'n/a' };
   }
 
   publishToRun(runId: string, event: AcdpStreamEvent, tenantId: string): void {

@@ -28,7 +28,6 @@ beforeAll(async () => {
   dbService = {
     pool,
     db: drizzle(pool, { schema }),
-    hasFatalError: false,
     onModuleDestroy: async () => { await pool.end(); },
     tryAdvisoryLock: async () => true,
     advisoryUnlock: async () => {},

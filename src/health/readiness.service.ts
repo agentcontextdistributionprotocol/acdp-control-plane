@@ -1,7 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { QueryConfig } from 'pg';
 import { AppConfigService } from '../config/app-config.service';
 import { DatabaseService } from '../db/database.service';
+import { StreamHubService } from '../events/stream-hub.service';
+import type { QuotaStore } from '../quota/quota-store';
+import { QUOTA_STORE } from '../quota/quota.guard';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
 
 /**
@@ -17,14 +20,35 @@ export interface DependencyCheck {
   latencyMs: number;
 }
 
+/**
+ * A NON-required dependency's state (issue #210 Phase 3, D7): reported in the
+ * body and on `acdp_dependency_up`, but it NEVER affects `ready` or the status
+ * code. Read synchronously from the client's own connection state — no
+ * round-trip — at every `evaluate()`, so it is never older than the request.
+ */
+export interface ReportedCheck {
+  status: 'up' | 'down';
+  required: false;
+}
+
 export interface ReadinessVerdict {
   ready: boolean;
   /** `Date.now()` when this verdict was decided. */
   checkedAt: number;
-  checks: { database: DependencyCheck };
+  checks: {
+    database: DependencyCheck;
+    /** Redis stream hub (`STREAM_HUB_STRATEGY=redis` only). */
+    streamHub?: ReportedCheck;
+    /** Redis quota store (`TENANT_QUOTAS` + `REDIS_URL` only). */
+    quotaStore?: ReportedCheck;
+  };
 }
 
 const DEPENDENCY = 'database';
+
+/** `/healthz` refreshes readiness in the background once the snapshot is older
+ *  than max(READINESS_CACHE_MS, this) — #210 Phase 2. */
+export const HEALTHZ_STALE_FLOOR_MS = 5000;
 
 interface InFlightProbe {
   seq: number;
@@ -55,6 +79,12 @@ interface InFlightProbe {
  *     be > 0 (validated at boot, D10).
  *
  * `evaluate()` never rejects.
+ *
+ * It also owns the pool diagnostics `DatabaseService` cannot wire itself
+ * (D12: `InstrumentationService` is not visible from the global
+ * `DatabaseModule`): the `acdp_db_pool_errors_total` listener (Phase 2) and the
+ * scrape-time `acdp_db_pool_connections` source (Phase 3), plus the report-only
+ * Redis checks (Phase 3, D7), which never affect `ready`.
  */
 @Injectable()
 export class ReadinessService {
@@ -70,7 +100,33 @@ export class ReadinessService {
     private readonly database: DatabaseService,
     private readonly config: AppConfigService,
     private readonly instrumentation: InstrumentationService,
-  ) {}
+    // Optional so unit specs can construct the service bare; the app always
+    // provides both (StreamHubService is an AppModule provider, QUOTA_STORE is
+    // exported by the global QuotaModule).
+    @Optional() private readonly streamHub?: StreamHubService,
+    @Optional() @Inject(QUOTA_STORE) private readonly quotaStore?: QuotaStore,
+  ) {
+    // D12: count idle-client losses. An ADDITIONAL listener — EventEmitter
+    // runs every one — so DatabaseService's own `'error'` listener still logs
+    // the event (and is what keeps it from being an unhandled 'error'). No
+    // teardown: it holds no resource and dies with the pool. It changes no
+    // probe answer: a persistent failure shows up on the live probe instead.
+    this.database.pool.on('error', () => this.instrumentation.dbPoolErrorsTotal.inc());
+    // Phase 3 (D12): `acdp_db_pool_connections` reads the pool at scrape time.
+    this.instrumentation.registerDbPoolSource(() => this.database.pool);
+    // Phase 3 (D7): report-only dependencies, read at scrape time.
+    if (this.streamHub) {
+      const hub = this.streamHub;
+      this.instrumentation.registerDependencySource('redis_stream_hub', () => hub.health().status);
+    }
+    if (typeof this.quotaStore?.health === 'function') {
+      const store = this.quotaStore;
+      this.instrumentation.registerDependencySource(
+        'redis_quota_store',
+        () => store.health?.() ?? 'n/a',
+      );
+    }
+  }
 
   /** The last verdict, without awaiting anything (undefined before the first probe). */
   snapshot(): ReadinessVerdict | undefined {
@@ -78,16 +134,47 @@ export class ReadinessService {
   }
 
   /**
+   * Whether a snapshot is old enough for `/healthz` to start a background
+   * refresh: older than max(`READINESS_CACHE_MS`, 5000 ms). The floor keeps a
+   * deployment where nothing probes `/readyz` refreshing through liveness
+   * traffic alone, at most about one probe per 5 s.
+   */
+  isStale(v: ReadinessVerdict): boolean {
+    return Date.now() - v.checkedAt >= Math.max(this.config.readinessCacheMs, HEALTHZ_STALE_FLOOR_MS);
+  }
+
+  /**
    * A cached verdict younger than `READINESS_CACHE_MS`; else the in-flight probe
-   * (whose verdict may already be a `timeout`); else a fresh probe.
+   * (whose verdict may already be a `timeout`); else a fresh probe. The
+   * report-only checks (Phase 3) are added fresh on every call and never
+   * change `ready`.
    */
   evaluate(): Promise<ReadinessVerdict> {
     const cached = this.last;
     if (cached && Date.now() - cached.checkedAt < this.config.readinessCacheMs) {
-      return Promise.resolve(cached);
+      return Promise.resolve(this.withReported(cached));
     }
-    if (this.inFlight) return this.inFlight.verdict;
-    return this.probe();
+    const pending = this.inFlight ? this.inFlight.verdict : this.probe();
+    return pending.then((v) => this.withReported(v));
+  }
+
+  /**
+   * `v` plus the current report-only checks; `v` itself when there are none.
+   * Never throws (`evaluate()` must never reject — `/healthz` fires it and
+   * forgets): a report-only source that throws is simply left out.
+   */
+  private withReported(v: ReadinessVerdict): ReadinessVerdict {
+    const reported: Pick<ReadinessVerdict['checks'], 'streamHub' | 'quotaStore'> = {};
+    try {
+      const hub = this.streamHub?.health().status;
+      if (hub === 'up' || hub === 'down') reported.streamHub = { status: hub, required: false };
+      const quota = this.quotaStore?.health?.();
+      if (quota) reported.quotaStore = { status: quota, required: false };
+    } catch {
+      // Report-only: never let it disturb the readiness answer.
+    }
+    if (!reported.streamHub && !reported.quotaStore) return v;
+    return { ...v, checks: { ...v.checks, ...reported } };
   }
 
   private probe(): Promise<ReadinessVerdict> {

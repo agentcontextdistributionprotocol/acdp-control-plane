@@ -8,7 +8,9 @@ import { RawResponse, TestClient } from '../helpers/test-client';
  * Issue #210 over real HTTP and a real pg pool: `/readyz` answers 503
  * DEPENDENCY_UNAVAILABLE when Postgres is refused, black-holed or the probe
  * cannot get a connection in time; returns 200 after recovery; never holds more
- * than one pool client; is never 429'd. The database failures are simulated by
+ * than one pool client; is never 429'd. And (Phase 2) `/healthz` is pure
+ * liveness: fast and 200 whatever the database does, its `ok` mirroring the
+ * last readiness verdict with no latch. The database failures are simulated by
  * `PgFaultProxy` in front of the shared test Postgres, which is never stopped.
  */
 
@@ -62,7 +64,28 @@ function metricValue(text: string, series: string): number | undefined {
   return line === undefined ? undefined : Number(line.slice(series.length + 1));
 }
 
+/** `fn`'s response, or a synthetic status 0 once `limitMs` has passed (a hang). */
+async function timedWithin(
+  fn: () => Promise<RawResponse>,
+  limitMs: number,
+): Promise<{ res: RawResponse; ms: number }> {
+  let timer: NodeJS.Timeout | undefined;
+  const hung = new Promise<RawResponse>((resolve) => {
+    timer = setTimeout(() => resolve({ status: 0, headers: {}, body: 'hung' }), limitMs);
+  });
+  try {
+    return await timed(() => Promise.race([fn(), hung]));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** `/healthz` refreshes readiness in the background once the snapshot is older
+ *  than max(READINESS_CACHE_MS, 5000) ms (#210 Phase 2). */
+const HEALTHZ_STALE_MS = 5000;
+
 const DB_UP = 'acdp_dependency_up{dependency="database"}';
+const POOL_ERRORS = 'acdp_db_pool_errors_total';
 const TIMEOUTS = 'acdp_readiness_checks_total{dependency="database",result="timeout"}';
 
 describe('Readiness — /readyz vs. a failing database (issue #210, integration)', () => {
@@ -147,11 +170,64 @@ describe('Readiness — /readyz vs. a failing database (issue #210, integration)
     expect(ok.body).toMatchObject({ ok: true, database: 'ok' });
   });
 
-  it('DB refused: /healthz still answers fast with 200 (liveness is Phase 2 territory, unchanged here)', async () => {
+  // ── Phase 2: /healthz is liveness — it never awaits the database ──────────
+
+  it('DB black-holed: /healthz answers 200 in < 200 ms (20x) while /readyz is 503; ok mirrors the verdict', async () => {
+    // Warm: an idle pooled client exists, so the black hole pins a real socket.
+    expect((await anon.requestRaw('GET', '/readyz')).status).toBe(200);
+    proxy.blackhole();
+    await sleep(CACHE_MS + 50);
+    expect((await anon.requestRaw('GET', '/readyz')).status).toBe(503);
+
+    for (let i = 0; i < 20; i++) {
+      // Bounded so a hanging liveness probe (the pre-#210 behaviour: > 15 s)
+      // fails as an assertion, not as a jest timeout.
+      const { res, ms } = await timedWithin(() => anon.requestRaw('GET', '/healthz'), 2000);
+      expect({ i, status: res.status }).toEqual({ i, status: 200 });
+      expect(ms).toBeLessThan(200);
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(res.body).toEqual({
+        ok: false,
+        service: 'acdp-control-plane',
+        version: expect.any(String),
+      });
+      if (i % 5 === 0) expect((await anon.requestRaw('GET', '/readyz')).status).toBe(503);
+    }
+  });
+
+  it('DB refused then restored: /healthz mirrors ok:false, then ok:true within one stale window — no latch; pool errors counted', async () => {
+    // Warm: an idle client exists, so refuse() destroys an idle socket and the
+    // pool emits 'error' — the event that used to latch /healthz forever.
+    expect((await anon.requestRaw('GET', '/readyz')).status).toBe(200);
+    const errorsBefore = metricValue(await anon.metrics(), POOL_ERRORS) ?? 0;
+
     await proxy.refuse();
-    const { res, ms } = await timed(() => anon.requestRaw('GET', '/healthz'));
-    expect(res.status).toBe(200);
-    expect(ms).toBeLessThan(500);
+    await sleep(CACHE_MS + 50);
+    expect((await anon.requestRaw('GET', '/readyz')).status).toBe(503);
+    const down = await timedWithin(() => anon.requestRaw('GET', '/healthz'), 2000);
+    expect(down.res.status).toBe(200);
+    expect(down.res.body).toEqual({
+      ok: false,
+      service: 'acdp-control-plane',
+      version: expect.any(String),
+    });
+    expect(metricValue(await anon.metrics(), POOL_ERRORS)).toBeGreaterThanOrEqual(errorsBefore + 1);
+
+    await proxy.restore();
+    const restoredAt = performance.now();
+    // Only /healthz from here: its own background refresh (once the snapshot
+    // is stale) must bring `ok` back, with no /readyz traffic and no restart.
+    const limit = HEALTHZ_STALE_MS + TIMEOUT_MS + 1000;
+    for (;;) {
+      const { res } = await timedWithin(() => anon.requestRaw('GET', '/healthz'), 2000);
+      expect(res.status).toBe(200);
+      if ((res.body as { ok?: unknown }).ok === true) break;
+      if (performance.now() - restoredAt > limit) {
+        throw new Error(`/healthz still ok:false ${Math.round(performance.now() - restoredAt)} ms after restore`);
+      }
+      await sleep(100);
+    }
+    expect(performance.now() - restoredAt).toBeLessThan(limit);
   });
 
   it('DB black-holed: 503 reason "timeout" in < 600 ms; 50 concurrent probes add <= 1 pool client; metrics move', async () => {
@@ -303,13 +379,19 @@ describe('Readiness — probes are never throttled (issue #210, D5)', () => {
     restoreEnv();
   });
 
-  it('50 anonymous /readyz from one IP: 0 x 429; /ingest/health still throttled at the 6th', async () => {
+  it('50 anonymous /readyz and 50 /healthz from one IP: 0 x 429; /ingest/health still throttled at the 6th', async () => {
     const anon = new TestClient(ctx.url);
     const ready = await Promise.all(
       Array.from({ length: 50 }, () => anon.requestRaw('GET', '/readyz')),
     );
     expect(ready.filter((r) => r.status === 429)).toHaveLength(0);
     expect(ready.every((r) => r.status === 200)).toBe(true);
+    // Phase 2: /healthz never touches the DB, so @SkipThrottle() is class-level.
+    const live = await Promise.all(
+      Array.from({ length: 50 }, () => anon.requestRaw('GET', '/healthz')),
+    );
+    expect(live.filter((r) => r.status === 429)).toHaveLength(0);
+    expect(live.every((r) => r.status === 200)).toBe(true);
 
     const statuses: number[] = [];
     for (let i = 0; i < 6; i++) {

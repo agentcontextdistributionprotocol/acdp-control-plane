@@ -369,6 +369,19 @@ should stop routing here until it recovers. The body is the standard error envel
   the shared app pool, so if every connection is busy for longer than the timeout,
   readiness reads as down too — real requests are also waiting at that point. Check
   for long-running queries and `DB_POOL_MAX` before suspecting the network.
+  **Tell saturation from an outage with `/metrics`:**
+  `acdp_db_pool_connections{state="waiting"} > 0` alongside `reason: "timeout"`
+  (and `total` at `DB_POOL_MAX`) means the pool is saturated — requests are queued
+  for a connection — while `waiting` at 0 means the pool itself is not the bottleneck and the database
+  is unreachable or slow (with refused connections `total` falls; during a network
+  black-hole connecting clients still count toward `total`, so it may not).
+
+If the body also carries `checks.streamHub` or `checks.quotaStore`, those are
+**report-only** (`required: false`): a Redis outage shows `status: "down"` there and
+`acdp_dependency_up{dependency="redis_stream_hub"}` (or `redis_quota_store`) at `0`,
+but never makes `/readyz` 503. It degrades cross-replica SSE fan-out (and quota
+enforcement fails open); every replica sees the same Redis, so pulling them all out
+of the load balancer would only turn that into a total outage.
 
 Also check:
 
@@ -387,17 +400,34 @@ Also check:
   the real probes (cache hits are not counted). Alert on the gauge being 0 for 1m.
 - **Probes used to be `429`'d.** Before #210, `/healthz` and `/readyz` were
   rate-limited per IP like any public route, so a busy load-balancer fleet or a
-  shared-NAT monitor could read "unready" from a `429`. Fixed for `/readyz`: it is now
-  `@SkipThrottle()` (its database cost is bounded by the cache instead). `/healthz`
-  stays throttled until it becomes pure liveness (#210 Phase 2). Upgrade.
+  shared-NAT monitor could read "unready" from a `429`. Fixed: both are now
+  `@SkipThrottle()` — `/readyz`'s database cost is bounded by the cache, and
+  `/healthz` never touches the database at all. Upgrade.
 - **Probe request logs are now `debug`.** Successful `GET`/`HEAD` `/healthz` and
   `/readyz` request-log lines moved from `info` to `debug` (the throttle no longer
   caps their volume); a non-2xx probe answer still logs at `info`.
 
-### `GET /readyz` reports `database: "unhealthy"` though Postgres is up
+### `GET /healthz` reports `ok: false`
 
-The pool hit a fatal error (`hasFatalError=true`), which sticks for the process
-lifetime. Restart the pod; look for prior `database pool error: …` logs.
+`/healthz` is liveness: it is `200` whenever the process can answer and never
+touches the database (issue #210). Its `ok` field mirrors the **last readiness
+verdict**, so `200` with `ok: false` means "alive, but `/readyz` last found
+Postgres unavailable" — see [`GET /readyz` returns `503
+DEPENDENCY_UNAVAILABLE`](#get-readyz-returns-503-dependency_unavailable) for
+the cause. It is live, not latched: once the database is back, `ok` returns to
+`true` by itself — immediately after the next `/readyz` probe, or, with
+`/healthz` traffic alone, within about `max(READINESS_CACHE_MS, 5 s)` plus one
+probe (a stale verdict triggers a background refresh). **Do not restart the pod
+for it**: a restart cannot fix the database.
+
+Before #210 a single pool `'error'` (an idle connection dropped by a Postgres
+restart or failover) latched `/healthz` at `ok: false` until the process
+restarted. That latch is gone. Those events are still logged (`database pool
+error`) and now counted on `acdp_db_pool_errors_total`; occasional increments
+around a database restart are expected and harmless — pg-pool discards the dead
+client and reconnects on demand. A steadily climbing counter with a healthy
+`/readyz` points at something closing idle connections (a proxy or firewall
+idle timeout shorter than `DB_POOL_IDLE_TIMEOUT`).
 
 ---
 

@@ -102,4 +102,18 @@ describe('RedisQuotaStore', () => {
     await expect(s.close()).resolves.toBeUndefined();
     expect(logger.warn).toHaveBeenCalledWith({ msg: 'redis quota quit failed', error: 'ECONNRESET' });
   });
+  it.each([
+    ['ready', 'up'],
+    ['connecting', 'down'],
+    ['reconnecting', 'down'],
+    ['end', 'down'],
+  ])('health(): ioredis status %s -> %s, with no round-trip (issue #210 Phase 3)', (status, expected) => {
+    const fakeRedis = { eval: jest.fn(), quit: jest.fn(), status };
+    expect(new RedisQuotaStore(fakeRedis).health()).toBe(expected);
+    expect(fakeRedis.eval).not.toHaveBeenCalled();
+  });
+
+  it('the in-memory store has no health() (reports nothing)', () => {
+    expect((new InMemoryQuotaStore() as { health?: unknown }).health).toBeUndefined();
+  });
 });
