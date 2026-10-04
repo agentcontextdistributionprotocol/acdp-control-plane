@@ -381,10 +381,26 @@ exercises lazily `import()`ed modules (`ioredis` under `STREAM_HUB_STRATEGY=redi
 
 ### Which TypeScript does `nest build` actually use?
 
-The top-level one — the same compiler as `tsc`, `ts-jest`, `ts-node` and `eslint`.
+**TypeScript 6, by design** — the top-level `typescript` package, the same compiler
+`ts-jest`, `ts-node` and `eslint` load. TypeScript 7 is installed too, but **only
+typechecks** (issue #156 Phase 2): it lives under the npm alias
+`"@typescript/native": "npm:typescript@^7.0.2"`, because TS 7.0 ships no JS compiler API
+and every tool above needs one. `npm run typecheck` runs TS 7 over `tsconfig.json` and
+`test/tsconfig.test.json`; `npm run typecheck:ts6` runs TS 6 over `tsconfig.json`; CI
+runs both, and `nest build` (via `check:build`) typechecks with TS 6 again.
 
-This is worth stating explicitly because it is easy to get wrong by reading `npm ls`.
-`@nestjs/cli` resolves its compiler with `process.cwd()` **first**:
+**Bare `npx tsc` is ambiguous.** Both packages declare a `tsc` bin, and npm currently
+links `node_modules/.bin/tsc → ../@typescript/native/bin/tsc` — so `npx tsc` runs **TS 7**
+while `nest build` runs TS 6. That is a name collision, not a contract; use the npm
+scripts (explicit paths) or `node node_modules/typescript/bin/tsc` for TS 6.
+
+If the two compilers disagree (a TS-7-only error): fix the code when both readings are
+legal; if TS 7 is wrong, file upstream and pin `@typescript/native` to the last good
+patch — never weaken `tsconfig.json`. Dependabot skips `npm:` alias specifiers, so the
+TS 7 line is bumped by hand (`npm install -D "@typescript/native@npm:typescript@^7.x"`).
+
+How `nest build` picks its compiler is worth stating explicitly, because it is easy to get
+wrong by reading `npm ls`. `@nestjs/cli` resolves its compiler with `process.cwd()` **first**:
 
 ```js
 // node_modules/@nestjs/cli/lib/compiler/typescript-loader.js

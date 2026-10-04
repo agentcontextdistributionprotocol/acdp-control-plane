@@ -41,7 +41,10 @@ jobs:
       - run: npm ci
       - run: bash scripts/ci-conventions.sh
       - run: npm run lint -- --max-warnings 0
-      - run: npx tsc --noEmit -p tsconfig.json
+      # TS 7 (`@typescript/native` alias) + TS 6 typecheck by explicit path,
+      # never a bare tsc via npx (both packages declare a `tsc` bin) -- #156.
+      - run: npm run typecheck
+      - run: npm run typecheck:ts6
       # npm test, not a bare jest call: the script adds --experimental-vm-modules,
       # which jest needs to require() the ESM-only @nestjs/* 12 packages (#155).
       - run: npm test -- --testPathIgnorePatterns='/test/integration/' --ci

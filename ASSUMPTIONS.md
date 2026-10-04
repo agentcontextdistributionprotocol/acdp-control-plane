@@ -1110,7 +1110,7 @@
   (npm alias `@typescript/native`) awaits a human call. Until then a TS-7-only
   divergence is caught only by re-running Phase 1 criterion 3 by hand.
 - **Blast radius if wrong:** Low — late discovery of TS-7-only type errors.
-- **Status:** UNCONFIRMED — DEFERRED (2026-10-03) by the user's scoping; TS 7.0.2 is now GA so the gate is cheaper; revisit when #156 resumes
+- **Status:** CONFIRMED — SUPERSEDED (2026-10-03): the user decided to ship Phase 2; the side-by-side gate (`@typescript/native` alias, `npm run typecheck` + `typecheck:ts6` in CI/release) is DONE. Dependabot skips `npm:` alias specifiers (dependabot-core `alias_package?`), so the TS 7 line is bumped by hand.
 
 ## Throttler 6.7.x eviction/coercion is behaviour-neutral for our config (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 1)
