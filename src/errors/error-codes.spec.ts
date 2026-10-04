@@ -50,6 +50,8 @@ const SHIPPED: readonly string[] = [
   "QUOTA_EXCEEDED",
   // #200 — federation proxy upstream failure (502).
   "FEDERATION_UPSTREAM_ERROR",
+  // #192 — the shutdown drain gate (503).
+  "SERVICE_DRAINING",
 ];
 
 describe("ErrorCode public surface", () => {

@@ -401,6 +401,22 @@ only on full success.
      before any destroy hook, so it does not depend on module destroy order or
      on the stream-hub strategy. `StreamHubService`'s teardown stays as the
      backstop.
+
+     From the same moment, every **new** non-SSE request is answered
+     `503 SERVICE_DRAINING` (`Retry-After`, `Connection: close`, the JSON
+     envelope, CORS and helmet headers, an `X-Request-Id` and a request-log
+     line). "New" is decided **at arrival**: a plain Express middleware
+     registered in `bootstrap.ts` *before* the body parsers stamps
+     `DrainState.isDraining()` onto the request as soon as its headers are
+     parsed (`createDrainArrivalMarker`), and the drain gate
+     (`src/middleware/drain-gate.middleware.ts`, module middleware after the
+     correlation-id and request-logger middleware, so before every guard)
+     decides from that stamp alone. Module middleware only runs after the body
+     parsers, so a gate reading the live flag would 503 a request whose headers
+     arrived before the signal and whose body finished after it. `GET` on the
+     two SSE routes is exempt and takes the subscribe-after-drain path above,
+     because a non-2xx would stop an `EventSource` from ever reconnecting. A
+     CORS preflight is ended by `cors()` (204) before it reaches the gate.
   2. `app.close()` runs the destroy hooks, then Nest's `dispose()` calls
      `httpServer.close()`. That stops the listener and closes the sockets that
      are idle at that moment, once. A 100 ms idle-socket reaper started at drain
@@ -417,13 +433,19 @@ only on full success.
 
   Nest's `forceCloseConnections` and `return503OnClosing` adapter options stay
   off: the first drops in-flight requests and still exits 0, and the second's
-  bare `text/html` 503 bypasses the error envelope (see
-  `plans/graceful-drain-192.md`).
+  bare `text/html` 503 bypasses the error envelope, CORS and `Retry-After`, and
+  503s SSE reconnects too (see `plans/graceful-drain-192.md`).
+
+  Each shutdown ends with one structured `shutdown drain complete` line
+  (`drainMs`, `sseStreamsTerminated`, `drainRejections`, `forcedConnections`).
+  On an overrun the handler first reads a synchronous open-socket count
+  (`trackOpenConnections`, never the callback-async `getConnections()`) and logs
+  it as `forcedConnections` before `closeAllConnections()`.
 
   `app.close()` runs every `OnModuleDestroy`, so
   `DatabaseService` drains its pool, `StreamHubService` completes all Subjects and
   background timers are cleared — then flushes OpenTelemetry, then exits 0. The
-  close is bounded by `SHUTDOWN_TIMEOUT_MS` (default 10s, keep it below the
+  close is bounded by `SHUTDOWN_TIMEOUT_MS` (default 10s, an integer ≥ 1000 or boot fails; keep it below the
   platform's termination grace period): `http.Server.close()` waits for active
   connections, so one in-flight request would otherwise hold shutdown open until
   the orchestrator SIGKILLed the process. On overrun the handler drops lingering

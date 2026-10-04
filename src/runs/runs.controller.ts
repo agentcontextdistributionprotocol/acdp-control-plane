@@ -154,6 +154,7 @@ export class RunsController {
         source: () => this.streamHub.streamRun(runId, tenantId),
         drain: this.drain,
         heartbeatMs: this.config.streamSseHeartbeatMs,
+        retryMs: this.config.sseShutdownRetryMs,
         metrics: this.metrics,
       });
     // Draining (#192): answer with the terminal stream (200 + `event: shutdown`

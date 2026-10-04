@@ -184,9 +184,22 @@ describe('graceful shutdown (real process, real signal)', () => {
       // so is more useful than reporting success after dropping live requests.
       expect(code).toBe(1);
       expect(app.output()).toContain('forcing shutdown');
+      // #192 Phase 2 (review item 7): the forced path names how many sockets it
+      // cut, counted synchronously — never by an unbounded await.
+      const out = app.output().replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+      expect(Number(/"?forcedConnections"?:\s*(\d+)/.exec(out)?.[1] ?? 0)).toBeGreaterThanOrEqual(1);
     } finally {
       socket.destroy();
     }
+  });
+
+  it('fails boot on a garbage SHUTDOWN_TIMEOUT_MS instead of silently using 10000 (#192)', async () => {
+    // Captured so afterEach kills it if it DOES boot (the red case): an orphan
+    // would hold PORT and poison every later case.
+    const started = startApp({ SHUTDOWN_TIMEOUT_MS: 'abc' }).then((a) => (app = a));
+    await expect(started).rejects.toThrow(
+      /exited during boot with code 1[\s\S]*SHUTDOWN_TIMEOUT_MS/,
+    );
   });
 
   describe('SSE-aware drain (issue #192, Phase 1)', () => {
@@ -212,6 +225,8 @@ describe('graceful shutdown (real process, real signal)', () => {
       raw: () => string;
       /** Resolves with the time the peer's FIN arrived. */
       fin: Promise<number>;
+      /** Resolves with the time the chunked terminator `0\r\n\r\n` arrived. */
+      terminated: Promise<number>;
       socket: ReturnType<typeof connect>;
     }
 
@@ -222,10 +237,13 @@ describe('graceful shutdown (real process, real signal)', () => {
       const socket = await openSocket();
       let raw = '';
       const fin = new Promise<number>((resolve) => socket.once('end', () => resolve(Date.now())));
+      let onTerminated: (at: number) => void = () => undefined;
+      const terminated = new Promise<number>((resolve) => (onTerminated = resolve));
       const headersIn = new Promise<void>((resolve) => {
         socket.on('data', (c: Buffer) => {
           raw += c.toString('latin1');
           if (raw.includes('\r\n\r\n')) resolve();
+          if (raw.includes('0\r\n\r\n')) onTerminated(Date.now());
         });
       });
       socket.write(
@@ -233,7 +251,7 @@ describe('graceful shutdown (real process, real signal)', () => {
           `Authorization: Bearer ${API_KEY}\r\n\r\n`,
       );
       await headersIn;
-      return { raw: () => raw, fin, socket };
+      return { raw: () => raw, fin, terminated, socket };
     }
 
     function expectShutdownThenTerminator(stream: RawStream): void {
@@ -309,6 +327,190 @@ describe('graceful shutdown (real process, real signal)', () => {
         sse.socket.destroy();
         post.destroy();
       }
+    });
+
+    describe('drain gate for new requests (issue #192, Phase 2)', () => {
+      // Red on the Phase 1 code (recorded 2026-10-04, before Phase 2): (ii) the
+      // fresh `GET /readyz` at +100 ms got 200, not 503. Phase 1 already gave
+      // (i)/(iii)/(v). Separately, a gate reading the LIVE flag instead of the
+      // arrival mark was mutation-tested: (iv) then got 503, not its 400.
+      const SLOW = {
+        entry: join(REPO_ROOT, 'test', 'fixtures', 'slow-teardown.main.ts'),
+        project: join('test', 'tsconfig.test.json'),
+      };
+      /** `test/fixtures/slow-teardown.main.ts` STALL_MS (not imported: importing
+       *  the fixture would boot it). */
+      const STALL_MS = 1500;
+      const ORIGIN = 'http://drain-probe.example';
+
+      interface RawResponse {
+        raw: string;
+        status: number;
+        headers: Record<string, string>;
+        body: string;
+      }
+
+      /** Send one request on a FRESH connection and collect everything until the
+       *  server closes it. A refused connection is reported distinctly: it means
+       *  the fixture did not hold the listener open, NOT that the gate failed. */
+      function rawRequest(request: string, untilEnd = true): Promise<RawResponse> {
+        return new Promise((resolve, reject) => {
+          const socket = connect(PORT, '127.0.0.1');
+          let raw = '';
+          const done = (): void => {
+            const head = raw.split('\r\n\r\n', 1)[0] ?? '';
+            const [statusLine, ...lines] = head.split('\r\n');
+            const headers: Record<string, string> = {};
+            for (const line of lines) {
+              const i = line.indexOf(':');
+              if (i > 0) headers[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
+            }
+            resolve({
+              raw,
+              status: Number(/^HTTP\/1\.1 (\d{3})/.exec(statusLine ?? '')?.[1] ?? 0),
+              headers,
+              body: raw.slice(head.length + 4),
+            });
+          };
+          socket.on('data', (c: Buffer) => {
+            raw += c.toString('latin1');
+            // A response that does not close the socket (a preflight 204 on a
+            // keep-alive connection) is complete once its header block is in.
+            if (!untilEnd && raw.includes('\r\n\r\n')) {
+              socket.destroy();
+              done();
+            }
+          });
+          socket.once('error', (err: NodeJS.ErrnoException) => {
+            if (raw) return;
+            reject(
+              new Error(
+                err.code === 'ECONNREFUSED'
+                  ? 'fixture did not hold the listener open (ECONNREFUSED) — not a gate failure'
+                  : `probe connection failed: ${err.code ?? err.message}`,
+              ),
+            );
+          });
+          socket.once('close', () => {
+            if (raw) done();
+          });
+          socket.write(request);
+        });
+      }
+
+      const at = <T>(sentAt: number, ms: number, fn: () => Promise<T>): Promise<T> =>
+        new Promise<T>((resolve, reject) => {
+          setTimeout(() => fn().then(resolve, reject), Math.max(0, sentAt + ms - Date.now()));
+        });
+
+      it('503s new requests on arrival, keeps SSE reconnects 200, and lets in-flight requests finish', async () => {
+        app = await startApp({ ...DRAIN_ENV, CORS_ORIGIN: ORIGIN }, SLOW);
+        const sse = await openSse('/events/stream');
+
+        // In flight: HEADERS before SIGTERM, body completes at +1000 ms — while
+        // the fixture still holds the listener open. Not DB-backed (Round 2 #2):
+        // the body fails DTO validation, so the normal answer is a 400.
+        const post = await openSocket();
+        let postRaw = '';
+        post.on('data', (c: Buffer) => (postRaw += c.toString('latin1')));
+        const body = '{"not_a_run":true}';
+        post.write(
+          'POST /runs/started HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n' +
+            `Content-Length: ${body.length}\r\n\r\n` +
+            body.slice(0, 5),
+        );
+        // Let the request line + headers be parsed (and the arrival mark stamped).
+        await new Promise((r) => setTimeout(r, 200));
+
+        try {
+          const sentAt = Date.now();
+          app.child.kill('SIGTERM');
+          const exited = exitCodeWithin(app.child, 20_000);
+          setTimeout(() => post.write(body.slice(5)), 1000);
+
+          const readyz = at(sentAt, 100, () =>
+            rawRequest(
+              `GET /readyz HTTP/1.1\r\nHost: localhost\r\nOrigin: ${ORIGIN}\r\n\r\n`,
+            ),
+          );
+          const preflight = at(sentAt, 100, () =>
+            rawRequest(
+              `OPTIONS /runs HTTP/1.1\r\nHost: localhost\r\nOrigin: ${ORIGIN}\r\n` +
+                'Access-Control-Request-Method: GET\r\n\r\n',
+              false,
+            ),
+          );
+          const sseGlobal = at(sentAt, 100, () =>
+            rawRequest(
+              'GET /events/stream HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n' +
+                `Authorization: Bearer ${API_KEY}\r\n\r\n`,
+            ),
+          );
+          // Mixed case + trailing slash: Express routes it to the SSE handler, so
+          // the gate's exemption must match it too.
+          const sseRun = at(sentAt, 100, () =>
+            rawRequest(
+              'GET /Runs/drain-r2/Events/Stream/ HTTP/1.1\r\nHost: localhost\r\n' +
+                `Accept: text/event-stream\r\nAuthorization: Bearer ${API_KEY}\r\n\r\n`,
+            ),
+          );
+
+          const code = await exited;
+          const exitMs = Date.now() - sentAt;
+          const terminatedMs = (await sse.terminated) - sentAt;
+          const finMs = (await sse.fin) - sentAt;
+
+          // (ii) A fresh connection is ANSWERED (not reset) with the enveloped
+          // 503 — which also proves the idle reaper left the just-accepted
+          // socket alone — and the browser can read it (CORS headers present).
+          const r = await readyz;
+          expect(r.status).toBe(503);
+          const json = JSON.parse(r.body) as Record<string, unknown>;
+          expect(json.errorCode).toBe('SERVICE_DRAINING');
+          expect((json.error as { code?: string }).code).toBe('SERVICE_DRAINING');
+          expect(r.headers['retry-after']).toBe('1');
+          expect(r.headers.connection).toBe('close');
+          expect(r.headers['x-powered-by']).toBeUndefined();
+          expect(r.headers['access-control-allow-origin']).toBe(ORIGIN);
+          expect(r.headers['x-request-id']).toBeTruthy();
+          expect(r.headers['content-type']).toMatch(/application\/acdp\+json/);
+
+          // A preflight never reaches the gate: cors() ends it itself with 204.
+          expect((await preflight).status).toBe(204);
+
+          // (iii) New SSE requests: 200 + `event: shutdown` + retry + end, never 503.
+          for (const s of [await sseGlobal, await sseRun]) {
+            // The raw response rides along so a failure shows WHO answered.
+            expect({ status: s.status, raw: s.raw }).toEqual({ status: 200, raw: s.raw });
+            expect(s.headers['content-type']).toMatch(/text\/event-stream/);
+            expect(s.raw).toMatch(/event: shutdown\n(?:id: \d+\n)?retry: \d+\n/);
+            expect(s.raw.lastIndexOf('0\r\n\r\n')).toBeGreaterThan(s.raw.indexOf('event: shutdown'));
+          }
+
+          // (iv) The arrival-marker regression test: headers before SIGTERM, body
+          // after it → its normal response, not 503.
+          expect(postRaw).toMatch(/^HTTP\/1\.1 400 /);
+
+          // (i) The open stream ends at once; its FIN only follows the listener
+          // close (the reaper waits for !server.listening), i.e. after the stall.
+          expectShutdownThenTerminator(sse);
+          expect(terminatedMs).toBeLessThan(500);
+          expect(finMs).toBeGreaterThan(STALL_MS - 100);
+          expect(finMs).toBeLessThanOrEqual(1900);
+
+          // (v) + (vi)
+          expect(code).toBe(0);
+          expect(exitMs).toBeLessThan(2500);
+          const out = app.output().replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+          expect(out).toContain('shutdown drain complete');
+          expect(out).toMatch(/"?drainMs"?:\s*\d+/);
+          expect(out).toMatch(/"?drainRejections"?:\s*[1-9]\d*/);
+          expect(out).not.toContain('forcing shutdown');
+        } finally {
+          sse.socket.destroy();
+          post.destroy();
+        }
+      });
     });
   });
 });

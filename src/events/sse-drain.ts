@@ -4,10 +4,11 @@ import { AcdpStreamEvent, SseShutdownEventData } from '../contracts/acdp';
 import type { DrainState } from '../shutdown-drain';
 
 /**
- * The `retry:` hint (ms) carried by the terminal `event: shutdown` (issue #192):
- * how long an EventSource waits before reconnecting — by then, to a live replica.
- * A constant in Phase 1; `plans/graceful-drain-192.md` Phase 2 turns it into the
- * `STREAM_SSE_SHUTDOWN_RETRY_MS` knob (read in AppConfigService).
+ * The fallback `retry:` hint (ms) carried by the terminal `event: shutdown`
+ * (issue #192): how long an EventSource waits before reconnecting — by then, to
+ * a live replica. Both SSE controllers pass the `STREAM_SSE_SHUTDOWN_RETRY_MS`
+ * knob (`AppConfigService.sseShutdownRetryMs`, same 1000 ms default) as
+ * `retryMs`; this constant only applies when a caller omits it.
  */
 export const SSE_SHUTDOWN_RETRY_MS = 1000;
 
@@ -25,7 +26,8 @@ export interface SseStreamOptions {
   /** The hub feed. A FACTORY, so a stream opened during the drain never
    *  subscribes to it at all (see {@link createSseStream}). */
   source: () => Observable<AcdpStreamEvent>;
-  drain: Pick<DrainState, 'isDraining' | 'drained$'>;
+  /** `noteSseTermination` feeds the shutdown summary log's `sseStreamsTerminated`. */
+  drain: Pick<DrainState, 'isDraining' | 'drained$'> & Partial<Pick<DrainState, 'noteSseTermination'>>;
   heartbeatMs: number;
   metrics?: SseStreamMetrics;
   /** Defaults to {@link SSE_SHUTDOWN_RETRY_MS}. */
@@ -71,6 +73,7 @@ export function createSseStream(opts: SseStreamOptions): Observable<MessageEvent
     const terminate = (): void => {
       if (subscriber.closed) return;
       metrics?.sseStreamsTerminatedTotal.inc({ reason: 'shutdown' });
+      drain.noteSseTermination?.();
       subscriber.next(shutdownMessage(retryMs));
       subscriber.complete();
     };

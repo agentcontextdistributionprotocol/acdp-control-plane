@@ -72,11 +72,23 @@ wherever one exists. `INTERNAL_ERROR` is reserved for genuine server faults
 | `INVALID_SIGNATURE` | 401 | specific | Ed25519/ECDSA-P256 signature over a challenge or capability assertion failed. |
 | `VALIDATION_ERROR` | 400 | specific | Malformed witness query parameter (`schema_violation`). |
 | `FEDERATION_UPSTREAM_RATE_LIMITED` | 503 | specific | The federated registry answered 429. |
+| `SERVICE_DRAINING` | 503 | specific | This instance is shutting down; retry (honour `Retry-After`) — another replica will serve it. Transient. |
 | `FEDERATION_UPSTREAM_ERROR` | 502 | specific | No usable response from the federated registry: SSRF-refused base URL, transport/timeout failure, rejected redirect, or body over 1 MiB. |
 | `CONTEXT_ID_MISMATCH` | 502 | specific | The registry served a different `ctx_id` than requested. |
 | `CONTEXT_BINDING_UNVERIFIABLE` | 502 | specific | The served body's `ctx_id` could not be checked. |
 | `INVALID_LOG_PROOF` | — | verdict | Transparency-log proof/checkpoint failed (audit verdict/alert category). |
 | `INVALID_WITNESS_COSIGNATURE` | — | verdict | A witness cosignature failed (diagnostic category). |
+
+`SERVICE_DRAINING` (issue #192) is returned by the shutdown drain gate to any
+request whose headers arrive after the instance began shutting down, before
+authentication (so it costs no throttle or quota budget), with `Retry-After`
+(`SHUTDOWN_RETRY_AFTER_SECONDS`, default 1), `Connection: close`, the usual
+JSON envelope, CORS headers and an `X-Request-Id`. A request whose headers
+arrived *before* the drain runs to completion even if its body finishes later.
+A CORS preflight is still answered `204` by the CORS layer. The two SSE routes
+are exempt (see `GET /runs/:runId/events/stream`). It is a CP-local
+SCREAMING_SNAKE code: RFC-ACDP-0007 §5's closed enum has no 503 code, so no
+RFC code is minted or reused.
 
 `INVALID_LOG_PROOF` and `INVALID_WITNESS_COSIGNATURE` are deliberately
 distinct (RFC-ACDP-0015 §10): the former indicts a transparency-log proof or
@@ -317,15 +329,19 @@ data: {"reason":"server_shutdown"}
 ```
 
 A stream opened while the instance is already draining gets `200` (for requests that reach
-the handler), this event and then the end of the stream at once. A JWT client under
+the handler), this event and then the end of the stream at once. The drain gate
+that answers every other new request with `503 SERVICE_DRAINING` deliberately
+lets `GET` on both SSE routes through, so the gate itself never 503s an SSE
+request. The handler is still behind the guards, though: a JWT client under
 `AUTH_PERSISTENCE=postgres` can still see a non-2xx in the brief window after the
-database pool has ended, because the auth guard's revocation lookup runs first. It is never a `503`, because a non-2xx
+database pool has ended, because the auth guard's revocation lookup runs first. A
+`503` is avoided because a non-2xx
 response makes `EventSource` give up for good. Clients should treat `shutdown`
 as "reconnect after `retry` ms". A browser `EventSource` does this on its own
 when the stream ends, and the `retry:` line sets the delay, so the reconnect
 lands on a live replica. A non-browser consumer that treats an unknown event
-type as fatal must ignore or handle `shutdown`. The `retry` value is 1000 ms
-for now.
+type as fatal must ignore or handle `shutdown`. The `retry` value is
+`STREAM_SSE_SHUTDOWN_RETRY_MS` (default 1000 ms).
 
 ---
 
@@ -856,6 +872,8 @@ Key metrics (all constructed in `InstrumentationService`):
 | `http_requests_total` | counter | `method`, `path`, `status_code` | Request count |
 | `active_sse_connections` | gauge | — | Live SSE connections (both stream routes) |
 | `acdp_sse_streams_terminated_total` | counter | `reason` | SSE streams ended by the server (`shutdown` = graceful drain, issue #192). Best effort: a dying process is rarely scraped. |
+| `acdp_shutdown_drain_rejections_total` | counter | — | New requests answered `503 SERVICE_DRAINING` by the drain gate (issue #192). Best effort; the `shutdown drain complete` log line is the primary signal. |
+| `acdp_shutdown_forced_connections_total` | counter | — | Sockets still open when a graceful close overran `SHUTDOWN_TIMEOUT_MS` and was forced (issue #192). Best effort. |
 | `acdp_events_ingested_total` | counter | `event_type` | Ingested events |
 | `acdp_webhook_deliveries_total` | counter | `status` | Outbound deliveries by status |
 | `acdp_ingest_rejected_total` | counter | `reason` | Ingest rejections (e.g. `pack_gate`) |

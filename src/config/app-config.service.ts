@@ -25,6 +25,27 @@ function readStrictInteger(name: string, defaultValue: number): number {
   return /^\s*\d+\s*$/.test(raw) ? Number(raw) : Number.NaN;
 }
 
+// Startup check for a readStrictInteger value: NaN (a set, non-integer value)
+// and anything outside [min, max] fail with the raw env value named.
+// setTimeout's ceiling (2^31-1 ms ~ 24.8 d): above it Node fires after 1 ms, which
+// would force-exit every shutdown with code 1.
+const MAX_TIMER_MS = 2_147_483_647;
+
+function assertIntegerInRange(
+  name: string,
+  value: number,
+  min: number,
+  max: number,
+  defaultValue: number,
+): void {
+  if (Number.isInteger(value) && value >= min && value <= max) return;
+  const range = max === Number.MAX_SAFE_INTEGER ? `>= ${min}` : `in [${min}, ${max}]`;
+  throw new Error(
+    `${name} must be an integer ${range} ` +
+      `(got ${JSON.stringify(process.env[name] ?? value)}); default ${defaultValue} when unset.`,
+  );
+}
+
 // RFC-ACDP-0015 §8.1's max_age_secs is explicitly nullable in the SDK policy
 // (null disables the freshness split entirely) — distinct from "unset, use
 // the default." An operator opts into "no staleness window" by setting the
@@ -376,8 +397,17 @@ export class AppConfigService implements OnModuleInit {
   // the orchestrator SIGKILLs the process (exit 137). Keep this comfortably BELOW
   // the platform's termination grace period — 30s on Kubernetes by default — so
   // the forced path runs before the SIGKILL rather than after it. See
-  // `src/shutdown.ts` and issue #158.
-  readonly shutdownTimeoutMs = readNumber('SHUTDOWN_TIMEOUT_MS', 10000);
+  // `src/shutdown.ts` and issue #158. Strict (#192): a set value that is not a
+  // plain decimal integer arrives as NaN and fails validate(), as does anything
+  // below 1000 — it used to fall back to 10000 silently.
+  readonly shutdownTimeoutMs = readStrictInteger('SHUTDOWN_TIMEOUT_MS', 10000);
+  // `Retry-After` (seconds) on the drain gate's 503 SERVICE_DRAINING (#192,
+  // `src/middleware/drain-gate.middleware.ts`). Strict integer in [1, 300].
+  readonly shutdownDrainRetryAfterSeconds = readStrictInteger('SHUTDOWN_RETRY_AFTER_SECONDS', 1);
+  // `retry:` hint (ms) on the terminal SSE `event: shutdown` (#192,
+  // `src/events/sse-drain.ts`): how long an EventSource waits before
+  // reconnecting — by then, to a live replica. Strict integer in [0, 60000].
+  readonly sseShutdownRetryMs = readStrictInteger('STREAM_SSE_SHUTDOWN_RETRY_MS', 1000);
 
   // DB pool
   readonly dbPoolMax = readNumber('DB_POOL_MAX', 20);
@@ -613,6 +643,19 @@ export class AppConfigService implements OnModuleInit {
           `default 64 when unset.`,
       );
     }
+
+    // Graceful-drain knobs (#192), enforced in every environment: a garbage
+    // value used to become the default silently, hiding the operator's intent
+    // on exactly the path (shutdown) nobody watches until a deploy goes wrong.
+    assertIntegerInRange('SHUTDOWN_TIMEOUT_MS', this.shutdownTimeoutMs, 1000, MAX_TIMER_MS, 10000);
+    assertIntegerInRange(
+      'SHUTDOWN_RETRY_AFTER_SECONDS',
+      this.shutdownDrainRetryAfterSeconds,
+      1,
+      300,
+      1,
+    );
+    assertIntegerInRange('STREAM_SSE_SHUTDOWN_RETRY_MS', this.sseShutdownRetryMs, 0, 60000, 1000);
 
     if (this.isDevelopment) return;
 

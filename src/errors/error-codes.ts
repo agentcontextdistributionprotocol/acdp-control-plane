@@ -17,6 +17,16 @@ export enum ErrorCode {
   // fault. Deliberately SCREAMING_SNAKE, not the registry's lowercase
   // RFC-ACDP-0007 `cross_registry_resolution_failed`.
   FEDERATION_UPSTREAM_ERROR = "FEDERATION_UPSTREAM_ERROR",
+  // 503 from the drain gate (#192, `src/middleware/drain-gate.middleware.ts`):
+  // this instance is shutting down and the request's headers arrived after the
+  // drain began. Transient — retry (honour `Retry-After`) and another replica
+  // will serve it; the response also carries `Connection: close`. Like
+  // RATE_LIMITED / FEDERATION_* it is a CP-local SCREAMING_SNAKE code:
+  // RFC-ACDP-0007 §5's closed enum has no 503 code, so no RFC code is minted
+  // or reused. The gate never 503s the two SSE routes (a non-2xx kills
+  // EventSource); a new stream that passes the guards gets 200 +
+  // `event: shutdown` instead.
+  SERVICE_DRAINING = "SERVICE_DRAINING",
   // RFC-ACDP-0006 §4.1 step 7 (NORMATIVE): the federation proxy compares the
   // `ctx_id` a registry SERVED against the `ctx_id` that was REQUESTED.
   // `ctx_id` is registry-assigned and excluded from both `content_hash` and
