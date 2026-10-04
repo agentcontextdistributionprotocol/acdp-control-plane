@@ -78,7 +78,7 @@ check "no console.* (use Nest Logger)" \
 
 check "no process.env outside AppConfigService" \
   'process\.env' \
-  '(app-config|main\.ts|telemetry/telemetry\.ts|db/migrate\.ts|\.spec\.ts|auth/pinned-keys\.service|auth/pinned-keys-admin\.controller|auth/auth\.module|domain-packs/domain-packs\.module)'
+  '(app-config|main\.ts|load-env\.ts|telemetry/telemetry\.ts|db/migrate\.ts|\.spec\.ts|auth/pinned-keys\.service|auth/pinned-keys-admin\.controller|auth/auth\.module|domain-packs/domain-packs\.module)'
 
 # The exemption skips COMMENT lines (`// ...` and ` * ...` in a docblock), because
 # bootstrap.ts and shutdown.ts both explain at length why this call must not come back

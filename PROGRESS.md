@@ -3769,3 +3769,5 @@ UNCONFIRMED entries + #200 "known gap" entry updated. CLAUDE.md (local) rules
 7/8/9 described. Finalization: the three phases are independent (no seams
 between PR A and PR B); each PR's gate covered its full diff, so no separate
 cumulative verify was run.
+
+## 2026-10-04 — #193 phases 1+2 PASS (Opus verifier, 1 round; gaps: literal BOM chars -> \uFEFF escapes, parity rows added). Branch feat/193-load-env-file. Next: PR, then #192, #210 readyz.

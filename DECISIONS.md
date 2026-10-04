@@ -639,3 +639,6 @@ cause stays in the log, not on the wire (nit, left as is: the message says
 11 confirmed: 3 by the user after Fable analysis, 8 by Opus. Two required code changes
 shipped in this reconcile's PR (ledger `isIP` guard; non-numeric prefix fails fast),
 plus docs and a scanner-failure test for CI rule 8b.
+
+## 2026-10-04 — #193 `.env` loader (Opus)
+Replaced `dotenv` with `src/env-file.ts` (`util.parseEnv`, BOM strip, ENOENT-only tolerance, explicit env-wins merge) behind `src/load-env.ts`; supersedes the #155 'keep import dotenv/config' assumption. Rejected bare `process.loadEnvFile` (EACCES reported as ENOENT, BOM corrupts first key, undocumented no-override). Behaviour change: unreadable `.env` fails boot; `KEY: value` and `DOTENV_*` unsupported. Status: UNCONFIRMED in ASSUMPTIONS.md pending /reconcile.

@@ -69,7 +69,9 @@ registries (which authoritatively store contexts and emit lifecycle webhooks) an
 
 ```
 src/
-├── main.ts                    # Entry: .env preload, then bootstrap()
+├── main.ts                    # Entry: .env preload (load-env.ts), then bootstrap()
+├── load-env.ts                # Side-effect preload: applyEnvFile(process.env)
+├── env-file.ts                # .env parser/merger (util.parseEnv; env wins; missing = no-op)
 ├── bootstrap.ts               # Boot wiring: pino, helmet, swagger, OTel, migrations, rawBody, shutdown
 ├── shutdown.ts                # Signal handler: idempotent close, deadline, exit code
 ├── shutdown-failures.ts       # Destroy-hook failure collector (exit 1 under Nest 12)
