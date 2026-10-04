@@ -579,3 +579,63 @@ NEEDS-CHANGE (non-blocking, reversible): federation proxy 502 reports
 1 NEEDS-CHANGE (#200, not a ship blocker); 1 deferred (TS 7 gate). 12 of 18 were settled
 without the user's input. Code follow-up: the one-line guard comment in
 `src/shutdown-failures.ts` (PR below).
+
+## Reconcile: #187, #200, TRUST_PROXY/lint follow-ups — 2026-10-04
+Scope: the 11 `UNCONFIRMED` `ASSUMPTIONS.md` entries from #187 (IPv6 throttle
+bucketing), #200 (federation 502 label), and their follow-ups (#204–#207:
+`TRUST_PROXY`, issuance-ledger `signer_ip`, CI rules 8b/9). Analysis: Fable for the
+three one-way doors (wire error code, proxy trust, ledger audit field); Opus for the
+other 8.
+
+### Decided by the user (after Fable analysis) — 3 CONFIRMED
+- **The upstream-failure 502 is named `FEDERATION_UPSTREAM_ERROR`.** Fable: confirm.
+  RFC-ACDP-0007 §5 itself collapses these causes (unreachable, SSRF-blocked, oversize,
+  bad upstream status) into one 502 `cross_registry_resolution_failed`, so one CP code
+  is the faithful mapping; the `FEDERATION_UPSTREAM_` family prefix matches the
+  existing `FEDERATION_UPSTREAM_RATE_LIMITED`; finer-grained codes can be added later
+  without breaking clients. Follow-up: the console's copy entry for the new code is a
+  sibling-repo change — acdp-ui-console #157.
+- **`TRUST_PROXY` is opt-in, strict, and rejects `true`.** Fable: confirm. Express
+  5.2.1 `compileTrust` semantics verified (hop count / address list / boolean);
+  default-off equals Express's own default, so unset is behaviour-neutral. Hardening
+  shipped with this reconcile: the `isIP` guard on the ledger (next entry). Docs:
+  `docs/CONFIGURATION.md` now covers the Docker Desktop / `userland-proxy` case
+  (published-port peers appear as the bridge gateway, inside `uniquelocal`, so
+  `uniquelocal` is a bypass case too, not only hop counts) and that a hop over-count
+  makes `req.ip` arbitrary client text (neutralised for the ledger, still affects
+  throttle bucketing).
+- **Issuance-ledger `signer_ip` is `req.ip`, never raw `X-Forwarded-For`.** Fable:
+  confirm, with one REQUIRED change — under a misconfigured `TRUST_PROXY` (hop
+  over-count, or a proxy forwarding XFF verbatim) Express returns an untrusted XFF
+  entry as `req.ip`, which could exceed `varchar(64)` and 500 `/auth/token`.
+  Shipped: `extractIp` returns `req.ip` only when it is ≤ 64 chars AND `isIP(req.ip)`
+  (`src/auth/auth.controller.ts`; the length cap is needed because `isIP` accepts an
+  IPv6 zone id of any length — caught by the verifier); the spec's overflow case now sets the 100-char text
+  as `req.ip` itself and was mutation-checked (fails without the guard).
+
+### Settled by Opus (reversible) — 8 CONFIRMED
+IPv6 throttle tracker collapses to `/64` by default; `normalizeIp` reused from
+`@nestjs/throttler` (no hand-rolled copy); unlabelled 5xx keeps `INTERNAL_ERROR` (no
+generic gateway fallback); request logs still carry no client address; CI rule 8b
+uses perl (present on ubuntu-latest and macOS — the "scanner failed" branch is now
+proven by `src/ci-conventions.spec.ts` with perl absent from `PATH` and with a failing
+stub); template-literal log messages converted + CI rule 9 (known minor false
+negative: a nested backtick inside `${}` ends the `[^`]*` match early — accepted,
+since a rule-9 hit fails CI and false positives surface immediately); federation fetch
+cause stays in the log, not on the wire (nit, left as is: the message says
+"unreachable" even for SSRF/oversize causes).
+- **Prefix knob range is `[1, 128]`, fail-fast in every environment.** CONFIRMED with
+  one change shipped: a SET `THROTTLE_IPV6_SUBNET_PREFIX` that is not a plain decimal
+  integer (`/48`, `sixty-four`, `0x40`, `1e2`, empty) now also fails startup instead
+  of silently becoming `64` (`readStrictInteger` in `src/config/app-config.service.ts`); unset still defaults
+  to `64`.
+
+### Follow-ups
+- Possible, NOT done: a once-per-process warning when `X-Forwarded-For` arrives while
+  `TRUST_PROXY` is off (would flag a proxied deployment that forgot the setting).
+- Console copy entry for `FEDERATION_UPSTREAM_ERROR` → acdp-ui-console #157.
+
+### Summary
+11 confirmed: 3 by the user after Fable analysis, 8 by Opus. Two required code changes
+shipped in this reconcile's PR (ledger `isIP` guard; non-numeric prefix fails fast),
+plus docs and a scanner-failure test for CI rule 8b.

@@ -14,6 +14,17 @@ function readNumber(name: string, defaultValue: number): number {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
+// Like readNumber, but a SET value that is not a plain decimal integer
+// (surrounding whitespace allowed) is surfaced as NaN instead of silently
+// replaced by the default, so a caller's startup validation rejects it
+// (e.g. THROTTLE_IPV6_SUBNET_PREFIX="/48" must not quietly run at /64; nor
+// may "0x40" or "1e2" be quietly reinterpreted). Unset yields the default.
+function readStrictInteger(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+  return /^\s*\d+\s*$/.test(raw) ? Number(raw) : Number.NaN;
+}
+
 // RFC-ACDP-0015 §8.1's max_age_secs is explicitly nullable in the SDK policy
 // (null disables the freshness split entirely) — distinct from "unset, use
 // the default." An operator opts into "no staleness window" by setting the
@@ -381,8 +392,9 @@ export class AppConfigService implements OnModuleInit {
   // Unauthenticated callers key on IP; an IPv6 address is collapsed to this
   // prefix length so a host rotating source addresses inside its own /64
   // still lands in ONE bucket (issue #187). 128 = per-address (the pre-#187
-  // behaviour). Validated to an integer in [1, 128] at startup.
-  readonly throttleIpv6SubnetPrefix = readNumber('THROTTLE_IPV6_SUBNET_PREFIX', 64);
+  // behaviour). Validated to an integer in [1, 128] at startup; a set but
+  // non-numeric value ("/48", "sixty-four") fails too rather than becoming 64.
+  readonly throttleIpv6SubnetPrefix = readStrictInteger('THROTTLE_IPV6_SUBNET_PREFIX', 64);
   // Express `trust proxy` (opt-in; unset = off, Express's default). Parsed at
   // CONSTRUCTION so a bad value fails before migrations run in bootstrap(),
   // in every environment — see parseTrustProxy and docs/CONFIGURATION.md.
@@ -587,7 +599,9 @@ export class AppConfigService implements OnModuleInit {
     // A rate-limit security control (issue #187): enforced in every
     // environment. 0 would merge every IPv6 caller into one bucket (a
     // self-inflicted DoS); a fractional or >128 value would be silently
-    // clamped/truncated by the throttler, hiding the operator's mistake.
+    // clamped/truncated by the throttler, hiding the operator's mistake; a
+    // non-numeric value arrives here as NaN (readStrictInteger) for the same
+    // reason — silently running at /64 would hide it too.
     if (
       !Number.isInteger(this.throttleIpv6SubnetPrefix) ||
       this.throttleIpv6SubnetPrefix < 1 ||
@@ -595,7 +609,8 @@ export class AppConfigService implements OnModuleInit {
     ) {
       throw new Error(
         `THROTTLE_IPV6_SUBNET_PREFIX must be an integer in [1, 128] ` +
-          `(got ${this.throttleIpv6SubnetPrefix}); default 64.`,
+          `(got ${JSON.stringify(process.env.THROTTLE_IPV6_SUBNET_PREFIX ?? this.throttleIpv6SubnetPrefix)}); ` +
+          `default 64 when unset.`,
       );
     }
 

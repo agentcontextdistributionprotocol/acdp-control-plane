@@ -48,6 +48,7 @@ import {
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
+import { isIP } from 'node:net';
 
 import {
   AuthErrorDto,
@@ -136,14 +137,27 @@ export class AuthController {
   }
 }
 
+/** Width of `issuance_ledger.signer_ip` (`drizzle/0004_issuance_ledger.sql`). */
+const SIGNER_IP_MAX_LEN = 64;
+
 /**
  * Caller IP for the issuance-ledger audit field: Express's `req.ip`, which is
  * the real client only when `TRUST_PROXY` names the proxies in front of the
  * control plane (see `src/common/trust-proxy.ts`). `X-Forwarded-For` is
  * deliberately NOT read here: its leftmost entry is whatever the client
  * wrote — spoofable with or without a proxy — and unbounded, while
- * `signer_ip` is `varchar(64)`.
+ * `signer_ip` is `varchar(64)`. A non-IP `req.ip` (see below) is recorded as
+ * absent rather than stored.
  */
 export function extractIp(req: Pick<Request, 'ip'>): string | undefined {
-  return typeof req.ip === 'string' && req.ip.length > 0 ? req.ip : undefined;
+  // `req.ip` is normally a socket address, but under a MISCONFIGURED
+  // `TRUST_PROXY` (a hop count larger than the real chain, or a trusted proxy
+  // that forwards the client's `X-Forwarded-For` verbatim) Express hands back
+  // an untrusted XFF entry — arbitrary client text. Record it only if it is
+  // actually an IP literal AND fits `varchar(64)`: `isIP` alone is not enough,
+  // because it accepts an IPv6 zone id of any length (`fe80::1%<100 chars>`).
+  // Anything else would 500 `/auth/token` on insert.
+  return typeof req.ip === 'string' && req.ip.length <= SIGNER_IP_MAX_LEN && isIP(req.ip) !== 0
+    ? req.ip
+    : undefined;
 }

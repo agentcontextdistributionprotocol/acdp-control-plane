@@ -15,17 +15,32 @@
  * writing a violating file into `src/` mid-run.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '..');
 const SCRIPT = 'scripts/ci-conventions.sh';
 
-function runScript(srcDir: string): { status: number; out: string } {
-  const res = spawnSync('bash', [SCRIPT, srcDir], {
+/** Absolute path of a tool on the CURRENT PATH (throws when absent). */
+function which(tool: string): string {
+  const res = spawnSync('bash', ['-c', `command -v ${tool}`], { encoding: 'utf8' });
+  const path = (res.stdout ?? '').trim();
+  if (res.status !== 0 || !path.startsWith('/')) {
+    throw new Error(`${tool} not found on PATH`);
+  }
+  return path;
+}
+const BASH = which('bash');
+
+function runScript(
+  srcDir: string,
+  env?: NodeJS.ProcessEnv,
+): { status: number; out: string } {
+  const res = spawnSync(env ? BASH : 'bash', [SCRIPT, srcDir], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    env,
   });
   return { status: res.status ?? -1, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
 }
@@ -339,5 +354,40 @@ describe('scripts/ci-conventions.sh', () => {
     const { status, out } = runScript(dir);
     expect(status).not.toBe(0);
     expect(out).toContain('✗ no JSON.stringify into a log message');
+  });
+  // ── Rule 8b scanner-failure branch ─────────────────────────────────────
+  //
+  // Rule 8b exists because grep-with-`|| true` silently passes on a broken
+  // scanner. Prove the perl rule does the opposite: with perl unavailable (a
+  // PATH holding ONLY the tools the script needs, perl excluded) or broken
+  // (a stub `perl` that exits non-zero), 8b reports "scanner failed" and the
+  // script exits non-zero — on a tree with no violations at all.
+  describe('rule 8b when perl cannot run', () => {
+    function pathDir(withStubPerl: boolean): string {
+      const root = mkdtempSync(join(tmpdir(), 'acdp-conventions-path-'));
+      scratchRoots.push(root);
+      for (const tool of ['bash', 'find', 'xargs', 'grep']) {
+        symlinkSync(which(tool), join(root, tool));
+      }
+      if (withStubPerl) {
+        const stub = join(root, 'perl');
+        writeFileSync(stub, '#!/bin/sh\nexit 2\n', 'utf8');
+        chmodSync(stub, 0o755);
+      }
+      return root;
+    }
+
+    it.each([
+      ['absent from PATH', false],
+      ['present but failing', true],
+    ])('fails with "scanner failed" when perl is %s', (_label, withStubPerl) => {
+      const dir = scratchTree({});
+      const { status, out } = runScript(dir, { PATH: pathDir(withStubPerl) });
+      expect(out).toMatch(
+        /✗ no unlabelled HttpException\(…, 502\|503\|504\) \(see #200\) — scanner failed \(exit \d+\)/,
+      );
+      expect(out).not.toContain('✓ no unlabelled HttpException');
+      expect(status).not.toBe(0);
+    });
   });
 });

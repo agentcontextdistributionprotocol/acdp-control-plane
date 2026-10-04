@@ -1183,7 +1183,7 @@
 - **Blast radius if wrong:** Medium — too coarse throttles unrelated callers
   sharing a translator; too fine leaves the rotation evasion open for larger
   allocations. Reversible via env.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus
 
 ## Prefix knob range is [1, 128], fail-fast in every environment (issue #187)
 - **Plan:** `plans/throttle-ipv6-187.md` (Open questions)
@@ -1192,7 +1192,7 @@
   always wrong") rather than refused. Non-numeric input falls back to 64 per the
   repo-wide `readNumber` semantics instead of failing startup.
 - **Blast radius if wrong:** Low — operator misconfiguration only.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus; with one change: a set but non-numeric value (`/48`, `sixty-four`) now also fails startup instead of silently falling back to 64 (`readStrictInteger`; any value that is not a plain decimal integer)
 
 ## Normalizing via the throttler's exported `normalizeIp` (issue #187)
 - **Plan:** `plans/throttle-ipv6-187.md` (Phase 1 Approach)
@@ -1202,7 +1202,7 @@
   bucket (one-time bucket reset at deploy), an empty-string `req.ip` now keys on
   `'anonymous'` instead of `''`, and malformed strings still key on themselves.
 - **Blast radius if wrong:** Low — a removed export fails typecheck/CI loudly.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus
 
 ## The upstream-failure 502 is named `FEDERATION_UPSTREAM_ERROR` (issue #200)
 - **Plan:** `plans/federation-502-code-200.md` (Open question 1)
@@ -1214,7 +1214,7 @@
   one code per cause (four public names nobody branches on yet).
 - **Blast radius if wrong:** Medium — `ErrorCode` is a one-way public surface;
   a rename after release is a breaking change (adding finer codes is additive).
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by the user after Fable analysis (RFC-ACDP-0007 §5 collapses these causes into one 502 `cross_registry_resolution_failed`; the `FEDERATION_UPSTREAM_` family prefix matches `FEDERATION_UPSTREAM_RATE_LIMITED`; finer codes are additive; console copy entry is a sibling-repo follow-up, acdp-ui-console #157)
 
 ## The federation fetch cause stays in the log, not on the wire (issue #200)
 - **Plan:** `plans/federation-502-code-200.md` (Open question 2)
@@ -1224,7 +1224,7 @@
   effectively permanent), but exposing the SSRF classification to arbitrary
   callers is an information-disclosure question; adding `details` later is additive.
 - **Blast radius if wrong:** Low — additive to change.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (nit, left as is: the message says 'unreachable' even for SSRF-blocked/oversize causes)
 
 ## Unlabelled 5xx keeps `INTERNAL_ERROR`; no generic gateway fallback (issue #200)
 - **Plan:** `plans/federation-502-code-200.md` (Open question 3)
@@ -1238,7 +1238,7 @@
   rejects it.
 - **Blast radius if wrong:** Low — a future upstream 5xx would be mislabelled
   retryable `INTERNAL_ERROR`, which is still a retryable status.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus
 
 ## `TRUST_PROXY` is opt-in, strict, and rejects `true` (follow-up to #187)
 - **Plan:** `plans/proxy-and-lint-followups.md` (Phase 1)
@@ -1266,7 +1266,7 @@
 - **Blast radius if wrong:** Low-medium — the bounds (10 hops, /8, /7) may reject
   an exotic but legitimate topology; widening is a config-parser change. Too-loose
   bounds would be a throttle-evasion hole, hence erring strict.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by the user after Fable analysis (Express 5.2.1 `compileTrust` semantics verified; default-off equals the Express default; ledger hardened by the `isIP` guard in `extractIp`; docs extended for the Docker `uniquelocal` bypass and hop over-count)
 
 ## Issuance-ledger `signer_ip` is `req.ip`, never raw `X-Forwarded-For` (follow-up to #187)
 - **Plan:** `plans/proxy-and-lint-followups.md` (Phase 1)
@@ -1279,7 +1279,7 @@
 - **Alternatives:** keep XFF but truncate (still spoofable); keep XFF only when
   TRUST_PROXY is set (duplicates Express's resolution, the exact bug).
 - **Blast radius if wrong:** Low — audit-field provenance only; no auth decision reads it.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by the user after Fable analysis; with the required change: `extractIp` records `req.ip` only when `isIP(req.ip)` (plus a ≤ 64-char cap, since `isIP` accepts an arbitrarily long IPv6 zone id; a misconfigured `TRUST_PROXY` can no longer push client text into `varchar(64)` and 500 `/auth/token`)
 
 ## Request logs still carry no client address (follow-up to #187)
 - **Plan:** `plans/proxy-and-lint-followups.md` (Plan review item 11)
@@ -1291,7 +1291,7 @@
 - **Alternatives:** add `clientIp: req.ip` to every request line (one-line change
   once the privacy call is made).
 - **Blast radius if wrong:** Low — additive later.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus
 
 ## CI rule 8b uses perl, not basic grep (follow-up to #200)
 - **Plan:** `plans/proxy-and-lint-followups.md` (Phase 2, Plan review item 5)
@@ -1312,7 +1312,7 @@
 - **Alternatives:** BRE single-line only (misses every real-world form); BRE +
   perl (double-reports single-line hits; BSD/GNU `\b` portability question).
 - **Blast radius if wrong:** Low — CI-only.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (perl is present on ubuntu-latest and macOS; `src/ci-conventions.spec.ts` now proves the "scanner failed" branch fires with perl absent or failing)
 
 ## All template-literal log messages converted; CI rule 9 added (follow-up to #200)
 - **Plan:** `plans/proxy-and-lint-followups.md` (Phase 3)
@@ -1334,4 +1334,4 @@
 - **Alternatives:** fix only the 429 warn (no ratchet possible with 105 left);
   an ESLint rule (more machinery than the script-based conventions).
 - **Blast radius if wrong:** Low — log shape only; reversible.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-04) — decided by Opus (known minor false negative: a nested backtick inside `${}` ends the `[^`]*` match early; accepted — a rule-9 hit fails CI, so false positives surface immediately)

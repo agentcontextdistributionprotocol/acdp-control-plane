@@ -132,10 +132,37 @@ describe('extractIp (issuance-ledger signerIp)', () => {
     expect(extractIp(req as never)).toBe('127.0.0.1');
   });
 
-  it('a 100-char spoofed X-Forwarded-For can no longer overflow signer_ip varchar(64)', () => {
+  it('a 100-char spoofed X-Forwarded-For header is never read', () => {
     const req = { ip: '10.0.0.2', headers: { 'x-forwarded-for': 'x'.repeat(100) } };
-    const out = extractIp(req as never);
-    expect(out).toBe('10.0.0.2');
+    expect(extractIp(req as never)).toBe('10.0.0.2');
+  });
+
+  // Misconfigured TRUST_PROXY (hop over-count, or a proxy forwarding XFF
+  // verbatim): Express itself returns the untrusted XFF entry AS req.ip. That
+  // text must never reach the varchar(64) signer_ip column.
+  it.each([
+    ['100 chars of client text', 'x'.repeat(100)],
+    ['the literal "unknown"', 'unknown'],
+    ['a hostname', 'evil.example'],
+    ['an IP with a port', '198.51.100.4:443'],
+    ['an IPv4 CIDR', '10.0.0.0/8'],
+    ['a padded IPv4', ' 198.51.100.4'],
+    // isIP() accepts an IPv6 zone id of ANY length — the length cap must catch it.
+    ['an IPv6 with a 100-char zone id', `fe80::1%${'a'.repeat(100)}`],
+  ])('drops a non-IP req.ip (%s) to undefined', (_label, ip) => {
+    expect(extractIp({ ip })).toBeUndefined();
+  });
+
+  it.each([
+    ['IPv4', '198.51.100.4'],
+    ['IPv6', '2001:db8::1'],
+    ['IPv6 loopback', '::1'],
+    ['IPv4-mapped IPv6', '::ffff:198.51.100.4'],
+    ['longest IPv6 text form', 'ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255'],
+    ['link-local IPv6 with a short zone id', 'fe80::1%eth0'],
+  ])('keeps a valid %s req.ip, and it fits varchar(64)', (_label, ip) => {
+    const out = extractIp({ ip });
+    expect(out).toBe(ip);
     expect(out!.length).toBeLessThanOrEqual(64);
   });
 
