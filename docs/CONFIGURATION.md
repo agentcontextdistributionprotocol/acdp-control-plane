@@ -131,6 +131,7 @@ See [INGEST.md](./INGEST.md).
 | `THROTTLE_TTL_MS` | number | `60000` | Throttle window per `(actorId\|ip)`. |
 | `THROTTLE_LIMIT` | number | `200` | Requests per window. `/auth/*` uses a tighter override. |
 | `THROTTLE_IPV6_SUBNET_PREFIX` | integer `1`–`128` | `64` | Prefix an unauthenticated IPv6 caller's address is collapsed to before keying. Out-of-range or fractional values fail startup (every environment). `128` = per-address. |
+| `TRUST_PROXY` | hop count \| address list | unset (off) | Express `trust proxy` — which reverse proxies may set the client address via `X-Forwarded-For`. See **Behind a reverse proxy** below. Invalid values (including `true`) fail startup in every environment. |
 
 **Tracker.** An authenticated request (API key or bearer JWT) is keyed on its
 principal (`actorId`), whatever address it comes from. An unauthenticated
@@ -145,10 +146,51 @@ blunt an abuser spreading across a larger allocation. Known coarse cases:
 NAT64 (`64:ff9b::/96`) and Teredo clients share one `/64` bucket per
 translator/relay.
 
-The client IP is Express's `req.ip`. No `trust proxy` is configured, so behind
-a reverse proxy every caller shares the proxy's bucket. If you enable it,
-trust a hop count or the proxy's CIDR — never `true`, which lets any client
-choose its own `X-Forwarded-For` and therefore its own bucket.
+### Behind a reverse proxy (`TRUST_PROXY`)
+
+The client IP is Express's `req.ip`. With `TRUST_PROXY` unset (the default)
+that is the TCP peer, so behind a load balancer / ingress **every
+unauthenticated caller shares the proxy's throttle bucket**, and the issuance
+ledger's `signer_ip` records the proxy. Set `TRUST_PROXY` to tell Express which
+hops are yours; `req.ip` then resolves to the address your outermost trusted
+proxy saw, and every reader (`ThrottleByUserGuard`, the ledger) uses it — no
+component parses `X-Forwarded-For` itself.
+
+Accepted values (whitespace-trimmed):
+
+| Value | Meaning |
+|-------|---------|
+| unset, empty, `0`, `false` | Off — Express's default; `X-Forwarded-For` is ignored. |
+| `1`–`10` | Hop count: trust that many proxies in front of the CP; `req.ip` is the `X-Forwarded-For` entry that many hops from the right. Set it to the **exact** number of proxies you run. |
+| comma-separated list | Trust peers matching any entry: `loopback`, `linklocal`, `uniquelocal` (proxy-addr's named ranges), a plain IPv4/IPv6 address, or a CIDR (`10.0.0.0/8`, `fd00::/8`). Duplicates are ignored; names are case-insensitive. |
+
+Rejected at startup (the process exits before migrations run):
+
+- **`true` / `yes` / `on`.** Trusting *every* hop makes `req.ip` the leftmost
+  `X-Forwarded-For` entry — whatever the client wrote. Any caller could then
+  pick a fresh throttle bucket per request (and write the ledger's `signer_ip`).
+- Hop counts above `10` (a count larger than your real chain does the same as
+  `true`), negative or fractional numbers.
+- CIDRs wider than `/8` (IPv4) or `/7` (IPv6) — `0.0.0.0/1,128.0.0.0/1` is
+  `true` in disguise; `/7` keeps `fc00::/7` usable.
+- Any IPv6 entry overlapping IPv4-mapped space `::ffff:0:0/96` (e.g.
+  `::ffff:10.0.0.1`, `::ffff:0:0/96`, `::/80`) — Express matches IPv4 peers
+  against their mapped form, so these can trust every IPv4 peer. Use the plain
+  IPv4 form.
+- IPv6 written with an embedded dotted quad (`::1.2.3.4`) — use hex groups.
+- Zone ids (`fe80::1%eth0`), netmask notation (`10.0.0.0/255.0.0.0`), empty
+  entries (`a,,b`), anything else unrecognised (including `no` / `off`).
+
+A hop count is the simplest correct setting when the chain length is fixed
+(one ALB → `1`; CDN → LB → `2`). Prefer an address list when the CP is also
+reachable directly: with a hop count, a caller that bypasses the proxy is
+itself treated as the trusted hop, so its own `X-Forwarded-For` becomes
+`req.ip`.
+
+**Upgrade note.** `signer_ip` used to be the leftmost `X-Forwarded-For` entry
+whenever the header was present. It is now always `req.ip`, so a proxied
+deployment that has not set `TRUST_PROXY` records the proxy address from now
+on. Existing ledger rows (and their hash chain) are unchanged.
 
 ## Receipt audit (RFC-ACDP-0010)
 

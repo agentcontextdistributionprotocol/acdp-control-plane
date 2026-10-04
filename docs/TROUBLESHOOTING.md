@@ -136,6 +136,24 @@ A `TENANT_QUOTAS` limit for `(tenant, action)` was exceeded. The body and
 throttle (`THROTTLE_LIMIT`), which is per-principal and not action-scoped — it
 answers `429` with `errorCode: RATE_LIMITED` and no top-level `code`.
 
+### Every unauthenticated caller hits `429 RATE_LIMITED` together (behind a proxy)
+
+All `@Public()` traffic (`/auth/challenge`, `/auth/token`, `/ingest/*`,
+probes) is throttled per client IP. Behind a load balancer or ingress with
+`TRUST_PROXY` unset, `req.ip` is the proxy's address, so every caller lands in
+**one** bucket and they exhaust it together — and `signer_ip` in the issuance
+ledger shows the proxy for every token. Set `TRUST_PROXY` to your proxy hop
+count (e.g. `1`) or the proxies' CIDRs (docs/CONFIGURATION.md, "Behind a
+reverse proxy"). Never `true` — it is rejected at startup because it lets any
+client choose its own bucket.
+
+### Boot fails: "TRUST_PROXY … is rejected" / "TRUST_PROXY entry … is invalid"
+
+The value is outside the accepted grammar (see docs/CONFIGURATION.md). The
+message names the offending entry and why: `true`, a hop count above 10, a
+CIDR wider than `/8`/`/7`, an IPv4-mapped IPv6 entry, a zone id, netmask
+notation or an empty entry.
+
 ---
 
 ## SSE

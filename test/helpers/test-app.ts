@@ -4,6 +4,7 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { Test, TestingModule } from '@nestjs/testing';
 import * as promClient from 'prom-client';
 import { AppModule } from '../../src/app.module';
+import { applyTrustProxy } from '../../src/common/trust-proxy';
 import { AppConfigService } from '../../src/config/app-config.service';
 import { runMigrations } from '../../src/db/migrate';
 import { DatabaseService } from '../../src/db/database.service';
@@ -64,13 +65,15 @@ export interface TestAppOptions {
    */
   tenantQuotas?: string;
   /**
-   * Express `trust proxy` setting, applied before `listen`. The harness
+   * `TRUST_PROXY` value (e.g. `'1'`, `'loopback'`). Set before the module
+   * compiles and applied through the same `applyTrustProxy` as `bootstrap()`,
+   * so the harness trusts proxies exactly like production. The harness
    * listens on loopback, so a suite that needs a specific client address
    * (e.g. an IPv6 caller for the throttle tracker, issue #187) sets
-   * `'loopback'` and sends `X-Forwarded-For`. Unset = Express default (false),
-   * mirroring production, which configures no trust proxy.
+   * `'loopback'` or `'1'` and sends `X-Forwarded-For`. Unset = cleared
+   * (Express default, no trust), so it never leaks across suites.
    */
-  trustProxy?: boolean | string | number;
+  trustProxy?: string;
   tokenIssuance?: {
     jwtSecret: string;
     authority?: string;
@@ -160,6 +163,11 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
   } else {
     delete process.env.DOMAIN_PACKS;
   }
+  if (opts.trustProxy !== undefined) {
+    process.env.TRUST_PROXY = opts.trustProxy;
+  } else {
+    delete process.env.TRUST_PROXY;
+  }
   if (opts.tenantQuotas) {
     process.env.TENANT_QUOTAS = opts.tenantQuotas;
   } else {
@@ -223,9 +231,7 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
     }),
   );
 
-  if (opts.trustProxy !== undefined) {
-    app.set('trust proxy', opts.trustProxy);
-  }
+  applyTrustProxy(app, config.trustProxy);
 
   await app.listen(0);
   const url = await app.getUrl();

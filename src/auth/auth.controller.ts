@@ -26,8 +26,8 @@
  * and the bucket keys on caller IP — an IPv6 caller on its `/64` network
  * (`THROTTLE_IPV6_SUBNET_PREFIX`, issue #187), so rotating addresses inside
  * one allocation does not reset the 20/min budget. Operators behind a proxy
- * MUST set `app.set('trust proxy')` (a hop count or proxy CIDR, never `true`)
- * so the bucket keys on the real client, not the proxy hop.
+ * MUST set `TRUST_PROXY` (a hop count or the proxies' CIDRs; `true` is
+ * rejected at startup) so the bucket keys on the real client, not the proxy.
  */
 import {
   Body,
@@ -137,13 +137,13 @@ export class AuthController {
 }
 
 /**
- * Best-effort caller IP for audit. Prefers `X-Forwarded-For` (first
- * hop) when present — Express's `req.ip` only reflects the proxy
- * unless `app.set('trust proxy', ...)` is configured upstream.
+ * Caller IP for the issuance-ledger audit field: Express's `req.ip`, which is
+ * the real client only when `TRUST_PROXY` names the proxies in front of the
+ * control plane (see `src/common/trust-proxy.ts`). `X-Forwarded-For` is
+ * deliberately NOT read here: its leftmost entry is whatever the client
+ * wrote — spoofable with or without a proxy — and unbounded, while
+ * `signer_ip` is `varchar(64)`.
  */
-function extractIp(req: Request): string | undefined {
-  const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string') return xff.split(',')[0]!.trim();
-  if (Array.isArray(xff) && xff[0]) return xff[0];
-  return req.ip;
+export function extractIp(req: Pick<Request, 'ip'>): string | undefined {
+  return typeof req.ip === 'string' && req.ip.length > 0 ? req.ip : undefined;
 }
