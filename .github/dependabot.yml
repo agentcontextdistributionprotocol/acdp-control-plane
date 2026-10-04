@@ -54,14 +54,27 @@ updates:
       acdp-sdk:
         patterns:
           - '@agentcontextdistributionprotocol/acdp'
+      # @swc/core + @swc/jest: the Jest-only transform that down-compiles the
+      # ESM-only @nestjs/* to CJS inside Jest (issue #191). Its own group, with
+      # all three update types and excluded from both catch-alls (same reason
+      # as `nestjs` above): the native @swc/core binary and its 0.x Jest
+      # adapter must travel together and in isolation -- @swc/jest 0.x minors
+      # are effectively breaking but Dependabot files them as minor, and a
+      # green Dependabot PR auto-merges. A broken bump fails the unit job.
+      swc:
+        patterns:
+          - "@swc/*"
+        update-types: [major, minor, patch]
       minor-and-patch:
         update-types: [minor, patch]
         exclude-patterns:
           - "@nestjs/*"
+          - "@swc/*"
       major-updates:
         update-types: [major]
         exclude-patterns:
           - "@nestjs/*"
+          - "@swc/*"
   # Node runtime pin (node:26-bookworm-slim in the Dockerfile).
   - package-ecosystem: docker
     directory: /

@@ -3781,3 +3781,5 @@ cumulative verify was run.
 ## 2026-10-04 — #210 Phase 1 verifier GAPS closed in-branch (G1: @SkipThrottle moved to readyz() only until Phase 2 makes /healthz non-DB; G2 OPTIONS logger case; G3 detached-chain .catch). acdp-website configuration.mdx needs READINESS_*/DB_POOL_CONNECTION_TIMEOUT>0 follow-up (cross-repo, issue only).
 
 ## 2026-10-04 — #210 Phases 2+3 PASS (Opus verifier, 1 round, mutation checks). Follow-ups: acdp-website #45 (config page), acdp-website troubleshooting.mdx:194-197 still describes hasFatalError latch (to add to #45), acdp-ui-console #159.
+
+## 2026-10-04 — #191 PASS (Opus verifier, 1 round). swc transform for @nestjs/* only; flag removed. Advisories: tripwire(b) message scope (A1), TESTING.md .mjs note (A3).
