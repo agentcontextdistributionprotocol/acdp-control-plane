@@ -81,9 +81,9 @@ jobs:
         # skipping unnoticed on every CI run before this).
         #
         # Through `npm test` (not a bare jest call) so CI runs the exact command
-        # developers do: the script adds `--experimental-vm-modules`, without
-        # which jest cannot require() the ESM-only @nestjs/* 12 packages
-        # (issue #155; see docs/TESTING.md).
+        # developers do. No experimental Node vm flag (issue #191): the jest
+        # config down-compiles the ESM-only @nestjs/* 12 packages to CJS with
+        # @swc/jest; see docs/TESTING.md.
         run: npm test -- --testPathIgnorePatterns='/test/integration/' --ci --coverage
         env:
           NODE_ENV: test

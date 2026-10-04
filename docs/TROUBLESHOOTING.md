@@ -625,9 +625,10 @@ node: ^22.22.3 || ^24.15.0 || >=26.0.0
 which **excludes Node 23 and 25 entirely**, plus any Node 22 below 22.22.3. Since the
 NestJS 12 bump (#155) the repo also declares its own floor, `"engines": { "node": ">=24.15" }`
 in `package.json`: the tightest real floor among the tooling it runs (`@nestjs/schematics`'
-24.15; jest's `require(esm)` path needs ≥ 24.9; the Nest 12 runtime itself ≥ 20.19/22.12).
-On Node 22 you will therefore see EBADENGINE for this package too — and unit tests will fail
-to load Nest 12 there regardless (see [TESTING.md](TESTING.md)). Node 25 passes this
+24.15; the Nest 12 runtime itself ≥ 20.19/22.12). Jest no longer imposes a floor of its own:
+since #191 it down-compiles `@nestjs/*` to CommonJS with `@swc/jest` instead of relying on
+Node's experimental vm-modules API (see [TESTING.md](TESTING.md)). On Node 22 you will
+therefore see EBADENGINE for this package too, and the suites are untested there. Node 25 passes this
 package's own `>=24.15` check but still warns via `@nestjs/schematics`. Use Node 24.15+
 (24.x) or 26.
 
@@ -635,6 +636,5 @@ Where it stands today: CI and the Docker images both run **Node 26** (`node:26-b
 in the Dockerfile, `node-version: '26'` in every workflow), which satisfies the range. CI ran
 Node 22 until issue #137's finalization pass raised it so the pipeline validates the same major
 that actually ships. If you see this warning locally you are below the floor (or on Node 25). Installs still
-work, but on Node < 24.9 the unit suite cannot load NestJS 12. Moving to Node 24.15+ or 26+
-fixes both and silences the warning. Only if you have
+work, but nothing below 24.15 is tested. Moving to Node 24.15+ or 26+ silences the warning. Only if you have
 `engine-strict=true` in your own npm config does the warning become a hard install failure.

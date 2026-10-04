@@ -19,22 +19,52 @@ npm run check:conventions         # CI grep rules (no console.*, process.env, ra
 npm run check:build               # build emit shape (builds twice; catches silent no-emit)
 ```
 
-### Why the test scripts run `node --experimental-vm-modules`
+### Why Jest transforms `@nestjs/*`
 
-Every jest script (`test`, `test:watch`, `test:cov`, `test:integration`) runs
-`node --experimental-vm-modules node_modules/jest/bin/jest.js …`, and CI calls
-`npm test` rather than jest directly, so CI and developers run the same command.
-NestJS 12 ships its packages as ES modules. The app consumes them from CommonJS
-through Node's `require(esm)`, but jest's runtime only takes that path when
-`vm.SourceTextModule` exists, which needs this flag. Without it every suite fails
-to load with `Must use import to load ES Module: …/@nestjs/common/index.js`. Node
-≥ 24.9 is also required. So **`npx jest` on its own will not work** on Nest ≥ 12;
-use the npm scripts. On Nest 12 each run also prints one `ExperimentalWarning: VM
-Modules is an experimental feature` line per worker. That noise is expected.
+NestJS 12 ships its runtime packages (`@nestjs/{common,core,platform-express,testing,
+swagger,mapped-types}`) as ES modules only. The app consumes them from CommonJS
+through Node's native `require(esm)`, but Jest never hands a module to Node's
+`require`: its CommonJS runtime compiles every file into its own sandbox and can
+load ESM only through Node's experimental vm-modules API, which needs a Node flag.
+Instead of that flag (issue #191), the jest config down-compiles
+`node_modules/@nestjs/**` to CommonJS **inside Jest only**, with `@swc/jest`:
 
-IDE runners (the VS Code Jest extension, WebStorm's Jest run configs) call jest
-without going through npm. Set `NODE_OPTIONS=--experimental-vm-modules` in the
-runner's environment, or point it at `npm test --`.
+- `transform` has a `/node_modules/@nestjs/.+\.js$` → `@swc/jest` entry, listed
+  **before** the `ts-jest` entry (Jest uses the first matching key, and ts-jest's
+  `^.+\.(t|j)s$` also matches `.js`). Project TypeScript is still compiled by
+  ts-jest, which owns decorator metadata, the coverage numbers and in-spec type
+  errors.
+- `transformIgnorePatterns: ["/node_modules/(?!@nestjs/)"]` lets Jest transform
+  that one scope of `node_modules` (by default it transforms none of it).
+
+Both settings live in **two** configs that must stay in sync: the `jest` block in
+`package.json` (unit) and `test/jest.integration.config.ts` (integration). A config
+missing them fails its whole suite with `Must use import to load ES Module: …/@nestjs/…`.
+
+Production is unaffected: `dist/main.js` still loads Nest through Node's native
+`require(esm)`, and that path is exercised outside Jest by `npm run check:build`
+(boots `dist/main.js`), `test/integration/shutdown.integration.spec.ts` (spawns the
+app with `node -r ts-node/register/transpile-only`) and the release image smoke test.
+
+Consequences:
+
+- `npm test`, `npx jest`, `node node_modules/jest/bin/jest.js` and IDE runners (the VS
+  Code Jest extension, WebStorm's Jest run configs) all work with no extra flags or
+  `NODE_OPTIONS`. No `ExperimentalWarning` lines are printed.
+- Inside Jest, Nest is ordinary CommonJS in Jest's module registry, so
+  `jest.resetModules()` / `jest.isolateModules()` re-instantiate Nest modules too. A
+  spec comparing a Nest class across an isolation boundary would see two identities.
+- **A new ESM-only dependency** fails with `Must use import to load ES Module: …/<pkg>/…`.
+  Add it to **both** the transform key regex and the `transformIgnorePatterns`
+  negative lookahead (e.g. `/node_modules/(@nestjs|newpkg)/.+\.js$` and
+  `/node_modules/(?!(@nestjs|newpkg)/)`), in **both** configs. Do not re-add the
+  experimental vm-modules flag: it would make Jest's ESM fallback silently load the
+  package and hide the missing entry.
+- `src/test-harness.spec.ts` is the tripwire for this setup: it fails if the flag
+  comes back (via `process.execArgv` or `NODE_OPTIONS`), and it fails — on the Nest
+  Dependabot PR — the day `@nestjs/common` / `@nestjs/core` start resolving `require`
+  to a CommonJS file, at which point the swc transform and `transformIgnorePatterns`
+  should be deleted from both configs in that same PR.
 
 Coverage thresholds live in the `jest.coverageThreshold` block in `package.json`
 (statements 70 / branches 58 / functions 55 / lines 70). CI runs the unit suite

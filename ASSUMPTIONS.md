@@ -1150,7 +1150,7 @@
   diverge from production's `require(esm)` or migrate frameworks.
 - **Blast radius if wrong:** Medium — a Node release changing/removing the flag
   breaks every test run (loudly).
-- **Status:** CONFIRMED (2026-10-03) — decided by Opus; tracking issue #201 to drop the flag
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus — SUPERSEDED (#191, 2026-10-04): the flag is gone; Jest down-compiles `@nestjs/*` to CJS with `@swc/jest` (see the "Jest down-compiles `@nestjs/*` ESM" entry below). The tracking issue was #191, not #201 (#201 was closed as its duplicate).
 
 ## Only the four resource-owning destroy hooks feed the exit-code collector (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 4, Open question 1 option b)
@@ -1170,7 +1170,7 @@
   not obscure CI output, and `--disable-warning=ExperimentalWarning` would also
   hide unrelated experimental-feature warnings, so it is not added.
 - **Blast radius if wrong:** Low — log noise only.
-- **Status:** CONFIRMED (2026-10-03) — decided by Opus
+- **Status:** CONFIRMED (2026-10-03) — decided by Opus — SUPERSEDED (#191, 2026-10-04): moot — without the flag a unit run prints 0 `ExperimentalWarning` lines.
 
 ## `engines.node` is ">=24.15", and Dependabot excludes `@nestjs/*` from catch-alls (issue #155)
 - **Plan:** `plans/nestjs-12-155.md` (Phase 5, Open questions 4 and 5)
@@ -1674,3 +1674,32 @@
     measured evidence (`ok:false` forever).
 - **Blast radius if wrong:** Low (test-only).
 - **Status:** UNCONFIRMED (2026-10-04)
+
+## Jest down-compiles `@nestjs/*` ESM to CJS via `@swc/jest`; production keeps native `require(esm)` (issue #191)
+- **Plan:** `plans/jest-esm-no-flag-191.md` (Phases 1-2, Variant C)
+- **Assumed:** transforming only `node_modules/@nestjs/**` with `@swc/jest`
+  (`module.type: commonjs`, `importInterop: node`; ts-jest unchanged for project
+  TS) is an acceptable test-only divergence from production, where `dist/main.js`
+  loads Nest through Node's native `require(esm)`. Measured on Node 26.8.1: identical
+  pass counts and a byte-identical coverage summary vs the flagged run, 0
+  `ExperimentalWarning`, ~4 % on a cold unit run.
+- **Chose:** Variant C over keeping `--experimental-vm-modules` + a tripwire. The
+  call was **narrow**: the status quo cost zero dependencies and kept Nest as real
+  ESM in Jest. C won mainly because it is the first step to Option D (swc for project
+  TS too), which would remove ts-jest's `typescript <7` peer, one of #156 Phase 3's
+  gates. **Re-evaluate if Option D is never adopted.** On its own merits C buys a
+  cleaner invocation (`npx jest`/IDE runners work) for two native dev dependencies.
+- **Alternatives:** ts-jest `allowJs` (cannot compile `import.meta` / the shadowed
+  `require`); babel-jest (needs a bespoke rename plugin plus Babel-7 plugin majors
+  that `ERESOLVE` against Babel 8 peers); wait for Jest/Node (no release changes
+  the gate); ESM output / Vitest (app-wide migrations); `--disable-warning` (hides
+  the symptom, keeps the experimental API).
+- **Maintenance risk (accepted):** `@swc/jest` 0.2.39 was last published
+  2025-07-09; a Jest 31 could strand it. Dependabot's `swc` group surfaces bumps in
+  isolation; fallbacks are babel-jest (Variant B, measured working) or the flag.
+- **Blast radius if wrong:** Low-Medium — a Nest change that breaks only native
+  loading is not caught by unit specs, but is caught by `check:build` (boots
+  `dist/main.js`), `test/integration/shutdown.integration.spec.ts` (spawns the app
+  outside Jest) and the release image smoke test. `src/test-harness.spec.ts` fails
+  if the flag returns or Nest starts resolving `require` to a CJS file.
+- **Status:** UNCONFIRMED (2026-10-04) — Variant C decided by Opus in plan review round 1
