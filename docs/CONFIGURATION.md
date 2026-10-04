@@ -130,7 +130,7 @@ See [INGEST.md](./INGEST.md).
 |-----|------|---------|---------|
 | `THROTTLE_TTL_MS` | number | `60000` | Throttle window per `(actorId\|ip)`. |
 | `THROTTLE_LIMIT` | number | `200` | Requests per window. `/auth/*` uses a tighter override. |
-| `THROTTLE_IPV6_SUBNET_PREFIX` | integer `1`–`128` | `64` | Prefix an unauthenticated IPv6 caller's address is collapsed to before keying. Out-of-range or fractional values fail startup (every environment). `128` = per-address. |
+| `THROTTLE_IPV6_SUBNET_PREFIX` | integer `1`–`128` | `64` | Prefix an unauthenticated IPv6 caller's address is collapsed to before keying. Anything but a decimal integer in range — out-of-range, fractional, or non-numeric (`/48`, `sixty-four`, `0x40`, `1e2`, empty) — fails startup (every environment) — a set value is never silently replaced by `64`. `128` = per-address. |
 | `TRUST_PROXY` | hop count \| address list | unset (off) | Express `trust proxy` — which reverse proxies may set the client address via `X-Forwarded-For`. See **Behind a reverse proxy** below. Invalid values (including `true`) fail startup in every environment. |
 
 **Tracker.** An authenticated request (API key or bearer JWT) is keyed on its
@@ -186,6 +186,24 @@ A hop count is the simplest correct setting when the chain length is fixed
 reachable directly: with a hop count, a caller that bypasses the proxy is
 itself treated as the trusted hop, so its own `X-Forwarded-For` becomes
 `req.ip`.
+
+`uniquelocal` (and a private CIDR such as `172.16.0.0/12`) is a bypass case
+too, not only hop counts: Docker Desktop presents every peer reaching a
+*published port* as its gateway address (and on Linux, Docker's
+`userland-proxy` does the same for host-loopback/hairpin connections, e.g.
+`172.17.0.1`) — inside `uniquelocal`. A direct caller is then
+"trusted", and its own `X-Forwarded-For` becomes `req.ip`. Trust the proxy's
+specific address instead, or do not publish the CP's port.
+
+**Over-trust makes `req.ip` client text.** If the hop count exceeds the real
+chain, or a trusted proxy forwards the client's `X-Forwarded-For` verbatim
+instead of appending to it, `req.ip` is an untrusted header entry — not
+necessarily even an IP address. The issuance ledger is guarded: `signer_ip`
+is recorded only when `req.ip` is a valid IP literal of at most 64 characters
+(the column width — `isIP` alone would accept an arbitrarily long IPv6 zone
+id), otherwise it is left empty, so `/auth/token` never fails on it. Throttle bucketing is not: an
+unauthenticated caller can still choose its own bucket per request, so get
+the setting right.
 
 **Upgrade note.** `signer_ip` used to be the leftmost `X-Forwarded-For` entry
 whenever the header was present. It is now always `req.ip`, so a proxied

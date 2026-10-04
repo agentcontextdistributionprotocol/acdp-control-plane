@@ -73,9 +73,39 @@ describe('AppConfigService', () => {
       }
     });
 
-    it('falls back to 64 on non-numeric input (readNumber semantics)', () => {
-      process.env.THROTTLE_IPV6_SUBNET_PREFIX = 'sixty-four';
-      expect(freshConfig().throttleIpv6SubnetPrefix).toBe(64);
+    it.each(['development', 'production'])(
+      'fails startup on a set but non-numeric value in %s (no silent fallback to 64)',
+      (env) => {
+        process.env.NODE_ENV = env;
+        process.env.AUTH_API_KEYS = 'k';
+        process.env.WEBHOOK_SECRET = 'shh';
+        for (const v of ['sixty-four', '/48', '64/', 'Infinity', 'NaN', '0x', '0x40', '1e2', '', '  ']) {
+          process.env.THROTTLE_IPV6_SUBNET_PREFIX = v;
+          expect(() => freshConfig().onModuleInit()).toThrow(/THROTTLE_IPV6_SUBNET_PREFIX/);
+        }
+      },
+    );
+
+    it('names the offending raw value in the startup error', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.THROTTLE_IPV6_SUBNET_PREFIX = '/48';
+      expect(() => freshConfig().onModuleInit()).toThrow('(got "/48")');
+    });
+
+    it('accepts a decimal integer with surrounding whitespace', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.THROTTLE_IPV6_SUBNET_PREFIX = ' 56 ';
+      const cfg = freshConfig();
+      expect(cfg.throttleIpv6SubnetPrefix).toBe(56);
+      expect(() => cfg.onModuleInit()).not.toThrow();
+    });
+
+    it('unset still defaults to 64 and passes validation', () => {
+      process.env.NODE_ENV = 'development';
+      delete process.env.THROTTLE_IPV6_SUBNET_PREFIX;
+      const cfg = freshConfig();
+      expect(cfg.throttleIpv6SubnetPrefix).toBe(64);
+      expect(() => cfg.onModuleInit()).not.toThrow();
     });
 
     it.each(['development', 'production'])(
