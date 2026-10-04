@@ -144,11 +144,13 @@ export class WitnessSigningService {
       const didHost = didWebAuthority(witnessId);
       const publicHost = normalizeHost(config.publicHost ?? '');
       if (publicHost === '') {
-        this.logger.warn(
-          `WITNESS_ID is a did:web (${witnessId}) but PUBLIC_HOST is not set — cannot verify the ` +
-            `witness DID resolves to this control plane. Set PUBLIC_HOST to this CP's externally ` +
-            `resolvable host so a consumer's resolver reaches /.well-known/did.json here.`,
-        );
+        this.logger.warn({
+          msg:
+            'WITNESS_ID is a did:web but PUBLIC_HOST is not set — cannot verify the ' +
+            'witness DID resolves to this control plane. Set PUBLIC_HOST to this CP\'s externally ' +
+            'resolvable host so a consumer\'s resolver reaches /.well-known/did.json here.',
+          witnessId,
+        });
       } else if (didHost !== publicHost) {
         throw new WitnessConfigError(
           `WITNESS_ID '${witnessId}' encodes host '${didHost}', which does not match this control ` +
@@ -165,11 +167,15 @@ export class WitnessSigningService {
     this.publicKeyB64 = Buffer.from(rawPub).toString('base64');
     this.publicKeyMultibase = encodeEd25519Multibase(rawPub);
     this.signer = nodeWitnessSigner(witnessId, keyId, priv);
-    this.logger.log(
-      `witness cosigning enabled: witness_id=${witnessId} key_id=${keyId} ` +
-        `pubkey=${this.publicKeyB64} ` +
-        `mint=${sdkHasCosignatureSurface() ? 'acdp-binding (native RFC-ACDP-0015 §5)' : 'host TS (§5 fallback; binding predates the cosignature API)'}`,
-    );
+    this.logger.log({
+      msg: 'witness cosigning enabled',
+      witnessId,
+      keyId,
+      pubkey: this.publicKeyB64,
+      mint: sdkHasCosignatureSurface()
+        ? 'acdp-binding (native RFC-ACDP-0015 §5)'
+        : 'host TS (§5 fallback; binding predates the cosignature API)',
+    });
   }
 
   /**

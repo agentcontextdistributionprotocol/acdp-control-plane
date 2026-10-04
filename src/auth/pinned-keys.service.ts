@@ -82,9 +82,10 @@ export class PinnedKeysService implements OnModuleInit {
         // so lastIndexOf would mis-split on padded 44-char keys.
         const eq = trimmed.indexOf('=');
         if (eq < 0) {
-          this.logger.warn(
-            `Skipping malformed CONTROL_PLANE_PINNED_KEYS entry (no '='): '${trimmed}'`,
-          );
+          this.logger.warn({
+            msg: "Skipping malformed CONTROL_PLANE_PINNED_KEYS entry (no '=')",
+            entry: trimmed,
+          });
           continue;
         }
         const did = trimmed.slice(0, eq).trim();
@@ -104,14 +105,16 @@ export class PinnedKeysService implements OnModuleInit {
           });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          this.logger.warn(
-            `Skipping CONTROL_PLANE_PINNED_KEYS entry for '${did}': ${msg}`,
-          );
+          this.logger.warn({
+            msg: 'Skipping CONTROL_PLANE_PINNED_KEYS entry',
+            did,
+            error: msg,
+          });
         }
       }
     }
     this.keys = next;
-    this.logger.log(`Loaded ${this.keys.size} pinned key(s)`);
+    this.logger.log({ msg: 'Loaded pinned key(s)', count: this.keys.size });
     return this.keys.size;
   }
 

@@ -89,20 +89,23 @@ export class LogInclusionAuditService implements OnModuleInit, OnModuleDestroy {
     const intervalMs = this.config.logInclusionAuditIntervalSeconds * 1000;
     this.timer = setInterval(() => {
       void this.sweep().catch((err) =>
-        this.logger.warn(`log-inclusion audit sweep failed: ${msgOf(err)}`),
+        this.logger.warn({ msg: 'log-inclusion audit sweep failed', error: msgOf(err) }),
       );
     }, intervalMs);
     if (typeof this.timer === 'object' && 'unref' in this.timer) {
       this.timer.unref();
     }
-    this.logger.log(
-      `log-inclusion audit enabled: interval=${this.config.logInclusionAuditIntervalSeconds}s ` +
-        `batch=${this.config.logInclusionAuditBatchSize} ` +
-        `lookback=${this.config.logInclusionAuditLookbackHours}h ` +
-        `verification=${sdkHasLogSurface() ? 'acdp-binding (native §9.1 fold)' : 'host (§5/§9 over SDK JCS + Ed25519; binding predates the log API)'}`,
-    );
+    this.logger.log({
+      msg: 'log-inclusion audit enabled',
+      intervalSeconds: this.config.logInclusionAuditIntervalSeconds,
+      batch: this.config.logInclusionAuditBatchSize,
+      lookbackHours: this.config.logInclusionAuditLookbackHours,
+      verification: sdkHasLogSurface()
+        ? 'acdp-binding (native §9.1 fold)'
+        : 'host (§5/§9 over SDK JCS + Ed25519; binding predates the log API)',
+    });
     void this.sweep().catch((err) =>
-      this.logger.warn(`initial log-inclusion audit sweep failed: ${msgOf(err)}`),
+      this.logger.warn({ msg: 'initial log-inclusion audit sweep failed', error: msgOf(err) }),
     );
   }
 
@@ -133,10 +136,13 @@ export class LogInclusionAuditService implements OnModuleInit, OnModuleDestroy {
         await this.auditRepo.record(this.toRow(ev, verdict));
         this.instrumentation.logInclusionAuditsTotal.inc({ status: verdict.status });
         if (verdict.status === 'invalid_proof' || verdict.status === 'not_logged') {
-          this.logger.warn(
-            `log-inclusion ${verdict.status} ctx=${ev.ctxId ?? '?'} ` +
-              `registry=${ev.registryAuthority}: ${verdict.detail.join('; ')}`,
-          );
+          this.logger.warn({
+            msg: 'log-inclusion audit verdict',
+            status: verdict.status,
+            ctxId: ev.ctxId ?? '?',
+            registry: ev.registryAuthority,
+            detail: verdict.detail.join('; '),
+          });
         }
       }
       return events.length;

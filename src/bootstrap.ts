@@ -129,7 +129,7 @@ export async function bootstrap(rootModule: Type<unknown> = AppModule): Promise<
 /** Log a failed boot and exit 1. Shared by `main.ts` and test entrypoints. */
 export function reportBootstrapFailure(err: unknown): never {
   new Logger('Bootstrap').error(
-    `bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
+    { msg: 'bootstrap failed', error: err instanceof Error ? err.message : String(err) },
     err instanceof Error ? err.stack : undefined,
   );
   process.exit(1);

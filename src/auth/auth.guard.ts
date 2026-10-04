@@ -83,7 +83,7 @@ export class AuthGuard implements CanActivate {
         claims = await this.jwtValidator.verify(token);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        this.logger.warn(`JWT auth rejected: ${msg}`);
+        this.logger.warn({ msg: 'JWT auth rejected', error: msg });
         throw new UnauthorizedException('Invalid authorization token');
       }
       // Local issuance: DIDs are the canonical subject. Federated
@@ -119,9 +119,12 @@ export class AuthGuard implements CanActivate {
       assertNotReservedTenant(claimTenant, 'token claim');
       assertNotReservedTenant(headerTenant, 'X-Tenant-Id header');
       if (claimTenant && headerTenant && headerTenant !== claimTenant) {
-        this.logger.warn(
-          `tenant assertion mismatch: claim=${claimTenant} header=${headerTenant} sub=${claims.sub}`,
-        );
+        this.logger.warn({
+          msg: 'tenant assertion mismatch',
+          claimTenant,
+          headerTenant,
+          sub: claims.sub,
+        });
         throw new AppException(
           ErrorCode.TENANT_MISMATCH,
           'X-Tenant-Id does not match the tenant the token was issued under',
@@ -132,7 +135,7 @@ export class AuthGuard implements CanActivate {
       // `tenant` claim — cannot assert a tenant via the spoofable header,
       // so default-deny it. Mirrors the registry's `require_tenant`.
       if (this.config.requireTenant && !claimTenant) {
-        this.logger.warn(`strict tenant: token has no tenant claim (sub=${claims.sub})`);
+        this.logger.warn({ msg: 'strict tenant: token has no tenant claim', sub: claims.sub });
         throw new AppException(
           ErrorCode.TENANT_REQUIRED,
           'tenant required: token carries no tenant claim (AUTH_REQUIRE_TENANT)',
@@ -181,9 +184,11 @@ export class AuthGuard implements CanActivate {
       apiKeyHeaderTenant &&
       apiKeyHeaderTenant !== keyTenant
     ) {
-      this.logger.warn(
-        `tenant assertion mismatch: key-bound=${keyTenant} header=${apiKeyHeaderTenant}`,
-      );
+      this.logger.warn({
+        msg: 'tenant assertion mismatch',
+        keyTenant,
+        headerTenant: apiKeyHeaderTenant,
+      });
       throw new AppException(
         ErrorCode.TENANT_MISMATCH,
         'X-Tenant-Id does not match the tenant this API key is bound to',

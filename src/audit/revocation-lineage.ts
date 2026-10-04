@@ -286,14 +286,14 @@ export async function walkRevocationLineage(
   const rawMembers: { body: Record<string, unknown>; ctxId: string | undefined }[] = [];
   for (const item of raw) {
     if (item === null || typeof item !== 'object') {
-      deps.logger.warn(`lineage walk: skipping non-object member in lineage='${params.lineageId}'`);
+      deps.logger.warn({ msg: 'lineage walk: skipping non-object member', lineageId: params.lineageId });
       continue;
     }
     const full = item as Record<string, unknown>;
     const body =
       full['body'] !== null && typeof full['body'] === 'object' ? (full['body'] as Record<string, unknown>) : undefined;
     if (!body) {
-      deps.logger.warn(`lineage walk: skipping member with no body in lineage='${params.lineageId}'`);
+      deps.logger.warn({ msg: 'lineage walk: skipping member with no body', lineageId: params.lineageId });
       continue;
     }
     rawMembers.push({ body, ctxId: strOf(body['ctx_id']) });
@@ -319,7 +319,10 @@ export async function walkRevocationLineage(
     // fold, never treat as an error, never let it disarm anything.
     if (!contextType || !isRevocationContextType(contextType)) continue;
     if (!m.ctxId) {
-      deps.logger.warn(`lineage walk: dropped revocation-typed member with no ctx_id in lineage='${params.lineageId}'`);
+      deps.logger.warn({
+        msg: 'lineage walk: dropped revocation-typed member with no ctx_id',
+        lineageId: params.lineageId,
+      });
       continue;
     }
     const bodyJson = JSON.stringify(m.body);
@@ -357,26 +360,35 @@ export async function walkRevocationLineage(
         };
       case 'invalid':
         // Rule 2: dropped with a warning, remaining members still fold.
-        deps.logger.warn(
-          `lineage walk: dropped member ctx='${m.ctxId}' lineage='${params.lineageId}' (failed verification): ${verdict.reason ?? ''}`,
-        );
+        deps.logger.warn({
+          msg: 'lineage walk: dropped member (failed verification)',
+          ctxId: m.ctxId,
+          lineageId: params.lineageId,
+          reason: verdict.reason ?? '',
+        });
         continue;
       case 'unsupported':
         // Same Rule-2-shaped drop as 'invalid' (never abort, remaining
         // members still fold) but logged distinguishably: a capability gap
         // (e.g. an ecdsa-p256 signer), not a failed verification — see
         // issue #170 / ASSUMPTIONS.md §"ecdsa-p256 revocation signers".
-        deps.logger.warn(
-          `lineage walk: dropped member ctx='${m.ctxId}' lineage='${params.lineageId}' (unsupported algorithm, capability gap): ${verdict.reason ?? ''}`,
-        );
+        deps.logger.warn({
+          msg: 'lineage walk: dropped member (unsupported algorithm, capability gap)',
+          ctxId: m.ctxId,
+          lineageId: params.lineageId,
+          reason: verdict.reason ?? '',
+        });
         continue;
       case 'verified':
         break;
       default: {
         const _exhaustive: never = verdict.status;
-        deps.logger.warn(
-          `lineage walk: dropped member ctx='${m.ctxId}' lineage='${params.lineageId}' (unexpected status '${String(_exhaustive)}')`,
-        );
+        deps.logger.warn({
+          msg: 'lineage walk: dropped member (unexpected status)',
+          ctxId: m.ctxId,
+          lineageId: params.lineageId,
+          status: String(_exhaustive),
+        });
         continue;
       }
     }

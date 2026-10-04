@@ -53,11 +53,11 @@ describe('scripts/ci-conventions.sh', () => {
     for (const root of scratchRoots) rmSync(root, { recursive: true, force: true });
   });
 
-  it('passes on the real src/ tree and prints exactly eight ✓ checks', () => {
+  it('passes on the real src/ tree and prints exactly ten ✓ checks', () => {
     const { status, out } = runScript('src');
     expect(out).not.toMatch(/✗/);
     expect(status).toBe(0);
-    expect(out.match(/✓/g) ?? []).toHaveLength(8);
+    expect(out.match(/✓/g) ?? []).toHaveLength(10);
   });
 
   // ── Check 7: unlabelled 403/404s (#182) ────────────────────────────────
@@ -130,6 +130,125 @@ describe('scripts/ci-conventions.sh', () => {
     expect(out).toContain(
       '✓ no unlabelled BadGateway/ServiceUnavailable/GatewayTimeout exceptions',
     );
+  });
+
+  // ── Check 8b: gateway statuses through the generic HttpException ──────
+  //
+  // Perl multi-line scan; proven to fire for every status spelling, both
+  // single-line and prettier-wrapped (the realistic form in src/).
+
+  const GATEWAY_RULE = 'no unlabelled HttpException(…, 502|503|504)';
+  const GATEWAY_STATUSES = [
+    '502',
+    '503',
+    '504',
+    'HttpStatus.BAD_GATEWAY',
+    'HttpStatus.SERVICE_UNAVAILABLE',
+    'HttpStatus.GATEWAY_TIMEOUT',
+  ];
+
+  it.each(GATEWAY_STATUSES)('fails on a single-line `new HttpException(x, %s)`', (status) => {
+    const dir = scratchTree({
+      'gw.ts': ['export function f(): never {', `  throw new HttpException('x', ${status});`, '}'].join('\n'),
+    });
+    const res = runScript(dir);
+    expect(res.status).not.toBe(0);
+    expect(res.out).toContain(`✗ ${GATEWAY_RULE}`);
+    expect(res.out).toContain('gw.ts:2:');
+  });
+
+  it.each(GATEWAY_STATUSES)('fails on a wrapped, nested-paren `new HttpException(…, %s)`', (status) => {
+    const dir = scratchTree({
+      'gw.ts': [
+        'export function f(a: string): never {',
+        '  throw new HttpException(',
+        '    { message: fmt(a, (b) => b), when: Date.now() },',
+        `    ${status},`,
+        '  );',
+        '}',
+      ].join('\n'),
+    });
+    const res = runScript(dir);
+    expect(res.status).not.toBe(0);
+    expect(res.out).toContain(`✗ ${GATEWAY_RULE}`);
+    expect(res.out).toContain('gw.ts:2:');
+  });
+
+  it('rule 8b allows AppException(…, BAD_GATEWAY), non-gateway HttpExceptions, near-misses, comments and specs', () => {
+    const dir = scratchTree({
+      'ok.ts': [
+        'export const a = new AppException(ErrorCode.FEDERATION_UPSTREAM_ERROR, \'m\', HttpStatus.BAD_GATEWAY);',
+        'export const b = new AppException(',
+        '  ErrorCode.FEDERATION_UPSTREAM_RATE_LIMITED,',
+        '  \'m\',',
+        '  HttpStatus.SERVICE_UNAVAILABLE,',
+        ');',
+        'export const c = new HttpException(\'slow down\', 429);',
+        'export const d = new HttpException({ code: \'x\' }, HttpStatus.FORBIDDEN);',
+        'export const e = new HttpException(\'x\', 5020);',
+        'export const g = new HttpException(\'x\', 1.502);',
+        'export const h = new HttpException(\'x\', HttpStatus.BAD_GATEWAY_X);',
+        '// never: new HttpException(\'x\', 502)',
+        '/**',
+        ' * nor new HttpException(\'y\', HttpStatus.GATEWAY_TIMEOUT)',
+        ' */',
+      ].join('\n'),
+      'thing.spec.ts': "expect(() => { throw new HttpException('x', 503); }).toThrow();\n",
+    });
+    const res = runScript(dir);
+    expect(res.out).toContain(`✓ ${GATEWAY_RULE}`);
+    expect(res.status).toBe(0);
+  });
+
+  // ── Check 9: template-literal log messages ─────────────────────────────
+
+  const TPL_RULE = 'no template-literal log messages';
+
+  it.each([
+    ['this.logger single-line', ['  this.logger.warn(`sweep failed: ${err}`);']],
+    ['deps.logger wrapped', ['  deps.logger.error(', '    `lineage ${id} broke`,', '    stack,', '  );']],
+    ['bare logger', ['  logger.log(`count=${n}`);']],
+    ['inline new Logger(...)', ["  new Logger('Boot').error(`failed: ${e}`, s);"]],
+    ['static Logger', ['  Logger.debug(`x ${y}`);']],
+    ['optional-chained this.logger?.', ['  this.logger?.warn(', '    `quit failed: ${e}`,', '  );']],
+    ['non-null logger!.', ['  logger!.warn(`x ${y}`);']],
+    ['log receiver', ['  this.log.warn(`x ${y}`);']],
+  ])('fails on %s', (_name, lines) => {
+    const dir = scratchTree({
+      'tpl.ts': ['export function f(): void {', ...lines, '}'].join('\n'),
+    });
+    const res = runScript(dir);
+    expect(res.status).not.toBe(0);
+    expect(res.out).toContain(`✗ ${TPL_RULE}`);
+    expect(res.out).toContain('tpl.ts:2:');
+  });
+
+  it('fails (does not vacuously pass) when the source directory is missing', () => {
+    const res = runScript(join(tmpdir(), 'acdp-conventions-does-not-exist'));
+    expect(res.status).not.toBe(0);
+    expect(res.out).toContain('does not exist');
+  });
+
+  it('rule 9 allows structured objects, interpolation-free literals, msg templates, comments and specs', () => {
+    const dir = scratchTree({
+      'ok.ts': [
+        'export function f(): void {',
+        "  this.logger.warn({ msg: 'sweep failed', error: String(err) });",
+        '  this.logger.log(`static message`);',
+        '  dialog.warn(`not a logger ${x}`);',
+        '  this.catalog.log(`not a logger ${x}`);',
+        '  this.logger.log({ msg: `${method} ${url}`, method, url });',
+        '  // this.logger.warn(`old ${x}`);',
+        '  /*',
+        '   * logger.error(`doc example ${y}`)',
+        '   */',
+        '}',
+      ].join('\n'),
+      'thing.spec.ts': 'logger.warn(`spec ${x}`);\n',
+    });
+    const res = runScript(dir);
+    expect(res.out).toContain(`✓ ${TPL_RULE}`);
+    expect(res.status).toBe(0);
   });
 
   // ── Check 6: the SDK-surface shim hole ─────────────────────────────────

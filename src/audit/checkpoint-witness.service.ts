@@ -167,25 +167,31 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     const intervalMs = this.config.logWitnessIntervalSeconds * 1000;
     this.timer = setInterval(() => {
       void this.sweep().catch((err) =>
-        this.logger.warn(`log-witness sweep failed: ${msgOf(err)}`),
+        this.logger.warn({ msg: 'log-witness sweep failed', error: msgOf(err) }),
       );
     }, intervalMs);
     if (typeof this.timer === 'object' && 'unref' in this.timer) {
       this.timer.unref();
     }
-    this.logger.log(
-      `checkpoint witness enabled: interval=${this.config.logWitnessIntervalSeconds}s ` +
-        `excluded=[${this.config.logWitnessExcludeAuthorities.join(',')}] ` +
-        `verification=${sdkHasLogSurface() ? 'acdp-binding (native §9.2 fold)' : 'host (§5/§9 over SDK JCS + Ed25519; binding predates the log API)'} ` +
-        `cosigning=${
-          this.witnessSigning.enabled
-            ? `on (RFC-ACDP-0015, witness_id=${this.witnessSigning.witnessId}, ` +
-              `mint=${sdkHasCosignatureSurface() ? 'acdp-binding (native §5 buildWitnessCosignature)' : 'host (§5 over SDK JCS + Ed25519; binding predates the cosignature API)'})`
-            : 'off (detect-only)'
-        }`,
-    );
+    this.logger.log({
+      msg: 'checkpoint witness enabled',
+      intervalSeconds: this.config.logWitnessIntervalSeconds,
+      excluded: this.config.logWitnessExcludeAuthorities.join(','),
+      verification: sdkHasLogSurface()
+        ? 'acdp-binding (native §9.2 fold)'
+        : 'host (§5/§9 over SDK JCS + Ed25519; binding predates the log API)',
+      cosigning: this.witnessSigning.enabled
+        ? 'on (RFC-ACDP-0015)'
+        : 'off (detect-only)',
+      witnessId: this.witnessSigning.enabled ? this.witnessSigning.witnessId : null,
+      mint: this.witnessSigning.enabled
+        ? sdkHasCosignatureSurface()
+          ? 'acdp-binding (native §5 buildWitnessCosignature)'
+          : 'host (§5 over SDK JCS + Ed25519; binding predates the cosignature API)'
+        : null,
+    });
     void this.sweep().catch((err) =>
-      this.logger.warn(`initial log-witness sweep failed: ${msgOf(err)}`),
+      this.logger.warn({ msg: 'initial log-witness sweep failed', error: msgOf(err) }),
     );
   }
 
@@ -211,9 +217,11 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         try {
           outcomes.push(await this.witnessRegistry(enrollment));
         } catch (err) {
-          this.logger.warn(
-            `log-witness pass for '${enrollment.authority}' crashed: ${msgOf(err)}`,
-          );
+          this.logger.warn({
+            msg: 'log-witness pass crashed',
+            authority: enrollment.authority,
+            error: msgOf(err),
+          });
           await this.recordFailureSafe(enrollment.tenantId, enrollment.authority);
           outcomes.push({
             authority: enrollment.authority,
@@ -390,10 +398,13 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       });
       await this.cosignSafe(tenantId, authority, checkpoint);
       this.instrumentation.logWitnessChecksTotal.inc({ result: 'witnessed' });
-      this.logger.log(
-        `witnessed first checkpoint of '${checkpoint.log_id}' at size ${checkpoint.tree_size}` +
-          quorumSuffix(quorum),
-      );
+      this.logger.log({
+        msg: 'witnessed first checkpoint',
+        logId: checkpoint.log_id,
+        treeSize: checkpoint.tree_size,
+        witnessedCount: quorum.witnessedCount,
+        meetsQuorum: quorum.meetsQuorum,
+      });
       return { authority, status: 'witnessed' };
     }
 
@@ -540,10 +551,14 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     // retained head verified) — only NOW may we cosign.
     await this.cosignSafe(tenantId, authority, checkpoint);
     this.instrumentation.logWitnessChecksTotal.inc({ result: 'witnessed' });
-    this.logger.log(
-      `witnessed '${checkpoint.log_id}' ${prior.size}→${checkpoint.tree_size} (consistency verified)` +
-        quorumSuffix(quorum),
-    );
+    this.logger.log({
+      msg: 'witnessed checkpoint (consistency verified)',
+      logId: checkpoint.log_id,
+      priorSize: prior.size,
+      treeSize: checkpoint.tree_size,
+      witnessedCount: quorum.witnessedCount,
+      meetsQuorum: quorum.meetsQuorum,
+    });
     return { authority, status: 'witnessed' };
   }
 
@@ -583,7 +598,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
       );
       if (!minted.ok) {
         this.instrumentation.logCosignaturesTotal.inc({ result: 'error' });
-        this.logger.warn(`cosignature mint failed for '${authority}': ${minted.reason}`);
+        this.logger.warn({ msg: 'cosignature mint failed', authority, error: minted.reason });
         return;
       }
       const cosig = minted.cosignature;
@@ -605,14 +620,16 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         result: row === null ? 'duplicate' : 'minted',
       });
       if (row !== null) {
-        this.logger.log(
-          `cosigned '${cosig.witnessed_checkpoint.log_id}' at size ` +
-            `${cosig.witnessed_checkpoint.tree_size} (${minted.cosignatureHash})`,
-        );
+        this.logger.log({
+          msg: 'cosigned checkpoint',
+          logId: cosig.witnessed_checkpoint.log_id,
+          treeSize: cosig.witnessed_checkpoint.tree_size,
+          cosignatureHash: minted.cosignatureHash,
+        });
       }
     } catch (err) {
       this.instrumentation.logCosignaturesTotal.inc({ result: 'error' });
-      this.logger.warn(`failed to persist cosignature for '${authority}': ${msgOf(err)}`);
+      this.logger.warn({ msg: 'failed to persist cosignature', authority, error: msgOf(err) });
     }
   }
 
@@ -652,9 +669,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
   ): Promise<WitnessOutcome> {
     this.instrumentation.logWitnessAlertsTotal.inc({ reason });
     this.instrumentation.logWitnessChecksTotal.inc({ result: 'alert' });
-    this.logger.warn(
-      `LOG WITNESS ALERT registry='${authority}' reason=${reason}: ${String(detail.error ?? '')}`,
-    );
+    this.logger.warn({
+      msg: 'LOG WITNESS ALERT',
+      authority,
+      reason,
+      error: String(detail.error ?? ''),
+    });
     const previous = await this.witnessRepo.markAlert({ tenantId, authority, reason, detail });
 
     const isTransition = !previous.wasAlerted || previous.previousReason !== reason;
@@ -747,9 +767,11 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         );
       }
     } catch (err) {
-      this.logger.warn(
-        `failed to persist witnessed checkpoint for '${authority}': ${msgOf(err)}`,
-      );
+      this.logger.warn({
+        msg: 'failed to persist witnessed checkpoint',
+        authority,
+        error: msgOf(err),
+      });
     }
   }
 
@@ -802,9 +824,11 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
           if (decoded.ok) {
             witnessKeysB64[cosig.witness_id] = decoded.publicKey.toString('base64');
           } else {
-            this.logger.debug(
-              `witness key undecodable for quorum (did:key '${cosig.witness_id}'): ${decoded.reason}`,
-            );
+            this.logger.debug({
+              msg: 'witness key undecodable for quorum (did:key)',
+              witnessId: cosig.witness_id,
+              error: decoded.reason,
+            });
           }
           continue;
         }
@@ -813,9 +837,11 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
           witnessKeysB64[cosig.witness_id] = resolved.publicKeyB64;
           if (resolved.historical) historicalWitnessIds.add(cosig.witness_id);
         } catch (err) {
-          this.logger.debug(
-            `witness key '${cosig.signature.key_id}' unresolved for quorum: ${msgOf(err)}`,
-          );
+          this.logger.debug({
+            msg: 'witness key unresolved for quorum',
+            keyId: cosig.signature.key_id,
+            error: msgOf(err),
+          });
         }
       }
       const report = evaluateQuorum({
@@ -832,9 +858,12 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         meets: report.meetsQuorum ? 'true' : 'false',
       });
       if (report.failures.length > 0) {
-        this.logger.debug(
-          `quorum for '${authority}' had ${report.failures.length} non-counting cosignature(s): ${boundedJoin(report.failures)}`,
-        );
+        this.logger.debug({
+          msg: 'quorum had non-counting cosignature(s)',
+          authority,
+          failureCount: report.failures.length,
+          failures: boundedJoin(report.failures),
+        });
       }
       return {
         witnessedCount: report.witnessedCount,
@@ -844,7 +873,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
         historicalWitnessedCount: report.historicalWitnessedCount,
       };
     } catch (err) {
-      this.logger.warn(`witness quorum evaluation failed for '${authority}': ${msgOf(err)}`);
+      this.logger.warn({ msg: 'witness quorum evaluation failed', authority, error: msgOf(err) });
       return {
         witnessedCount: null,
         meetsQuorum: null,
@@ -860,7 +889,7 @@ export class CheckpointWitnessPollerService implements OnModuleInit, OnModuleDes
     try {
       await this.witnessRepo.markFailure(tenantId, authority);
     } catch (err) {
-      this.logger.warn(`failed to record witness failure for '${authority}': ${msgOf(err)}`);
+      this.logger.warn({ msg: 'failed to record witness failure', authority, error: msgOf(err) });
     }
   }
 }
@@ -907,10 +936,4 @@ function unwrapCheckpointEnvelope(raw: unknown): {
     }
   }
   return { checkpoint: raw, witnessSignatures: [] };
-}
-
-/** ` (N-witnessed[, quorum met])` log suffix, or '' when consumption is off. */
-function quorumSuffix(quorum: QuorumResult): string {
-  if (quorum.witnessedCount === null) return '';
-  return ` (${quorum.witnessedCount}-witnessed${quorum.meetsQuorum ? ', quorum met' : ''})`;
 }

@@ -362,9 +362,12 @@ export class TokenIssuer {
         req.keyId.startsWith(req.agentDid) ? req.keyId : `${req.agentDid}#${req.keyId}`,
         req.algorithm as 'ed25519' | 'ecdsa-p256',
       );
-      this.logger.log(
-        `did:web fallback resolved ${req.agentDid} via ${resolved.keyId} (${resolved.algorithm})`,
-      );
+      this.logger.log({
+        msg: 'did:web fallback resolved',
+        agentDid: req.agentDid,
+        keyId: resolved.keyId,
+        algorithm: resolved.algorithm,
+      });
       return {
         agentDid: req.agentDid,
         algorithm: resolved.algorithm,
@@ -372,7 +375,7 @@ export class TokenIssuer {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      this.logger.warn(`did:web resolution failed for ${req.agentDid}: ${msg}`);
+      this.logger.warn({ msg: 'did:web resolution failed', agentDid: req.agentDid, error: msg });
       this.ledger?.record({
         sub: req.agentDid,
         iss: this.config.jwtAuthority,

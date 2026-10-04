@@ -118,7 +118,7 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
 
     // Outside every try below, so it cannot itself reject the memoized promise.
     try {
-      logger.log(`received ${signal ?? 'shutdown'}, closing gracefully`);
+      logger.log({ msg: 'received signal, closing gracefully', signal: signal ?? 'shutdown' });
     } catch {
       // A logger that throws must not abort the shutdown it is narrating.
     }
@@ -129,7 +129,10 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
       } catch (err) {
         failed = true;
         logger.error(
-          `error closing the application: ${err instanceof Error ? err.message : String(err)}`,
+          {
+            msg: 'error closing the application',
+            error: err instanceof Error ? err.message : String(err),
+          },
           err instanceof Error ? err.stack : undefined,
         );
       }
@@ -154,11 +157,13 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
 
     if (timedOut) {
       failed = true;
-      logger.error(
-        `graceful close exceeded ${timeoutMs}ms — forcing shutdown. In-flight ` +
+      logger.error({
+        msg:
+          'graceful close timed out — forcing shutdown. In-flight ' +
           'requests are being dropped; a hung close usually means an open ' +
           'connection (SSE, keep-alive) or a destroy hook that never settles.',
-      );
+        timeoutMs,
+      });
       try {
         deps.forceCloseConnections?.();
       } catch {
@@ -191,9 +196,10 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
       await deps.stopTelemetry();
     } catch (err) {
       failed = true;
-      logger.error(
-        `error stopping telemetry: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logger.error({
+        msg: 'error stopping telemetry',
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     try {

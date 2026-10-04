@@ -98,11 +98,10 @@ export class IssuanceLedgerService implements OnModuleDestroy {
       this.postgresQueue = this.postgresQueue
         .then(() => this.recordPostgres(entry))
         .catch((e) => {
-          this.logger.warn(
-            `issuance ledger postgres write failed: ${
-              e instanceof Error ? e.message : String(e)
-            }`,
-          );
+          this.logger.warn({
+            msg: 'issuance ledger postgres write failed',
+            error: e instanceof Error ? e.message : String(e),
+          });
         });
     }
   }

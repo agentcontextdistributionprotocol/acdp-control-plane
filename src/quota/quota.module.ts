@@ -64,7 +64,7 @@ import {
             const { default: Redis } = await import('ioredis');
             const client = new Redis(config.redisUrl);
             client.on('error', (e: Error) =>
-              logger.warn(`redis quota error: ${e.message}`),
+              logger.warn({ msg: 'redis quota error', error: e.message }),
             );
             logger.log('Quota store: redis');
             return new RedisQuotaStore(
@@ -72,11 +72,10 @@ import {
               logger,
             );
           } catch (e) {
-            logger.warn(
-              `ioredis import failed, falling back to in-memory quotas: ${
-                e instanceof Error ? e.message : String(e)
-              }`,
-            );
+            logger.warn({
+              msg: 'ioredis import failed, falling back to in-memory quotas',
+              error: e instanceof Error ? e.message : String(e),
+            });
           }
         }
         logger.log('Quota store: in-memory');

@@ -54,9 +54,10 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     if (intervalMs <= 0) return; // disabled
     this.retryTimer = setInterval(() => {
       void this.retryAllPending().catch((err) =>
-        this.logger.warn(
-          `webhook retry sweep failed: ${err instanceof Error ? err.message : String(err)}`,
-        ),
+        this.logger.warn({
+          msg: 'webhook retry sweep failed',
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
     }, intervalMs);
     // Don't keep the process (or test runner) alive on this timer.
@@ -146,9 +147,11 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         );
       }
     } catch (err) {
-      this.logger.warn(
-        `fireEvent(${payload.event}) failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger.warn({
+        msg: 'fireEvent failed',
+        event: payload.event,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -273,10 +276,14 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
           const delayMs = parseRetryAfterMs(retryAfter);
           if (delayMs !== null) {
             const nextAttemptAt = new Date(Date.now() + delayMs).toISOString();
-            this.logger.warn(
-              `webhook delivery to ${url} got 429 (attempt ${attempt}/${maxAttempts}); ` +
-                `deferring next attempt until ${nextAttemptAt} (Retry-After: ${retryAfter})`,
-            );
+            this.logger.warn({
+              msg: 'webhook delivery got 429, deferring next attempt',
+              url,
+              attempt,
+              maxAttempts,
+              nextAttemptAt,
+              retryAfter,
+            });
             await this.deliveryRepository.markFailed(
               deliveryId,
               attempt,
@@ -337,9 +344,13 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     responseStatus: number | undefined,
     tenantId: string,
   ): Promise<void> {
-    this.logger.warn(
-      `webhook delivery to ${url} failed (attempt ${attempt}/${maxAttempts}): ${errorMessage}`,
-    );
+    this.logger.warn({
+      msg: 'webhook delivery failed',
+      url,
+      attempt,
+      maxAttempts,
+      error: errorMessage,
+    });
     await this.deliveryRepository.markFailed(
       deliveryId,
       attempt,

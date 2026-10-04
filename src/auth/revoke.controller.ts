@@ -141,9 +141,10 @@ export class RevokeController {
         // Token didn't even decode — no jti to deny-list. Per RFC 7009,
         // still return success. (Authorization gate is irrelevant when
         // there's nothing identifiable to revoke.)
-        this.logger.warn(
-          `revoke called with un-decodable token by actor=${req.actorId ?? 'unknown'}`,
-        );
+        this.logger.warn({
+          msg: 'revoke called with un-decodable token',
+          actorId: req.actorId ?? 'unknown',
+        });
         return { revoked: false };
       }
       claims = decoded;
@@ -158,10 +159,12 @@ export class RevokeController {
       req.actorDid.length > 0 &&
       req.actorDid === claims.sub;
     if (!isAdmin && !isSelfRevoke) {
-      this.logger.warn(
-        `revoke 403: actor=${req.actorId ?? 'unknown'} ` +
-          `actorType=${req.actorType ?? '?'} target_sub=${claims.sub}`,
-      );
+      this.logger.warn({
+        msg: 'revoke 403',
+        actorId: req.actorId ?? 'unknown',
+        actorType: req.actorType ?? '?',
+        targetSub: claims.sub,
+      });
       // Generic FORBIDDEN, not ADMIN_REQUIRED: a JWT self-revoke passes
       // this gate without admin, so "admin-only" would misdirect (#182).
       throw new AppException(
@@ -182,9 +185,13 @@ export class RevokeController {
     });
 
     if (newlyRevoked) {
-      this.logger.log(
-        `revoked jti=${claims.jti} sub=${claims.sub} reason=${reason} by=${req.actorId ?? 'unknown'}`,
-      );
+      this.logger.log({
+        msg: 'token revoked',
+        jti: claims.jti,
+        sub: claims.sub,
+        reason,
+        by: req.actorId ?? 'unknown',
+      });
     }
     return { revoked: newlyRevoked };
   }

@@ -3749,3 +3749,23 @@ Falsifiability confirmed by verifier (disabling `app.set` fails 2 integration te
 Checks: typecheck TS7+TS6, lint, conventions 8/8, check:build ok; unit 84
 suites/1282 passed; integration 33 suites/232 passed. 3 ASSUMPTIONS.md entries
 UNCONFIRMED. Next: ship PR A, then Phase 2 on a fresh branch.
+
+### Phases 2+3 — CI rule 8b + structured logs / rule 9 (simple, batched gate) — DONE
+Phase 2: rule 8b (perl balanced-paren scan) bans `new HttpException(<x>,
+502|503|504)` and the `HttpStatus.BAD_GATEWAY|SERVICE_UNAVAILABLE|GATEWAY_TIMEOUT`
+forms, single-line or wrapped; AppException stays allowed; a perl failure or a
+missing source dir fails the script. Pre-existing occurrences in src/: zero (the
+4 HttpStatus gateway uses are all AppException args). Phase 3: 109 template-
+literal log messages → `{ msg, …fields }` (error text under `error`), incl. the
+safe-federation 429 warn (`host`, `retryAfter`, unit-asserted); rule 9 bans
+`*logger|*Logger|log|new Logger(…)` [`?.`/`!.`] `.<level>(`…${…}…`)` at zero.
+Gate (fresh Opus, one batch, per-phase verdicts): round 1 Phase 2 PASS / Phase 3
+GAPS (quota-store `this.logger?.warn` x2 escaped rule 9; receiver bypasses;
+limits unlogged); round 2 (re-verify with prior gap list) PASS, all closed.
+Phases committed together: the script/spec hunks of both phases interleave.
+Checks: typecheck TS7+TS6, lint, conventions 10/10, check:build ok; unit 85
+suites/1306 passed; integration 33 suites/232 passed. ASSUMPTIONS.md: 2 new
+UNCONFIRMED entries + #200 "known gap" entry updated. CLAUDE.md (local) rules
+7/8/9 described. Finalization: the three phases are independent (no seams
+between PR A and PR B); each PR's gate covered its full diff, so no separate
+cumulative verify was run.

@@ -89,7 +89,7 @@ export class EventProcessorService {
       rawPayload: payload as unknown as Record<string, unknown>,
     });
     if (created === null) {
-      this.logger.debug(`duplicate event skipped fingerprint=${fingerprint}`);
+      this.logger.debug({ msg: 'duplicate event skipped', fingerprint });
       return;
     }
 

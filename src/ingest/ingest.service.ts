@@ -100,11 +100,14 @@ export class IngestService {
       // write into an arbitrary tenant. Only a server-side enrollment may
       // target a NON-default tenant — fall back to the default bucket.
       // (Off by default: header attribution is the documented V0 fallback.)
-      this.logger.warn(
-        `ingest: unenrolled authority '${claimedAuthority ?? '(unknown)'}' ` +
-          `asserted X-Tenant-Id='${tenantId}'; INGEST_STRICT_TENANT is on, ` +
-          `ignoring and using '${DEFAULT_TENANT_ID}'`,
-      );
+      this.logger.warn({
+        msg:
+          'ingest: unenrolled authority asserted X-Tenant-Id; INGEST_STRICT_TENANT is on, ' +
+          'ignoring and using the default tenant',
+        claimedAuthority: claimedAuthority ?? '(unknown)',
+        tenantId,
+        fallbackTenantId: DEFAULT_TENANT_ID,
+      });
       tenantId = DEFAULT_TENANT_ID;
     }
 
@@ -152,10 +155,11 @@ export class IngestService {
         // Make the silent drop observable: the registry's webhook worker logs
         // `webhook_4xx` and gives up, so without a CP-side counterpart this
         // rejection is invisible to operators. Warn + counter, then reject.
-        this.logger.warn(
-          `ingest rejected: context_type '${requested}' not declared by any ` +
-            `active domain pack (${packs.map((p) => p.id).join(', ')})`,
-        );
+        this.logger.warn({
+          msg: 'ingest rejected: context_type not declared by any active domain pack',
+          contextType: requested,
+          packs: packs.map((p) => p.id).join(', '),
+        });
         this.instrumentation.ingestRejectedTotal.inc({ reason: 'pack_gate' });
         throw new BadRequestException(
           `context_type '${requested}' not declared by any active domain pack ` +

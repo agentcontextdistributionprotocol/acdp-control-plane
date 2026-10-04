@@ -179,8 +179,30 @@ describe('SafeFederationClient', () => {
     // Retry-After hint is surfaced in both the log and the error message.
     expect(ex.message).toContain('30');
     expect(onCancel).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('30'))).toBe(true);
-    expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('429'))).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        msg: 'federation upstream returned 429 Too Many Requests',
+        host: 'localhost',
+        retryAfter: '30',
+      }),
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('logs retryAfter: null when a 429 carries no Retry-After header', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const fetchMock = jest.fn().mockResolvedValue(resp({ status: 429 }));
+    const client = new SafeFederationClient(loopbackPolicy, fetchMock as unknown as typeof fetch);
+
+    await expect(client.get('https://localhost/contexts/x')).rejects.toBeInstanceOf(AppException);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        msg: 'federation upstream returned 429 Too Many Requests',
+        host: 'localhost',
+        retryAfter: null,
+      }),
+    );
 
     warnSpy.mockRestore();
   });

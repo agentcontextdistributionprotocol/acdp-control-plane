@@ -406,23 +406,27 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     const intervalMs = this.config.receiptAuditIntervalSeconds * 1000;
     this.timer = setInterval(() => {
       void this.sweep().catch((err) =>
-        this.logger.warn(
-          `receipt audit sweep failed: ${err instanceof Error ? err.message : String(err)}`,
-        ),
+        this.logger.warn({
+          msg: 'receipt audit sweep failed',
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
     }, intervalMs);
     if (typeof this.timer === 'object' && 'unref' in this.timer) {
       this.timer.unref();
     }
-    this.logger.log(
-      `receipt audit enabled: interval=${this.config.receiptAuditIntervalSeconds}s ` +
-        `batch=${this.config.receiptAuditBatchSize} lookback=${this.config.receiptAuditLookbackHours}h ` +
-        `crypto=${sdkSupportsReceipts() ? 'on' : 'unavailable'}`,
-    );
+    this.logger.log({
+      msg: 'receipt audit enabled',
+      intervalSeconds: this.config.receiptAuditIntervalSeconds,
+      batchSize: this.config.receiptAuditBatchSize,
+      lookbackHours: this.config.receiptAuditLookbackHours,
+      crypto: sdkSupportsReceipts() ? 'on' : 'unavailable',
+    });
     void this.sweep().catch((err) =>
-      this.logger.warn(
-        `initial receipt audit sweep failed: ${err instanceof Error ? err.message : String(err)}`,
-      ),
+      this.logger.warn({
+        msg: 'initial receipt audit sweep failed',
+        error: err instanceof Error ? err.message : String(err),
+      }),
     );
   }
 
@@ -458,10 +462,13 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
           });
         }
         if (verdict.status === 'discrepancy') {
-          this.logger.warn(
-            `receipt discrepancy ctx=${ev.ctxId ?? '?'} run=${ev.runId ?? '?'} ` +
-              `registry=${ev.registryAuthority}: ${verdict.discrepancies.join('; ')}`,
-          );
+          this.logger.warn({
+            msg: 'receipt discrepancy',
+            ctxId: ev.ctxId ?? '?',
+            runId: ev.runId ?? '?',
+            registry: ev.registryAuthority,
+            discrepancies: verdict.discrepancies.join('; '),
+          });
         }
       }
       return events.length;
@@ -675,17 +682,23 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
         }
       } catch (err) {
         this.instrumentation.receiptAuditRevocationReauditsTotal.inc({ status: 'error' });
-        this.logger.warn(
-          `key-revocation re-audit failed event=${row.eventId} fingerprint=${fingerprint} ` +
-            `tenant=${tenantId}: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        this.logger.warn({
+          msg: 'key-revocation re-audit failed',
+          eventId: row.eventId,
+          fingerprint,
+          tenantId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
     if (amended > 0) {
-      this.logger.log(
-        `key-revocation re-audit: amended ${amended}/${candidates.length} receipt_audits ` +
-          `row(s) for fingerprint=${fingerprint} tenant=${tenantId}`,
-      );
+      this.logger.log({
+        msg: 'key-revocation re-audit amended receipt_audits rows',
+        amended,
+        candidates: candidates.length,
+        fingerprint,
+        tenantId,
+      });
     }
     return amended;
   }
