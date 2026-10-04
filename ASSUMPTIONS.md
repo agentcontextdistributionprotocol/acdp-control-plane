@@ -1355,6 +1355,9 @@
   playground reconnect behaviour) is still open.
 - **Chose:** the constant, with `retryMs` already an option on `createSseStream`, so Phase 2
   only has to thread `config.sseShutdownRetryMs` through both controllers.
+- **Phase 2 note (2026-10-04):** the `STREAM_SSE_SHUTDOWN_RETRY_MS` knob has landed and both
+  controllers pass it. The constant remains only as the helper's fallback. Open question 2
+  (whether 1000 is the right default) is still open.
 - **Blast radius if wrong:** Low. A client reconnects 1 s after the drain. Reversible.
 - **Status:** UNCONFIRMED (2026-10-04)
 
@@ -1402,4 +1405,65 @@
     post-subscribe `closed` check does fail a test.
 - **Blast radius if wrong:** Low. Metric semantics only, and the metrics are best effort on a
   dying process.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## Drain gate reads the path from `req.originalUrl`, not `req.path` (issue #192, Phase 2)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 2) says the SSE exemption matches "on `req.path`".
+- **Measured:** inside module middleware applied with `forRoutes('*')`, Express has
+  stripped the mount from `req.url`, so `req.path` is `/`. With `req.path` the
+  integration spec's new SSE probes got `503 SERVICE_DRAINING`.
+- **Chose:** `requestPath(req)` derives the path from `req.originalUrl`: it strips the
+  query and reduces an absolute-form target (`http://host/x`) to its path. It is then
+  matched case-insensitively against `^/runs/[^/]+/events/stream/?$` and
+  `^/events/stream/?$`, for `GET` only. `HEAD` is not exempt.
+- **Blast radius if wrong:** Low. In the worst case an odd request-target form for an SSE
+  route gets a 503 instead of `event: shutdown`. Pinned by `drain-gate.middleware.spec.ts`
+  and the integration case.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## Shutdown summary line and forced-connection count semantics (issue #192, Phase 2)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 2, review item 7)
+- **Assumed:**
+  - `shutdown drain complete` is logged on **every** shutdown, including the forced
+    one. It is logged after the close/deadline race and before the hook-failure check
+    and the telemetry flush. `drainMs` is measured from the start of the handler.
+  - `forcedConnections` is `0` on a clean close. On the forced path it is the
+    synchronous live count from `trackOpenConnections` (a `connection`/`close` counter
+    attached before `listen()`), or `null` when the count throws. `null` is never
+    recorded on the metric.
+  - The forced log's `msg` is now exactly `graceful close timed out — forcing shutdown`,
+    as the plan specifies. The previous explanatory text moved to a `detail` field.
+  - The drain tallies (`sseStreamsTerminated`, `drainRejections`) are plain counters on
+    `DrainState` (`noteSseTermination`, `noteRejection`, `stats()`), not prom-client
+    reads, because `Counter.get()` is async and the shutdown path never awaits for a log.
+- **Blast radius if wrong:** Low. These are log fields only. Reversible.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## Drain knob validation lives in `validate()`, every environment (issue #192, Phase 2)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 2)
+- **Assumed:**
+  - `SHUTDOWN_TIMEOUT_MS` (integer ≥ 1000, no upper bound),
+    `SHUTDOWN_RETRY_AFTER_SECONDS` (1–300) and `STREAM_SSE_SHUTDOWN_RETRY_MS` (0–60000)
+    are checked in `AppConfigService.validate()` (`onModuleInit`) **before** the
+    development early return, so they are enforced in every environment, like
+    `THROTTLE_IPV6_SUBNET_PREFIX`.
+  - A bad value therefore fails boot at `app.listen()`/`init()`, after migrations have
+    run. It does not fail at construction, unlike `TRUST_PROXY`. This is still before
+    any signal handler is registered.
+  - No upper bound is placed on `SHUTDOWN_TIMEOUT_MS`. Phase 3 adds the
+    `delay + timeout > 25000` warning.
+- **Blast radius if wrong:** Low. A deployment that set a garbage or sub-second
+  `SHUTDOWN_TIMEOUT_MS` now refuses to boot instead of silently using 10000. That is
+  the intended change, and it is called out in `docs/CONFIGURATION.md`.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## Drain gate side effects precede the throw (issue #192, Phase 2)
+- **Plan:** `plans/graceful-drain-192.md` (Phase 2)
+- **Assumed:** the gate increments `acdp_shutdown_drain_rejections_total` and
+  `DrainState.noteRejection()`, and sets `Retry-After` + `Connection: close` on the
+  response, before it throws the `AppException`. `GlobalExceptionFilter` then writes
+  status + body onto the same response, so the headers survive (asserted end to end).
+  CLAUDE.md's "Env vars" list was **not** updated: agent sessions may not edit
+  CLAUDE.md, and that is left to the user.
+- **Blast radius if wrong:** Low.
 - **Status:** UNCONFIRMED (2026-10-04)

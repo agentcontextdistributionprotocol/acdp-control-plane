@@ -43,13 +43,14 @@ production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startu
 | `HOST` | string | `0.0.0.0` | Bind address. |
 | `PUBLIC_HOST` | string | `''` | Externally-resolvable host (`example.com` / `example.com:8443`) a consumer's `did:web` resolver hits for `/.well-known/did.json`. Distinct from `HOST`. Used to assert the `did:web` witness↔host binding at boot. |
 | `CORS_ORIGIN` | string | `http://localhost:3000` | Allowed CORS origin. |
+| `SHUTDOWN_TIMEOUT_MS` | integer (ms), 1000–2147483647 | `10000` | Max ms `app.close()` may take on SIGTERM/SIGINT/SIGQUIT before lingering sockets are dropped and the process exits 1 (the overrun log names how many, `forcedConnections`). Keep below the platform termination grace period (Docker 10 s, Kubernetes 30 s). Strict: a non-integer or a value below 1000 fails startup (it used to fall back to 10000 silently). |
+| `SHUTDOWN_RETRY_AFTER_SECONDS` | integer (s), 1–300 | `1` | `Retry-After` on the drain gate's `503 SERVICE_DRAINING`, sent to every new non-SSE request once a shutdown has begun (issue #192, see [API.md](./API.md)). Strict. |
 
 ## Database
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `DATABASE_URL` | string | `postgres://postgres:postgres@localhost:5432/acdp_control_plane` | Postgres connection string. |
-| `SHUTDOWN_TIMEOUT_MS` | `10000` | Max ms `app.close()` may take on SIGTERM/SIGINT/SIGQUIT before lingering sockets are dropped and the process exits 1. Keep below the platform termination grace period. |
 | `DB_POOL_MAX` | number | `20` | Max pool connections per replica. **Must be ≥ 2.** |
 | `DB_POOL_IDLE_TIMEOUT` | number (ms) | `30000` | Idle connection timeout. |
 | `DB_POOL_CONNECTION_TIMEOUT` | number (ms) | `5000` | Connection-acquisition timeout. |
@@ -128,6 +129,7 @@ See [INGEST.md](./INGEST.md).
 | `STREAM_HUB_STRATEGY` | `memory`\|`redis` | `memory` | SSE fan-out backend. `redis` for multi-instance. |
 | `REDIS_URL` | string | `''` | Redis connection (SSE redis strategy + Redis quota store). |
 | `STREAM_SSE_HEARTBEAT_MS` | number | `15000` | SSE heartbeat interval. |
+| `STREAM_SSE_SHUTDOWN_RETRY_MS` | integer (ms), 0–60000 | `1000` | `retry:` hint on the terminal SSE `event: shutdown` (issue #192): how long an `EventSource` waits before reconnecting, by then to a live replica. Strict. |
 
 ## Rate limiting (coarse throttle)
 
@@ -400,6 +402,9 @@ as its fan-out cap. See `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section.
 - Production with empty `WEBHOOK_SECRET` (inbound webhook HMAC verification would
   otherwise be silently disabled — see `src/ingest/hmac.ts`).
 - `DB_POOL_MAX < 2`.
+- `SHUTDOWN_TIMEOUT_MS` not an integer in 1000–2147483647, `SHUTDOWN_RETRY_AFTER_SECONDS` not an
+  integer in [1, 300], or `STREAM_SSE_SHUTDOWN_RETRY_MS` not an integer in [0, 60000]
+  — in every environment (issue #192).
 - `DATA_RETENTION_ENABLED=true` with `DATA_RETENTION_TTL_DAYS < 1`.
 - `POLICY_BACKEND` not in {`static`,`opa`}; `JWT_SIGNING_ALG` not in {`HS256`,`EdDSA`}.
 - Issuance + `HS256` with `JWT_SECRET` < 32 bytes.

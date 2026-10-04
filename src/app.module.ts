@@ -35,6 +35,7 @@ import { IngestController } from './ingest/ingest.controller';
 import { IngestService } from './ingest/ingest.service';
 import { MetricsController } from './metrics/metrics.controller';
 import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware';
+import { DrainGateMiddleware } from './middleware/drain-gate.middleware';
 import { RequestLoggerMiddleware } from './middleware/request-logger.middleware';
 import { DrainStateModule } from './shutdown-drain';
 import { ShutdownFailuresModule } from './shutdown-failures';
@@ -209,6 +210,12 @@ import { WitnessSigningService } from './witness/witness-signing.service';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(CorrelationIdMiddleware, RequestLoggerMiddleware).forRoutes('*');
+    // Order is load-bearing: correlation establishes the requestId store first,
+    // the request logger hooks `finish`, and only then does the drain gate (#192)
+    // turn an arrival-during-drain mark into a 503 — so that 503 carries an
+    // X-Request-Id and is request-logged like any other response.
+    consumer
+      .apply(CorrelationIdMiddleware, RequestLoggerMiddleware, DrainGateMiddleware)
+      .forRoutes('*');
   }
 }

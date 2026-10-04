@@ -106,6 +106,23 @@ export interface ShutdownDeps {
   reapIdleConnections?: () => void;
   /** Defaults to {@link DEFAULT_REAP_INTERVAL_MS}. */
   reapIntervalMs?: number;
+  /**
+   * How many sockets the HTTP server holds open right now — read SYNCHRONOUSLY on
+   * the forced path, just before {@link forceCloseConnections}, so the overrun log
+   * can say how many connections it cut (#192, plan review #7). Wired to a live
+   * `connection`/`close` counter in `bootstrap.ts`, deliberately NOT
+   * `server.getConnections()`: that one is callback-async, and the forced path
+   * must never wait on anything. A throw is reported as `forcedConnections: null`.
+   */
+  openConnections?: () => number;
+  /** Told the forced-connection count (wired to
+   *  `acdp_shutdown_forced_connections_total`). Best effort; a throw is swallowed. */
+  recordForcedConnections?: (count: number) => void;
+  /** Drain tallies for the `shutdown drain complete` summary line — wired to
+   *  `DrainState.stats()`. Synchronous; a throw only drops the fields. */
+  drainStats?: () => { sseStreamsTerminated: number; drainRejections: number };
+  /** Clock for `drainMs`; defaults to `Date.now`. */
+  now?: () => number;
   /** Defaults to {@link DEFAULT_SHUTDOWN_TIMEOUT_MS}. */
   timeoutMs?: number;
   logger?: Pick<Logger, 'error' | 'log'>;
@@ -155,6 +172,8 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
 
   const run = async (signal?: string): Promise<void> => {
     let failed = false;
+    const now = deps.now ?? Date.now;
+    const drainStartedAt = now();
 
     // Outside every try below, so it cannot itself reject the memoized promise.
     try {
@@ -243,20 +262,60 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
     if (timer) clearTimeout(timer);
     if (reaper) clearInterval(reaper);
 
+    // 0 on a clean close: nothing was cut. On the forced path, the sockets still
+    // open just before closeAllConnections() — or null when that count could not
+    // be read (never awaited; see ShutdownDeps.openConnections).
+    let forcedConnections: number | null = 0;
     if (timedOut) {
       failed = true;
-      logger.error({
-        msg:
-          'graceful close timed out — forcing shutdown. In-flight ' +
-          'requests are being dropped; a hung close usually means an open ' +
-          'connection (SSE, keep-alive) or a destroy hook that never settles.',
-        timeoutMs,
-      });
+      forcedConnections = null;
+      try {
+        if (deps.openConnections) forcedConnections = deps.openConnections();
+      } catch {
+        // Unknown, not zero: report null rather than claim nothing was cut.
+      }
+      try {
+        logger.error({
+          msg: 'graceful close timed out — forcing shutdown',
+          detail:
+            'In-flight requests are being dropped; a hung close usually means an ' +
+            'open connection (SSE, keep-alive) or a destroy hook that never settles.',
+          timeoutMs,
+          forcedConnections,
+        });
+      } catch {
+        // A throwing logger must not abort the forced path.
+      }
+      try {
+        if (forcedConnections !== null) deps.recordForcedConnections?.(forcedConnections);
+      } catch {
+        // Best effort: metrics on a dying process.
+      }
       try {
         deps.forceCloseConnections?.();
       } catch {
         // Best effort: we are already on the forced path.
       }
+    }
+
+    // One structured summary line per shutdown (#192) — the primary drain
+    // signal, since a dying process's counters are rarely scraped.
+    try {
+      let stats: { sseStreamsTerminated: number; drainRejections: number } | undefined;
+      try {
+        stats = deps.drainStats?.();
+      } catch {
+        stats = undefined;
+      }
+      logger.log({
+        msg: 'shutdown drain complete',
+        drainMs: now() - drainStartedAt,
+        sseStreamsTerminated: stats?.sseStreamsTerminated ?? null,
+        drainRejections: stats?.drainRejections ?? null,
+        forcedConnections,
+      });
+    } catch {
+      // A throwing logger must not abort the shutdown.
     }
 
     // A hook that failed inside close() but did not reject it (NestJS 12
@@ -305,6 +364,25 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal?: string) => 
     inFlight ??= run(signal);
     return inFlight;
   };
+}
+
+/**
+ * A synchronous live count of the server's open sockets (#192, plan review #7),
+ * for {@link ShutdownDeps.openConnections}. `server.getConnections()` delivers its
+ * count in a callback, and the forced shutdown path must never wait on one.
+ * Attach before `listen()` so no socket is missed.
+ */
+export function trackOpenConnections(server: {
+  on(event: 'connection', listener: (socket: { once(event: 'close', l: () => void): unknown }) => void): unknown;
+}): () => number {
+  let open = 0;
+  server.on('connection', (socket) => {
+    open++;
+    socket.once('close', () => {
+      open--;
+    });
+  });
+  return () => open;
 }
 
 /** Register the handler on every shutdown signal. Returns an unregister function

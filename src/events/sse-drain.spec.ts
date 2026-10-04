@@ -256,6 +256,20 @@ describe('createSseStream (issue #192)', () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
+  it('tallies each shutdown termination on DrainState for the summary log (#192 Phase 2)', () => {
+    const drain = new DrainState();
+    const make = () =>
+      createSseStream({ source: () => new Subject<AcdpStreamEvent>(), drain, heartbeatMs: 60_000 });
+    const a = make().subscribe();
+    make().subscribe();
+    a.unsubscribe(); // a disconnect is not a shutdown termination
+
+    drain.begin();
+    make().subscribe(); // subscribe-after-drain counts too
+
+    expect(drain.stats().sseStreamsTerminated).toBe(2);
+  });
+
   it('shutdownMessage carries the retry hint', () => {
     expect(shutdownMessage(2500)).toEqual({ ...SHUTDOWN, retry: 2500 });
   });
@@ -340,5 +354,33 @@ describe('SSE controllers use the drain-aware stream (issue #192)', () => {
 
     expect(seen).toEqual([SHUTDOWN]);
     expect(completed).toBe(true);
+  });
+
+  it('both routes carry the STREAM_SSE_SHUTDOWN_RETRY_MS knob as the retry hint (#192 Phase 2)', async () => {
+    const knob = { ...config, sseShutdownRetryMs: 4321 };
+    const drain = new DrainState();
+    drain.begin();
+    const events = new EventsController(
+      {} as never,
+      { streamGlobal: jest.fn() } as never,
+      knob as never,
+      drain,
+      metricsMock().metrics as never,
+    );
+    const runs = new RunsController(
+      { existsForOtherTenant: jest.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { streamRun: jest.fn() } as never,
+      knob as never,
+      drain,
+      metricsMock().metrics as never,
+    );
+
+    const expected = [{ ...SHUTDOWN, retry: 4321 }];
+    await expect(firstValueFrom(events.streamGlobal(req).pipe(toArray()))).resolves.toEqual(expected);
+    const runStream = await runs.streamRunEvents('r1', req);
+    await expect(firstValueFrom(runStream.pipe(toArray()))).resolves.toEqual(expected);
   });
 });

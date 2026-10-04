@@ -3,6 +3,7 @@ import {
   SHUTDOWN_SIGNALS,
   createShutdownHandler,
   registerShutdownHandlers,
+  trackOpenConnections,
   type ShutdownDeps,
 } from './shutdown';
 
@@ -398,6 +399,137 @@ describe('the drain and idle-socket reaper (issue #192)', () => {
     await Promise.all([handler('SIGTERM'), handler('SIGTERM'), handler('SIGINT')]);
 
     expect(beginDrain).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('shutdown observability (issue #192, Phase 2)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  function recordingLogger() {
+    const lines: Array<{ level: string; obj: unknown }> = [];
+    const logger = {
+      log: jest.fn((obj: unknown) => lines.push({ level: 'log', obj })),
+      error: jest.fn((obj: unknown) => lines.push({ level: 'error', obj })),
+    } as unknown as ShutdownDeps['logger'];
+    const find = (msg: string) =>
+      lines.find((l) => (l.obj as { msg?: string } | undefined)?.msg === msg)?.obj as
+        | Record<string, unknown>
+        | undefined;
+    return { logger, find };
+  }
+
+  it('the forced path logs a structured forcedConnections count, read synchronously, before closeAllConnections', async () => {
+    const { logger, find } = recordingLogger();
+    const order: string[] = [];
+    const recordForcedConnections = jest.fn((n: number) => order.push(`record:${n}`));
+    const { handler, deps } = build(() => ({
+      close: jest.fn(() => new Promise<void>(() => undefined)),
+      timeoutMs: 25,
+      logger,
+      openConnections: jest.fn(() => {
+        order.push('count');
+        return 3;
+      }),
+      recordForcedConnections,
+      forceCloseConnections: jest.fn(() => order.push('forceClose')),
+    }));
+
+    await handler('SIGTERM');
+
+    expect(find('graceful close timed out — forcing shutdown')).toEqual(
+      expect.objectContaining({ timeoutMs: 25, forcedConnections: 3 }),
+    );
+    expect(order).toEqual(['count', 'record:3', 'forceClose']);
+    expect(find('shutdown drain complete')).toEqual(
+      expect.objectContaining({ forcedConnections: 3 }),
+    );
+    expect(deps.exit).toHaveBeenCalledWith(1);
+  });
+
+  it('reports forcedConnections: null (never a fake 0) when the count throws, and still forces + exits 1', async () => {
+    const { logger, find } = recordingLogger();
+    const recordForcedConnections = jest.fn();
+    const forceCloseConnections = jest.fn();
+    const { handler, deps } = build(() => ({
+      close: jest.fn(() => new Promise<void>(() => undefined)),
+      timeoutMs: 25,
+      logger,
+      openConnections: () => {
+        throw new Error('no server');
+      },
+      recordForcedConnections,
+      forceCloseConnections,
+    }));
+
+    await handler('SIGTERM');
+
+    expect(find('graceful close timed out — forcing shutdown')).toEqual(
+      expect.objectContaining({ forcedConnections: null }),
+    );
+    expect(recordForcedConnections).not.toHaveBeenCalled();
+    expect(forceCloseConnections).toHaveBeenCalledTimes(1);
+    expect(deps.exit).toHaveBeenCalledWith(1);
+  });
+
+  it('a clean close logs the summary with drainMs and the drain tallies, forcing nothing', async () => {
+    const { logger, find } = recordingLogger();
+    let t = 1_000;
+    const openConnections = jest.fn(() => 9);
+    const { handler, deps } = build(() => ({
+      close: jest.fn(async () => {
+        t += 42;
+      }),
+      now: () => t,
+      logger,
+      openConnections,
+      drainStats: () => ({ sseStreamsTerminated: 2, drainRejections: 5 }),
+    }));
+
+    await handler('SIGTERM');
+
+    expect(find('shutdown drain complete')).toEqual({
+      msg: 'shutdown drain complete',
+      drainMs: 42,
+      sseStreamsTerminated: 2,
+      drainRejections: 5,
+      forcedConnections: 0,
+    });
+    expect(openConnections).not.toHaveBeenCalled();
+    expect(deps.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('a throwing drainStats only drops the tallies; the summary and the exit survive', async () => {
+    const { logger, find } = recordingLogger();
+    const { handler, deps } = build(() => ({
+      logger,
+      drainStats: () => {
+        throw new Error('stats unavailable');
+      },
+    }));
+
+    await handler('SIGTERM');
+
+    expect(find('shutdown drain complete')).toEqual(
+      expect.objectContaining({ sseStreamsTerminated: null, drainRejections: null }),
+    );
+    expect(deps.exit).toHaveBeenCalledWith(0);
+  });
+});
+
+describe('trackOpenConnections (issue #192, Phase 2)', () => {
+  it('counts sockets synchronously as they connect and close', () => {
+    const server = new EventEmitter();
+    const count = trackOpenConnections(server as never);
+    const a = new EventEmitter();
+    const b = new EventEmitter();
+
+    expect(count()).toBe(0);
+    server.emit('connection', a);
+    server.emit('connection', b);
+    expect(count()).toBe(2);
+    a.emit('close');
+    a.emit('close'); // once(): a duplicate close never double-decrements
+    expect(count()).toBe(1);
   });
 });
 

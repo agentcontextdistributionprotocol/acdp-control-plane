@@ -10,9 +10,10 @@ import { applyTrustProxy } from './common/trust-proxy';
 import { AppConfigService } from './config/app-config.service';
 import { runMigrations } from './db/migrate';
 import { GlobalExceptionFilter } from './errors/exception.filter';
-import { createShutdownHandler, registerShutdownHandlers } from './shutdown';
-import { DrainState } from './shutdown-drain';
+import { createShutdownHandler, registerShutdownHandlers, trackOpenConnections } from './shutdown';
+import { createDrainArrivalMarker, DrainState } from './shutdown-drain';
 import { ShutdownFailures } from './shutdown-failures';
+import { InstrumentationService } from './telemetry/instrumentation.service';
 import { startTelemetry, stopTelemetry } from './telemetry/telemetry';
 
 /**
@@ -52,12 +53,26 @@ export async function bootstrap(rootModule: Type<unknown> = AppModule): Promise<
     listening: boolean;
     closeIdleConnections?: () => void;
     closeAllConnections?: () => void;
-  };
+  } & Parameters<typeof trackOpenConnections>[0];
+  // Synchronous open-socket count for the forced-shutdown log (#192), attached
+  // before listen() so no socket is missed.
+  const openConnections = trackOpenConnections(server);
+  // Metrics for the shutdown path, resolved once for the same reason as above.
+  const instrumentation = app.get(InstrumentationService);
 
   // Opt-in reverse-proxy trust (TRUST_PROXY, parsed and validated by
   // AppConfigService at construction above). Unset leaves Express's default.
   // Set before any middleware so every req.ip reader sees the same value.
   applyTrustProxy(app, config.trustProxy);
+
+  // The drain ARRIVAL MARKER (#192 Phase 2). It must be registered BEFORE the
+  // body parsers below: Express runs it as soon as Node emits `request` (headers
+  // parsed, no body byte consumed), so it records whether the drain had begun
+  // when the request ARRIVED. The drain gate (module middleware, applied only at
+  // init(), i.e. after the parsers) decides from this mark alone — a request
+  // whose headers arrived before SIGTERM but whose body finishes after it must
+  // run to completion, not get 503. It never responds and sets no header.
+  app.use(createDrainArrivalMarker(drainState));
 
   // Align the framework body-parser limit with INGEST_MAX_BODY_BYTES. Without
   // this, Express's ~100 kB default rejects legitimate registry webhooks before
@@ -137,6 +152,12 @@ export async function bootstrap(rootModule: Type<unknown> = AppModule): Promise<
       // Last resort when the graceful close overruns its deadline: an in-flight
       // request otherwise holds http.Server.close() open indefinitely.
       forceCloseConnections: () => server.closeAllConnections?.(),
+      // #192: how many sockets that cut (counted synchronously), plus the drain
+      // tallies for the `shutdown drain complete` summary line.
+      openConnections,
+      recordForcedConnections: (count) =>
+        instrumentation.shutdownForcedConnectionsTotal.inc(count),
+      drainStats: () => drainState.stats(),
     }),
   );
 }

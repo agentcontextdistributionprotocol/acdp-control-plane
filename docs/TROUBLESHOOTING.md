@@ -195,8 +195,48 @@ Operational concerns). If you still see it:
    failed, streams fall back to the stream-hub teardown, which ends them without
    a `shutdown` event.
 
-Clients see `event: shutdown` with a `retry:` hint and should reconnect after it
-(see `docs/API.md`, SSE).
+Clients see `event: shutdown` with a `retry:` hint (`STREAM_SSE_SHUTDOWN_RETRY_MS`)
+and should reconnect after it (see `docs/API.md`, SSE).
+
+Every shutdown logs one structured summary line, `shutdown drain complete`, with
+`drainMs`, `sseStreamsTerminated`, `drainRejections` and `forcedConnections`
+(0 on a clean close). An overrun also logs `graceful close timed out — forcing
+shutdown` with `forcedConnections`: the sockets still open when the deadline
+fired (`null` if they could not be counted). Read the log, not the metrics: a
+dying process is rarely scraped, so `acdp_shutdown_drain_rejections_total` and
+`acdp_shutdown_forced_connections_total` are best effort.
+
+### `503 SERVICE_DRAINING` during a deploy
+
+Expected (issue #192). Once an instance receives SIGTERM/SIGINT/SIGQUIT, every
+request whose **headers arrive after that moment** gets `503` with
+`errorCode: "SERVICE_DRAINING"`, `Retry-After` (`SHUTDOWN_RETRY_AFTER_SECONDS`,
+default 1) and `Connection: close`, so the client reconnects, through the load
+balancer, to another replica. It is answered before authentication, so it costs
+no throttle or quota budget. `/healthz` and `/readyz` get it too, which is right for
+a stopping container. Things that are **not** rejected:
+
+- A request whose headers arrived *before* the signal runs to completion, even if
+  its body finishes afterwards. A request that needs the database can still fail
+  if it outlives the pool, which ends during the close (a known limitation).
+- A new `GET` on either SSE route is let through by the gate and, once past the
+  auth guard, gets `200`, `event: shutdown` and the end of the stream (a non-2xx
+  makes `EventSource` stop reconnecting). Under `AUTH_PERSISTENCE=postgres` a JWT
+  client can still get a non-2xx from the guard's revocation lookup once the
+  database pool has ended.
+- A CORS preflight is answered `204` by the CORS layer as usual; the real request
+  that follows it gets the `503` with CORS headers, so a browser can read it.
+
+Registry webhooks (`POST /ingest/acdp`) are retried by the registry on a `503`,
+but with the registry's default `max_retries = 3` the whole retry window is only
+about 750 ms (250 ms + 500 ms of backoff), after which the delivery is dropped
+silently. A delivery reaches another replica only if your load balancer stops
+routing to the stopping one within that window. If you lose deliveries during
+deploys, raise the registry's webhook `max_retries`.
+
+Today the listener closes within milliseconds of the signal unless a destroy hook
+is slow, so most clients see a refused connection rather than this `503`; the
+`503` is what a client gets while the close is still running.
 
 ---
 

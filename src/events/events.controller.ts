@@ -69,6 +69,7 @@ export class EventsController {
       source: () => this.streamHub.streamGlobal(tenantId),
       drain: this.drain,
       heartbeatMs: this.config.streamSseHeartbeatMs,
+      retryMs: this.config.sseShutdownRetryMs,
       metrics: this.metrics,
     });
   }

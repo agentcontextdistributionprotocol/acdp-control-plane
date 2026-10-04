@@ -122,6 +122,88 @@ describe('AppConfigService', () => {
     );
   });
 
+  describe('graceful-drain knobs (issue #192)', () => {
+    const KNOBS = [
+      // name, field, default, valid samples, invalid samples
+      {
+        name: 'SHUTDOWN_TIMEOUT_MS',
+        field: 'shutdownTimeoutMs',
+        def: 10000,
+        ok: ['1000', '3000', ' 25000 ', '600000'],
+        bad: ['abc', '', '  ', '999', '0', '-1', '1500.5', '1e4', '0x3e8', '10s', 'Infinity', '2147483648'],
+      },
+      {
+        name: 'SHUTDOWN_RETRY_AFTER_SECONDS',
+        field: 'shutdownDrainRetryAfterSeconds',
+        def: 1,
+        ok: ['1', '5', '300'],
+        bad: ['abc', '', '0', '301', '-1', '1.5', '1e1'],
+      },
+      {
+        name: 'STREAM_SSE_SHUTDOWN_RETRY_MS',
+        field: 'sseShutdownRetryMs',
+        def: 1000,
+        ok: ['0', '500', '60000'],
+        bad: ['abc', '', '60001', '-1', '2.5', '1e3'],
+      },
+    ] as const;
+
+    for (const k of KNOBS) {
+      describe(k.name, () => {
+        it(`defaults to ${k.def} and passes validation when unset`, () => {
+          process.env.NODE_ENV = 'development';
+          delete process.env[k.name];
+          const cfg = freshConfig();
+          expect(cfg[k.field]).toBe(k.def);
+          expect(() => cfg.onModuleInit()).not.toThrow();
+        });
+
+        it('accepts in-range decimal integers', () => {
+          process.env.NODE_ENV = 'development';
+          for (const v of k.ok) {
+            process.env[k.name] = v;
+            const cfg = freshConfig();
+            expect(cfg[k.field]).toBe(Number(v));
+            expect(() => cfg.onModuleInit()).not.toThrow();
+          }
+        });
+
+        it.each(['development', 'production'])(
+          'fails startup on garbage or out-of-range values in %s (no silent default)',
+          (env) => {
+            process.env.NODE_ENV = env;
+            process.env.AUTH_API_KEYS = 'k';
+            process.env.WEBHOOK_SECRET = 'shh';
+            for (const v of k.bad) {
+              process.env[k.name] = v;
+              expect({ v, threw: throws(() => freshConfig().onModuleInit(), k.name) }).toEqual({
+                v,
+                threw: true,
+              });
+            }
+          },
+        );
+      });
+    }
+
+    it('names the offending raw value', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.SHUTDOWN_TIMEOUT_MS = 'abc';
+      expect(() => freshConfig().onModuleInit()).toThrow(
+        'SHUTDOWN_TIMEOUT_MS must be an integer in [1000, 2147483647] (got "abc")',
+      );
+    });
+
+    function throws(fn: () => void, name: string): boolean {
+      try {
+        fn();
+        return false;
+      } catch (err) {
+        return err instanceof Error && err.message.startsWith(name);
+      }
+    }
+  });
+
   describe('TRUST_PROXY', () => {
     it('is off (undefined) when unset, empty, 0, 00 or false', () => {
       delete process.env.TRUST_PROXY;

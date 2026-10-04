@@ -28,6 +28,21 @@ export class InstrumentationService implements OnModuleInit {
     labelNames: ['reason'] as const,
   });
 
+  /** #192: new requests answered 503 SERVICE_DRAINING by the drain gate.
+   *  Best effort — a dying process is rarely scraped; the shutdown summary log
+   *  line is the primary signal. */
+  readonly shutdownDrainRejectionsTotal = new client.Counter({
+    name: 'acdp_shutdown_drain_rejections_total',
+    help: 'New requests rejected with 503 SERVICE_DRAINING during a shutdown drain (issue #192)',
+  });
+
+  /** #192: sockets still open when a graceful close overran SHUTDOWN_TIMEOUT_MS
+   *  and was forced (incremented by the count, just before closeAllConnections). */
+  readonly shutdownForcedConnectionsTotal = new client.Counter({
+    name: 'acdp_shutdown_forced_connections_total',
+    help: 'Connections force-closed when a graceful shutdown overran SHUTDOWN_TIMEOUT_MS (issue #192)',
+  });
+
   readonly eventsIngestedTotal = new client.Counter({
     name: 'acdp_events_ingested_total',
     help: 'Total ACDP webhook events ingested',
