@@ -1237,3 +1237,56 @@
 - **Blast radius if wrong:** Low — a future upstream 5xx would be mislabelled
   retryable `INTERNAL_ERROR`, which is still a retryable status.
 - **Status:** UNCONFIRMED
+
+## `TRUST_PROXY` is opt-in, strict, and rejects `true` (follow-up to #187)
+- **Plan:** `plans/proxy-and-lint-followups.md` (Phase 1)
+- **Assumed:** operators behind a proxy want `req.ip` to be the real client, but
+  no deployment should be able to make `X-Forwarded-For` client-chosen.
+- **Chose:** unset/empty/`0`/`false` = off (no `app.set` — Express default
+  byte-identical); hop count 1-10 passed as a JS number (Express treats the
+  string `"1"` as an IP); otherwise a deduped list of `loopback|linklocal|
+  uniquelocal`, plain IPs, CIDRs with prefix ≥ /8 (v4) / ≥ /7 (v6). Rejected with
+  a specific message: `true`/`yes`/`on`, hop count > 10, `/0`-ish wide CIDRs, any
+  IPv6 entry overlapping `::ffff:0:0/96` (proxy-addr matches IPv4 peers via the
+  mapped form → would trust every IPv4 peer), zone ids, netmask notation, empty
+  entries, anything else (incl. `no`/`off`). Parsed at `AppConfigService`
+  CONSTRUCTION so bootstrap fails before migrations, in every environment.
+  One `applyTrustProxy` used by `bootstrap()` and the integration harness.
+- **Alternatives:** pass the raw string to Express (accepts `true`, `"1"` throws
+  at runtime); import transitive `proxy-addr` to validate (looser `ipaddr.js`
+  forms); validate in `onModuleInit` (too late — `app.set` runs before `listen`).
+- **Known limit (gate round 1):** the prefix floor is per entry, so an operator
+  can still list 256 `/8`s (all IPv4) or eight `/7`s (all global IPv6) — `true`
+  by enumeration. Accepted: only the operator writes this value; the floor exists
+  to catch typos/one-token mistakes, not a determined misconfiguration. IPv6 with
+  an embedded dotted quad (`::1.2.3.4`) is rejected because proxy-addr would
+  reject it only later, at `app.set`.
+- **Blast radius if wrong:** Low-medium — the bounds (10 hops, /8, /7) may reject
+  an exotic but legitimate topology; widening is a config-parser change. Too-loose
+  bounds would be a throttle-evasion hole, hence erring strict.
+- **Status:** UNCONFIRMED
+
+## Issuance-ledger `signer_ip` is `req.ip`, never raw `X-Forwarded-For` (follow-up to #187)
+- **Plan:** `plans/proxy-and-lint-followups.md` (Phase 1)
+- **Assumed:** `extractIp` preferring the leftmost XFF was a bug: client-written
+  with or without a proxy, and unbounded against `signer_ip varchar(64)` (a long
+  header could fail the ledger insert).
+- **Chose:** `extractIp` returns `req.ip` (or undefined). Proxied deployments that
+  have not set `TRUST_PROXY` now record the proxy address (documented upgrade
+  note); existing rows and their hash chain are untouched.
+- **Alternatives:** keep XFF but truncate (still spoofable); keep XFF only when
+  TRUST_PROXY is set (duplicates Express's resolution, the exact bug).
+- **Blast radius if wrong:** Low — audit-field provenance only; no auth decision reads it.
+- **Status:** UNCONFIRMED
+
+## Request logs still carry no client address (follow-up to #187)
+- **Plan:** `plans/proxy-and-lint-followups.md` (Plan review item 11)
+- **Assumed:** `RequestLoggerMiddleware`/`CorrelationIdMiddleware` read no client
+  address today, so nothing in the logs mis-attributes the proxy; they need no
+  change to "see" the trusted `req.ip`.
+- **Chose:** not adding a `clientIp` field — logging IPs is a privacy/data-
+  retention decision (personal data in every log line), out of scope here.
+- **Alternatives:** add `clientIp: req.ip` to every request line (one-line change
+  once the privacy call is made).
+- **Blast radius if wrong:** Low — additive later.
+- **Status:** UNCONFIRMED

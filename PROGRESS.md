@@ -3724,3 +3724,28 @@ Plan review: 1 round (APPROVE w/ fixes); gate: fresh Opus verifier PASS round 1.
 Checks: typecheck (TS7+TS6), lint, conventions (8 ✓), check:build ok; unit 83
 suites/1229 passed; integration 32 suites/228 passed. 3 ASSUMPTIONS.md entries
 UNCONFIRMED (#200); #182's "federation proxy's 502" entry resolved.
+
+## Follow-ups to #187/#200 — TRUST_PROXY + CI rule 8 gap + structured logs (`plans/proxy-and-lint-followups.md`) — 2026-10-03
+
+PR strategy: PR A = Phase 1 (TRUST_PROXY; security-adjacent trust boundary, solo
+gate); PR B = Phases 2+3 (CI rule 8 HttpException forms + template-literal log
+conversion / rule 9; both simple, one shared gate with per-phase verdicts).
+Plan review: 1 round, fresh Opus, APPROVE-WITH-FIXES (14 items folded in).
+
+### Phase 1 — TRUST_PROXY (complex) — DONE
+`parseTrustProxy` in `AppConfigService` (construction-time, every env): off =
+unset/empty/0/false; hop count 1-10 (as a number); list of
+loopback|linklocal|uniquelocal / IPs / CIDRs (v4 ≥ /8, v6 ≥ /7). Rejects `true`/
+`yes`/`on`, IPv4-mapped overlap, dotted-quad IPv6, zone ids, netmasks, empties.
+`applyTrustProxy` (`src/common/trust-proxy.ts`) used by `bootstrap()` and the
+integration harness (`TRUST_PROXY` env set/cleared). `extractIp` (issuance-ledger
+`signerIp`) now `req.ip` only. Docs: CONFIGURATION ("Behind a reverse proxy"),
+TROUBLESHOOTING (shared-bucket symptom, boot error), `.env.example`, CLAUDE.md
+(local). Gate: fresh Opus verifier (trust-boundary phase, Opus not Fable: config
+is reversible, default unchanged) — PASS round 1, with optional gaps
+(1) parser accepted `::1.2.3.4` that proxy-addr rejects later — fixed;
+(2) prefix floor bypassable by enumeration — logged in ASSUMPTIONS.md.
+Falsifiability confirmed by verifier (disabling `app.set` fails 2 integration tests).
+Checks: typecheck TS7+TS6, lint, conventions 8/8, check:build ok; unit 84
+suites/1282 passed; integration 33 suites/232 passed. 3 ASSUMPTIONS.md entries
+UNCONFIRMED. Next: ship PR A, then Phase 2 on a fresh branch.

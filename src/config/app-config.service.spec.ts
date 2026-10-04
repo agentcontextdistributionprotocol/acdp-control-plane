@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { AppConfigService } from './app-config.service';
+import { AppConfigService, parseTrustProxy, TRUST_PROXY_MAX_HOPS } from './app-config.service';
 
 describe('AppConfigService', () => {
   const originalEnv = { ...process.env };
@@ -90,6 +90,103 @@ describe('AppConfigService', () => {
         }
       },
     );
+  });
+
+  describe('TRUST_PROXY', () => {
+    it('is off (undefined) when unset, empty, 0, 00 or false', () => {
+      delete process.env.TRUST_PROXY;
+      expect(freshConfig().trustProxy).toBeUndefined();
+      for (const v of ['', '   ', '0', '00', 'false', 'FALSE', ' False ']) {
+        expect(parseTrustProxy(v)).toBeUndefined();
+      }
+    });
+
+    it('parses a hop count as a NUMBER (Express treats the string "1" as an IP)', () => {
+      expect(parseTrustProxy('1')).toBe(1);
+      expect(parseTrustProxy(' 2 ')).toBe(2);
+      expect(parseTrustProxy(String(TRUST_PROXY_MAX_HOPS))).toBe(TRUST_PROXY_MAX_HOPS);
+    });
+
+    it('parses names, IPs and CIDRs into a trimmed, lowercased, de-duplicated list', () => {
+      expect(parseTrustProxy('Loopback, 10.0.0.0/8')).toEqual(['loopback', '10.0.0.0/8']);
+      expect(parseTrustProxy('linklocal,uniquelocal')).toEqual(['linklocal', 'uniquelocal']);
+      expect(parseTrustProxy('::1, fd00::/8, FC00::/7')).toEqual(['::1', 'fd00::/8', 'fc00::/7']);
+      expect(parseTrustProxy('203.0.113.7')).toEqual(['203.0.113.7']);
+      expect(parseTrustProxy('2001:db8::1/128, 192.0.2.0/24')).toEqual([
+        '2001:db8::1/128',
+        '192.0.2.0/24',
+      ]);
+      expect(parseTrustProxy('loopback,LOOPBACK, 10.0.0.1,10.0.0.1')).toEqual([
+        'loopback',
+        '10.0.0.1',
+      ]);
+    });
+
+    it.each(['true', 'TRUE', ' True ', 'yes', 'on'])(
+      'rejects %j — trusting every hop makes X-Forwarded-For client-chosen',
+      (v) => {
+        expect(() => parseTrustProxy(v)).toThrow(/X-Forwarded-For.*throttle-bucket evasion/);
+      },
+    );
+
+    it.each([
+      ['11', /hop count/],
+      ['999', /hop count/],
+      ['-1', /not an IP address/],
+      ['1.5', /not an IP address/],
+      ['no', /not an IP address/],
+      ['off', /not an IP address/],
+      ['garbage', /not an IP address/],
+      ['1.2.3', /not an IP address/],
+      ['10.0.0.0/33', /prefix must be in \[8, 32\]/],
+      ['10.0.0.0/0', /prefix must be in/],
+      ['0.0.0.0/1,128.0.0.0/1', /prefix must be in/],
+      ['10.0.0.0/7', /prefix must be in/],
+      ['::/0', /prefix must be in \[7, 128\]/],
+      ['::/1', /prefix must be in/],
+      ['8000::/1', /prefix must be in/],
+      ['fe80::/129', /prefix must be in/],
+      ['10.0.0.0/255.0.0.0', /netmask/],
+      ['10.0.0.0/', /prefix must be an integer/],
+      ['fe80::1%eth0', /zone ids/],
+      ['::ffff:10.0.0.1', /dotted-quad/],
+      ['::ffff:a00:1', /IPv4-mapped/],
+      ['0:0:0:0:0:ffff:a00:1', /IPv4-mapped/],
+      ['::1.2.3.4', /dotted-quad/],
+      ['::1.2.3.4/96', /dotted-quad/],
+      ['64:ff9b::1.2.3.4', /dotted-quad/],
+      ['::ffff:0:0/96', /IPv4-mapped/],
+      ['::/80', /IPv4-mapped/],
+      ['::/7', /IPv4-mapped/],
+      ['::ffff:a00:0/104', /IPv4-mapped/],
+      ['::FFFF:0:0/95', /IPv4-mapped/],
+      ['loopback,,10.0.0.1', /empty entry/],
+      ['10.0.0.1,', /empty entry/],
+    ])('rejects %j', (v, msg) => {
+      expect(() => parseTrustProxy(v)).toThrow(msg);
+    });
+
+    it('accepts IPv6 CIDRs adjacent to, but not overlapping, IPv4-mapped space', () => {
+      expect(parseTrustProxy('::fffe:0:0/96')).toEqual(['::fffe:0:0/96']);
+      expect(parseTrustProxy('64:ff9b::/96')).toEqual(['64:ff9b::/96']);
+      expect(parseTrustProxy('::1/128')).toEqual(['::1/128']);
+    });
+
+    it.each(['development', 'production'])(
+      'fails at CONSTRUCTION in %s (before migrations), not only in onModuleInit',
+      (env) => {
+        process.env.NODE_ENV = env;
+        process.env.TRUST_PROXY = 'true';
+        expect(() => freshConfig()).toThrow(/TRUST_PROXY=true is rejected/);
+      },
+    );
+
+    it('exposes the parsed value on the service', () => {
+      process.env.TRUST_PROXY = '1';
+      expect(freshConfig().trustProxy).toBe(1);
+      process.env.TRUST_PROXY = 'loopback';
+      expect(freshConfig().trustProxy).toEqual(['loopback']);
+    });
   });
 
   describe('production validation (onModuleInit)', () => {

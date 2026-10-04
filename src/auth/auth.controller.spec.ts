@@ -10,7 +10,7 @@
  */
 import { Test } from '@nestjs/testing';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { AuthController } from './auth.controller';
+import { AuthController, extractIp } from './auth.controller';
 import { TokenIssuer } from './token-issuer.service';
 
 describe('AuthController OpenAPI', () => {
@@ -120,4 +120,27 @@ describe('AuthController throttling metadata', () => {
       expect(ttl).toBe(60_000);
     });
   }
+});
+
+describe('extractIp (issuance-ledger signerIp)', () => {
+  it('returns req.ip — the address Express resolved under TRUST_PROXY', () => {
+    expect(extractIp({ ip: '198.51.100.4' })).toBe('198.51.100.4');
+  });
+
+  it('ignores X-Forwarded-For entirely (leftmost entry is client-written)', () => {
+    const req = { ip: '127.0.0.1', headers: { 'x-forwarded-for': '6.6.6.6, 198.51.100.4' } };
+    expect(extractIp(req as never)).toBe('127.0.0.1');
+  });
+
+  it('a 100-char spoofed X-Forwarded-For can no longer overflow signer_ip varchar(64)', () => {
+    const req = { ip: '10.0.0.2', headers: { 'x-forwarded-for': 'x'.repeat(100) } };
+    const out = extractIp(req as never);
+    expect(out).toBe('10.0.0.2');
+    expect(out!.length).toBeLessThanOrEqual(64);
+  });
+
+  it('undefined when Express has no address (socket already gone) or it is empty', () => {
+    expect(extractIp({ ip: undefined })).toBeUndefined();
+    expect(extractIp({ ip: '' })).toBeUndefined();
+  });
 });

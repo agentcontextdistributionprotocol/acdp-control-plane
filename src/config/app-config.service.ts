@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { isIP } from 'node:net';
 
 function readBoolean(name: string, defaultValue = false): boolean {
   const raw = process.env[name];
@@ -32,6 +33,138 @@ function readStringList(name: string): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * Parsed `TRUST_PROXY`: `undefined` = off (Express's default — `app.set` is
+ * never called), a hop count, or a list of trusted proxy addresses/CIDRs/
+ * proxy-addr range names. Exactly the two non-boolean shapes Express's
+ * `compileTrust` takes, so the value is handed to `app.set('trust proxy', …)`
+ * verbatim (see `src/common/trust-proxy.ts`).
+ */
+export type TrustProxySetting = number | string[] | undefined;
+
+/** Upper bound on a hop count: a count above the real chain length trusts client-written XFF entries. */
+export const TRUST_PROXY_MAX_HOPS = 10;
+const TRUST_PROXY_NAMES = new Set(['loopback', 'linklocal', 'uniquelocal']);
+// Smallest prefix accepted per family. Anything wider approaches "trust
+// every peer" (`0.0.0.0/1,128.0.0.0/1` ≡ `true`); /7 keeps `fc00::/7`.
+const TRUST_PROXY_MIN_PREFIX = { 4: 8, 6: 7 } as const;
+const TRUST_PROXY_MAX_PREFIX = { 4: 32, 6: 128 } as const;
+
+/**
+ * Parse `TRUST_PROXY` strictly and fail fast on anything else. Accepts:
+ *   - unset / empty / `0` / `false` → off;
+ *   - an integer hop count in [1, TRUST_PROXY_MAX_HOPS];
+ *   - a comma-separated list of `loopback` | `linklocal` | `uniquelocal`,
+ *     plain IPv4/IPv6 addresses, or `address/prefix` CIDRs.
+ *
+ * Rejects `true` (and `yes`/`on`): trusting EVERY hop makes the leftmost
+ * `X-Forwarded-For` entry client-chosen, so any caller picks its own
+ * throttle bucket. Also rejects the CIDR shapes that are `true` in disguise
+ * (`/0`, very wide prefixes, IPv4-mapped `::ffff:…` — proxy-addr maps every
+ * IPv4 peer onto those), zone ids, netmask notation, and empty tokens.
+ */
+export function parseTrustProxy(raw: string | undefined): TrustProxySetting {
+  const value = (raw ?? '').trim();
+  if (value === '' || value === '0' || value.toLowerCase() === 'false') return undefined;
+
+  if (['true', 'yes', 'on'].includes(value.toLowerCase())) {
+    throw new Error(
+      `TRUST_PROXY=${value} is rejected: trusting every hop lets any client set its own ` +
+        `X-Forwarded-For and therefore its own req.ip (throttle-bucket evasion). Set the ` +
+        `number of proxies in front of the control plane (e.g. 1) or their addresses/CIDRs.`,
+    );
+  }
+
+  if (/^\d+$/.test(value)) {
+    const hops = Number(value);
+    if (hops > TRUST_PROXY_MAX_HOPS) {
+      throw new Error(
+        `TRUST_PROXY hop count must be in [0, ${TRUST_PROXY_MAX_HOPS}] (got ${value}); a ` +
+          `count above the real proxy chain length trusts client-written X-Forwarded-For entries.`,
+      );
+    }
+    return hops === 0 ? undefined : hops;
+  }
+
+  const entries: string[] = [];
+  for (const rawToken of value.split(',')) {
+    const token = rawToken.trim();
+    if (token === '') {
+      throw new Error(`TRUST_PROXY has an empty entry (got "${value}").`);
+    }
+    const lower = token.toLowerCase();
+    let entry: string;
+    if (TRUST_PROXY_NAMES.has(lower)) {
+      entry = lower;
+    } else {
+      entry = parseTrustProxyAddress(token);
+    }
+    if (!entries.includes(entry)) entries.push(entry);
+  }
+  return entries;
+}
+
+function parseTrustProxyAddress(token: string): string {
+  const invalid = (why: string): Error =>
+    new Error(
+      `TRUST_PROXY entry "${token}" is invalid: ${why}. Expected a hop count, ` +
+        `loopback|linklocal|uniquelocal, an IP address, or an IP/prefix CIDR.`,
+    );
+  if (token.includes('%')) throw invalid('zone ids are not supported');
+  const slash = token.indexOf('/');
+  const addr = (slash === -1 ? token : token.slice(0, slash)).toLowerCase();
+  const family = isIP(addr);
+  if (family !== 4 && family !== 6) throw invalid('not an IP address');
+  // proxy-addr's ipaddr.js rejects IPv6 with an embedded dotted quad other
+  // than ::ffff:a.b.c.d (itself rejected below), so `::1.2.3.4` would pass
+  // here and only fail later, at app.set, after migrations. Reject it now.
+  if (family === 6 && addr.includes('.')) {
+    throw invalid('IPv6 with an embedded dotted-quad is not supported; use hex groups');
+  }
+
+  let prefix: number = TRUST_PROXY_MAX_PREFIX[family];
+  if (slash !== -1) {
+    const prefixRaw = token.slice(slash + 1);
+    if (!/^\d+$/.test(prefixRaw)) {
+      throw invalid('prefix must be an integer (netmask notation is not supported)');
+    }
+    prefix = Number(prefixRaw);
+    if (prefix < TRUST_PROXY_MIN_PREFIX[family] || prefix > TRUST_PROXY_MAX_PREFIX[family]) {
+      throw invalid(
+        `IPv${family} prefix must be in [${TRUST_PROXY_MIN_PREFIX[family]}, ` +
+          `${TRUST_PROXY_MAX_PREFIX[family]}]`,
+      );
+    }
+  }
+  // proxy-addr compares an IPv4 peer against IPv6 ranges through its
+  // IPv4-mapped form, so any IPv6 entry overlapping ::ffff:0:0/96 would
+  // trust IPv4 peers — up to every IPv4 peer (`::ffff:0:0/96`, `::/80`).
+  if (family === 6 && overlapsIpv4Mapped(ipv6ToBigInt(addr), prefix)) {
+    throw invalid('it overlaps IPv4-mapped space (::ffff:0:0/96); use the plain IPv4 form');
+  }
+  return slash === -1 ? addr : `${addr}/${prefix}`;
+}
+
+/** 128-bit value of a net.isIP-validated, dotted-quad-free IPv6 address. */
+function ipv6ToBigInt(s: string): bigint {
+  const halves = s.split('::');
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length > 1 && halves[1] ? halves[1].split(':') : [];
+  const groups =
+    halves.length > 1 ? [...head, ...Array<string>(8 - head.length - tail.length).fill('0'), ...tail] : head;
+  return groups.reduce((acc, g) => (acc << 16n) | BigInt(parseInt(g, 16)), 0n);
+}
+
+const IPV4_MAPPED_NET = 0xffffn << 32n; // ::ffff:0:0
+const IPV4_MAPPED_PREFIX = 96;
+
+/** True when `addr/prefix` and ::ffff:0:0/96 share at least one address. */
+function overlapsIpv4Mapped(addr: bigint, prefix: number): boolean {
+  const common = Math.min(prefix, IPV4_MAPPED_PREFIX);
+  const shift = BigInt(128 - common);
+  return addr >> shift === IPV4_MAPPED_NET >> shift;
 }
 
 @Injectable()
@@ -250,6 +383,10 @@ export class AppConfigService implements OnModuleInit {
   // still lands in ONE bucket (issue #187). 128 = per-address (the pre-#187
   // behaviour). Validated to an integer in [1, 128] at startup.
   readonly throttleIpv6SubnetPrefix = readNumber('THROTTLE_IPV6_SUBNET_PREFIX', 64);
+  // Express `trust proxy` (opt-in; unset = off, Express's default). Parsed at
+  // CONSTRUCTION so a bad value fails before migrations run in bootstrap(),
+  // in every environment — see parseTrustProxy and docs/CONFIGURATION.md.
+  readonly trustProxy: TrustProxySetting = parseTrustProxy(process.env.TRUST_PROXY);
 
   // Receipt audit mode (ACDP 0.2.0, RFC-ACDP-0010). When enabled, a
   // background sweep cross-checks registry receipts on ingested publish

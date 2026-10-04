@@ -6,6 +6,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { PinoLogger } from './common/pino-logger';
+import { applyTrustProxy } from './common/trust-proxy';
 import { AppConfigService } from './config/app-config.service';
 import { runMigrations } from './db/migrate';
 import { GlobalExceptionFilter } from './errors/exception.filter';
@@ -40,6 +41,11 @@ export async function bootstrap(rootModule: Type<unknown> = AppModule): Promise<
     logger: pinoLogger,
     rawBody: true,
   });
+
+  // Opt-in reverse-proxy trust (TRUST_PROXY, parsed and validated by
+  // AppConfigService at construction above). Unset leaves Express's default.
+  // Set before any middleware so every req.ip reader sees the same value.
+  applyTrustProxy(app, config.trustProxy);
 
   // Align the framework body-parser limit with INGEST_MAX_BODY_BYTES. Without
   // this, Express's ~100 kB default rejects legitimate registry webhooks before
