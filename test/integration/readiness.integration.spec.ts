@@ -406,6 +406,7 @@ describe('Readiness — boot-time validation in the development harness (issue #
     ['DB_POOL_CONNECTION_TIMEOUT', '0'],
     ['DB_POOL_CONNECTION_TIMEOUT', '-1'],
     ['DB_POOL_CONNECTION_TIMEOUT', '1.5'],
+    ['DB_POOL_CONNECTION_TIMEOUT', '5s'],
     ['READINESS_DB_TIMEOUT_MS', 'abc'],
     ['READINESS_DB_TIMEOUT_MS', '0'],
     ['READINESS_DB_TIMEOUT_MS', '40000'],

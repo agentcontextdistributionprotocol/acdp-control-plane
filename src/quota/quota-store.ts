@@ -93,7 +93,9 @@ return {v, ttl}
     private readonly redis: {
       eval: (script: string, numKeys: number, ...args: (string | number)[]) => Promise<unknown>;
       quit: () => Promise<unknown>;
-      /** ioredis connection state (`ready` once connected); read by `health()`. */
+      /** Immediate teardown; stops ioredis's reconnect loop (used by `close()`). */
+      disconnect: () => void;
+      /** ioredis connection state (`ready` once connected); read by `health()` and `close()`. */
       status?: string;
     },
     private readonly logger?: Pick<Logger, 'warn'>,
@@ -104,10 +106,18 @@ return {v, ttl}
    * event loop alive, so without this a process that configured quotas never
    * exits cleanly — `QuotaModule.onModuleDestroy` calls this on shutdown.
    * Never throws: shutdown must not be blocked by a failing transport.
+   *
+   * Same rule as `RedisStreamHubStrategy.destroy()` (#210 reconcile): a graceful
+   * QUIT needs a live connection, so only a `ready` client gets `quit()`. Any
+   * other (Redis down, or still connecting) would queue the QUIT behind its
+   * reconnect loop and never settle — and this is AWAITED by
+   * `onModuleDestroy`, so `app.close()` would stall until SHUTDOWN_TIMEOUT_MS
+   * forced an exit 1. `disconnect()` stops that loop at once.
    */
   async close(): Promise<void> {
     try {
-      await this.redis.quit();
+      if (this.redis.status === 'ready') await this.redis.quit();
+      else this.redis.disconnect();
     } catch (e) {
       this.logger?.warn({
         msg: 'redis quota quit failed',

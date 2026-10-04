@@ -642,3 +642,125 @@ plus docs and a scanner-failure test for CI rule 8b.
 
 ## 2026-10-04 — #193 `.env` loader (Opus)
 Replaced `dotenv` with `src/env-file.ts` (`util.parseEnv`, BOM strip, ENOENT-only tolerance, explicit env-wins merge) behind `src/load-env.ts`; supersedes the #155 'keep import dotenv/config' assumption. Rejected bare `process.loadEnvFile` (EACCES reported as ENOENT, BOM corrupts first key, undocumented no-override). Behaviour change: unreadable `.env` fails boot; `KEY: value` and `DOTENV_*` unsupported. Status: UNCONFIRMED in ASSUMPTIONS.md pending /reconcile.
+
+## Reconcile (reversible tier): #192, #210, #191 — 2026-10-04
+Scope: the 14 reversible `UNCONFIRMED` `ASSUMPTIONS.md` entries from #192 (graceful
+drain), #210 (readiness/liveness) and #191 (Jest without `--experimental-vm-modules`).
+Each was re-checked against the code at `main` fbd3ffa. The 8 one-way-door entries
+(#193 `.env` loader, SSE `retry:` default, shutdown summary/forced-count semantics,
+drain-knob validation, `/readyz` drain headers, `SHUTDOWN_DRAIN_DELAY_MS` bounds,
+`/healthz` staleness contract, report-only check shape) are left to the separate
+Fable analysis and the user. Status: all 14 CONFIRMED (2026-10-04), decided by Opus.
+No code changed; one code follow-up found.
+
+### 2026-10-04 — `DrainState` lives in a sibling global module (#192) — decided by Opus
+Reasoning: `src/shutdown-drain.ts:160-165`, imported right after `ShutdownFailuresModule`
+(`src/app.module.ts:81`). One concern per module; both are hook-free, so both outlive
+`close()`. Folding it into `ShutdownFailuresModule` would buy nothing. Verdict: CONFIRMED.
+
+### 2026-10-04 — Idle-socket reaper: injectable interval, absent probe = never reap (#192) — decided by Opus
+Reasoning: `src/shutdown.ts:265-294`. Gating on `listenerClosed` is the only safe reading,
+because `closeIdleConnections()` would reset new connections while the listener is open.
+A throwing `beginDrain` must not make the exit code 1: the hub's `destroy()` backstop still
+ends the streams, and exit 1 means a resource teardown failed. The entry was inaccurate in
+one point. A throwing reaper tick is not swallowed silently; it is logged once
+(`src/shutdown.ts:280-290`). That is the stronger behaviour, so the entry text was corrected
+rather than the code. Verdict: CONFIRMED (entry text corrected).
+
+### 2026-10-04 — SSE helper metrics and backstop semantics (#192) — decided by Opus
+Reasoning: `src/events/sse-drain.ts:64-110`. `terminated_total{reason="shutdown"}` reads as
+"shutdown events written", and that includes reconnects into the drain window. This is
+honest, and the metric is best-effort on a dying process. The redundant `isDraining()` early
+return is kept: it states the "never touch the hub after teardown" invariant explicitly, at
+no cost. Verdict: CONFIRMED.
+
+### 2026-10-04 — Drain gate reads the path from `req.originalUrl` (#192) — decided by Opus
+Reasoning: `src/middleware/drain-gate.middleware.ts:26-36`. Inside `forRoutes('*')`
+middleware, `originalUrl` is the only path Express has not rewritten (measured: `req.path`
+is `/`). The case-insensitive, optional-trailing-slash match mirrors Express 5's default
+routing, so the exemption covers exactly what reaches the SSE controllers. Verdict: CONFIRMED.
+
+### 2026-10-04 — Drain gate side effects precede the throw (#192) — decided by Opus
+Reasoning: `src/middleware/drain-gate.middleware.ts:89-101`. The gate sets headers, then
+throws for `GlobalExceptionFilter`. That is the established pattern (the `/readyz` drain arm
+does the same) and it is asserted end to end. The CLAUDE.md env-var gap the entry left to
+the user is closed: CLAUDE.md now lists all four drain knobs. Verdict: CONFIRMED.
+
+### 2026-10-04 — Drain delay: phase model, wiring and log fields (#192) — decided by Opus
+Reasoning: `src/shutdown-drain.ts:54-76`, `src/shutdown.ts:221-263`. The phases are monotone
+(`serving` → `draining` → `closing`). With a delay of 0 the handler is exactly the Phase 2
+path. The gate decides from the arrival stamp, not the live phase, which stops it from
+rejecting a POST whose headers arrived before the close. Verdict: CONFIRMED.
+
+### 2026-10-04 — Readiness late-settle semantics (#210) — decided by Opus
+Reasoning: `src/health/readiness.service.ts:192-282`. A late success refreshes the cache and
+the gauge but is not counted twice, so one probe means one counter increment and the gauge
+tracks the truth. A late failure only re-labels an existing "down", so ignoring it is
+correct. The sequence guard cannot be reached under single-flight. It stays as a defence in
+case single-flight is ever relaxed. Verdict: CONFIRMED.
+
+### 2026-10-04 — `/readyz` `Cache-Control: no-store` before the drain check (#210) — decided by Opus
+Reasoning: `src/health/health.controller.ts:91` is the first line of `readyz()`, so all three
+arms carry it. The interim `/healthz` gap is closed: Phase 2 shipped `no-store` there (line
+56). Verdict: CONFIRMED.
+
+### 2026-10-04 — Probe log demotion threshold and path matching (#210) — decided by Opus
+Reasoning: `src/middleware/request-logger.middleware.ts:51-60`. Successful probes log at
+`debug` because probes are now unthrottled. The exact-path, case-sensitive match errs toward
+visibility: an odd-cased or trailing-slash probe stays at `info`, and a failure is never
+hidden. Metrics are untouched. Verdict: CONFIRMED.
+
+### 2026-10-04 — Pool-error counter lands with Phase 2 (#210) — decided by Opus
+Reasoning: this was phase sequencing only. Phase 2 has landed the listener
+(`src/health/readiness.service.ts:114`) and removed the latch. Verdict: CONFIRMED (moot).
+
+### 2026-10-04 — Integration criteria through an in-process TCP fault proxy (#210) — decided by Opus
+Reasoning: test-only. `test/helpers/pg-fault-proxy.ts` maps `localhost` to `127.0.0.1`, and
+the multi-wave pool-client bound is stronger than a single burst. The "black-holed
+`/healthz` hangs" carve-out is closed by Phase 2's case
+(`test/integration/readiness.integration.spec.ts:175`). Verdict: CONFIRMED.
+
+### 2026-10-04 — Redis stream hub teardown disconnects a client that is not ready (#210) — decided by Opus
+Reasoning: `src/events/redis-stream-hub.strategy.ts:149-160`. Sending `quit()` only to a
+`ready` client and calling `disconnect()` on any other is correct. A `QUIT` queued behind
+ioredis's reconnect loop never completes. Verdict: CONFIRMED, with a code FOLLOW-UP:
+`RedisQuotaStore.close()` (`src/quota/quota-store.ts:108-117`) still awaits an unconditional
+`quit()`. `QuotaModule.onModuleDestroy` awaits it, so with Redis down at shutdown,
+`app.close()` stalls until `SHUTDOWN_TIMEOUT_MS`, the close is forced and the exit code is
+1. This is the same hazard, worse because it is awaited.
+`test/integration/quota-store-lifecycle.integration.spec.ts:131-158` already works around it
+in the spec's own cleanup. Apply the same `ready` → `quit()`, else `disconnect()` rule there.
+
+### 2026-10-04 — Integration modelling for Phases 2-3 (#210) — decided by Opus
+Reasoning: test-only. The 2 s client-side race turns a hang into an assertion. Recovery is
+measured with `/healthz`-only polling, which proves the background refresh drives it. The
+freed-port "Redis stopped" case never stops the shared Redis. Verdict: CONFIRMED.
+
+### 2026-10-04 — Jest down-compiles `@nestjs/*` via `@swc/jest` (#191) — decided by Opus
+Reasoning: the divergence from production is test-only and covered by `check:build`
+(it boots `dist/main.js`), the spawned-process shutdown integration spec, and the
+`src/test-harness.spec.ts` tripwire. Reversal is a config change. The plan's own condition
+still applies: C was chosen as the first step to Option D (swc for project TS, which removes
+ts-jest's `typescript <7` peer). Verdict: CONFIRMED, with a re-evaluation trigger. When #156
+Phase 3 is planned, decide Option D there; if D is rejected, revisit C against the flag.
+
+### Follow-ups
+- Code: `RedisQuotaStore.close()` should `quit()` only a `ready` client and
+  `disconnect()` any other (see the Redis teardown entry). This is a small change plus a unit
+  spec, and is not implemented here.
+- Process: re-evaluate #191 Variant C when #156 Phase 3 decides Option D.
+
+### Summary
+14 reversible entries confirmed by Opus. One entry's text was corrected (the reaper logs
+once and does not swallow). 0 escalated. 1 code follow-up. The 8 one-way-door entries are
+untouched and await the user.
+
+## 2026-10-04 — /reconcile (#193/#192/#210 one-way-door tier) — decided by the user, analysed by Fable
+- **Error codes `SERVICE_DRAINING` / `DEPENDENCY_UNAVAILABLE` (public ErrorCode):** CONFIRMED. Two codes (different remedy and retry contract), CP-local SCREAMING_SNAKE (RFC-ACDP-0007 §5 has no 503 code). Rename later = breaking; splitting finer = additive.
+- **Probe contract:** CONFIRMED. /readyz 200→503 with the standard envelope, legacy ok/database keys under error.details; /healthz stays 200 with `ok` mirroring the last readiness verdict (true before first probe). Optional additive `checks.database.required:true` DEFERRED.
+- **Env knobs:** CONFIRMED (SHUTDOWN_TIMEOUT_MS strict 1000-2147483647, SHUTDOWN_RETRY_AFTER_SECONDS, STREAM_SSE_SHUTDOWN_RETRY_MS, SHUTDOWN_DRAIN_DELAY_MS default 0, READINESS_DB_TIMEOUT_MS 1000, READINESS_CACHE_MS 1000, DB_POOL_CONNECTION_TIMEOUT > 0). CHANGE: DB_POOL_CONNECTION_TIMEOUT moves from lenient readNumber to the strict integer parser (tightening later would be the breaking direction).
+- **SSE wire event:** CONFIRMED `event: shutdown` data {reason:'server_shutdown'} + `retry:`.
+- **#193 .env loader:** CONFIRMED (unreadable .env fails boot; `KEY: value` and DOTENV_* dropped). CHANGE: EISDIR error names the Docker bind-mount-of-missing-file cause.
+- **Shutdown logs and drain details:** CONFIRMED and FROZEN: `graceful close timed out — forcing shutdown`, `shutdown drain complete`, the 25 s budget warning, drain 503 headers, 1000 ms retry default.
+- **Follow-up code tasks (this branch):** DB_POOL_CONNECTION_TIMEOUT strict parse; EISDIR hint; RedisQuotaStore.close() quit-only-if-ready (Opus-tier follow-up from the same reconcile).
+- **Follow-ups implemented (this branch, uncommitted):** DB_POOL_CONNECTION_TIMEOUT now uses `readStrictInteger` (`5s`/`1.5`/empty fail startup; unset = 5000); `.env` EISDIR error names the Docker bind-mount cause (`src/env-file.ts`, code/syscall kept); `RedisQuotaStore.close()` quits only a `ready` client, else `disconnect()` (lifecycle spec's bounded cleanup kept as a regression backstop).

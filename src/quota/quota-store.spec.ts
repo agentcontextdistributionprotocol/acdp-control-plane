@@ -38,6 +38,7 @@ describe('RedisQuotaStore', () => {
     const fakeRedis = {
       eval: jest.fn().mockResolvedValue([5, 42]),
       quit: jest.fn().mockResolvedValue('OK'),
+      disconnect: jest.fn(),
     };
     const s = new RedisQuotaStore(fakeRedis);
     const r = await s.increment('k', 60);
@@ -50,6 +51,7 @@ describe('RedisQuotaStore', () => {
     const fakeRedis = {
       eval: jest.fn().mockResolvedValue(['7', '13']),
       quit: jest.fn().mockResolvedValue('OK'),
+      disconnect: jest.fn(),
     };
     const s = new RedisQuotaStore(fakeRedis);
     const r = await s.increment('k', 60);
@@ -62,6 +64,7 @@ describe('RedisQuotaStore', () => {
     const fakeRedis = {
       eval: jest.fn().mockRejectedValue(new Error('CONNREFUSED')),
       quit: jest.fn().mockResolvedValue('OK'),
+      disconnect: jest.fn(),
     };
     const s = new RedisQuotaStore(fakeRedis, logger);
     const r = await s.increment('k', 60);
@@ -76,6 +79,7 @@ describe('RedisQuotaStore', () => {
     const fakeRedis = {
       eval: jest.fn().mockResolvedValue(null),
       quit: jest.fn().mockResolvedValue('OK'),
+      disconnect: jest.fn(),
     };
     const s = new RedisQuotaStore(fakeRedis);
     expect(await s.increment('k', 60)).toEqual({ count: 0, ttlSeconds: 0 });
@@ -83,20 +87,44 @@ describe('RedisQuotaStore', () => {
 
   // close() exists because an unclosed ioredis client keeps Node's event loop
   // alive — that is what hung the integration suite when REDIS_URL reached CI.
-  it('close() quits the client', async () => {
+  it('close() quits a ready client gracefully', async () => {
     const fakeRedis = {
       eval: jest.fn(),
       quit: jest.fn().mockResolvedValue('OK'),
+      disconnect: jest.fn(),
+      status: 'ready',
     };
     await new RedisQuotaStore(fakeRedis).close();
     expect(fakeRedis.quit).toHaveBeenCalledTimes(1);
+    expect(fakeRedis.disconnect).not.toHaveBeenCalled();
   });
+
+  // A QUIT sent to a client that is not `ready` queues behind ioredis's reconnect
+  // loop and never settles; close() is awaited by QuotaModule.onModuleDestroy, so
+  // that would stall app.close() until the shutdown deadline forced exit 1.
+  it.each(['connecting', 'reconnecting', 'connect', 'wait', 'close', 'end', undefined])(
+    'close() disconnects (never quits) a client whose status is %s',
+    async (status) => {
+      const fakeRedis = {
+        eval: jest.fn(),
+        // Never settles — exactly what a queued QUIT does with Redis down.
+        quit: jest.fn(() => new Promise<never>(() => undefined)),
+        disconnect: jest.fn(),
+        status,
+      };
+      await expect(new RedisQuotaStore(fakeRedis).close()).resolves.toBeUndefined();
+      expect(fakeRedis.disconnect).toHaveBeenCalledTimes(1);
+      expect(fakeRedis.quit).not.toHaveBeenCalled();
+    },
+  );
 
   it('close() never throws, so a failing transport cannot block shutdown', async () => {
     const logger = { warn: jest.fn() };
     const fakeRedis = {
       eval: jest.fn(),
       quit: jest.fn().mockRejectedValue(new Error('ECONNRESET')),
+      disconnect: jest.fn(),
+      status: 'ready',
     };
     const s = new RedisQuotaStore(fakeRedis, logger);
     await expect(s.close()).resolves.toBeUndefined();
@@ -108,7 +136,7 @@ describe('RedisQuotaStore', () => {
     ['reconnecting', 'down'],
     ['end', 'down'],
   ])('health(): ioredis status %s -> %s, with no round-trip (issue #210 Phase 3)', (status, expected) => {
-    const fakeRedis = { eval: jest.fn(), quit: jest.fn(), status };
+    const fakeRedis = { eval: jest.fn(), quit: jest.fn(), disconnect: jest.fn(), status };
     expect(new RedisQuotaStore(fakeRedis).health()).toBe(expected);
     expect(fakeRedis.eval).not.toHaveBeenCalled();
   });
