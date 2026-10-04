@@ -52,6 +52,8 @@ const SHIPPED: readonly string[] = [
   "FEDERATION_UPSTREAM_ERROR",
   // #192 — the shutdown drain gate (503).
   "SERVICE_DRAINING",
+  // #210 — /readyz: a required backing dependency is down (503).
+  "DEPENDENCY_UNAVAILABLE",
 ];
 
 describe("ErrorCode public surface", () => {

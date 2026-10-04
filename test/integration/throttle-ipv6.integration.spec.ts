@@ -13,6 +13,10 @@ import { RawResponse, TestClient } from '../helpers/test-client';
  * request → ThrottleByUserGuard → storage → GlobalExceptionFilter path, and
  * (second describe) that THROTTLE_IPV6_SUBNET_PREFIX reaches the guard
  * through ThrottlerModule's object-form options.
+ *
+ * The throttled public route is `GET /ingest/health` (`@Public()`, static):
+ * the probes `/healthz` / `/readyz` are `@SkipThrottle()` since #210, so they
+ * can no longer stand in for "an unauthenticated, throttled route".
  */
 
 const LIMIT = 3;
@@ -84,7 +88,7 @@ describe('Throttle — IPv6 /64 rotation (issue #187, integration)', () => {
     const statuses: number[] = [];
     let last: RawResponse | undefined;
     for (const ip of ROTATING_64) {
-      last = await anon.requestRaw('GET', '/healthz', from(ip));
+      last = await anon.requestRaw('GET', '/ingest/health', from(ip));
       statuses.push(last.status);
     }
     // First LIMIT distinct addresses pass, every later one is refused —
@@ -94,7 +98,7 @@ describe('Throttle — IPv6 /64 rotation (issue #187, integration)', () => {
   });
 
   it('a different /64 keeps its own bucket', async () => {
-    const res = await anon.requestRaw('GET', '/healthz', from('2001:db8:abcd:13::1'));
+    const res = await anon.requestRaw('GET', '/ingest/health', from('2001:db8:abcd:13::1'));
     expect(res.status).toBe(200);
   });
 
@@ -102,7 +106,7 @@ describe('Throttle — IPv6 /64 rotation (issue #187, integration)', () => {
     const seq = ['192.0.2.7', '::ffff:192.0.2.7', '::ffff:c000:207', '192.0.2.7'];
     const statuses: number[] = [];
     for (const ip of seq) {
-      statuses.push((await anon.requestRaw('GET', '/readyz', from(ip))).status);
+      statuses.push((await anon.requestRaw('GET', '/ingest/health', from(ip))).status);
     }
     expect(statuses).toEqual([200, 200, 200, 429]);
   });
@@ -142,7 +146,7 @@ describe('Throttle — THROTTLE_IPV6_SUBNET_PREFIX=128 (knob wiring, integration
     const anon = new TestClient(ctx.url);
     const statuses: number[] = [];
     for (const ip of ROTATING_64) {
-      statuses.push((await anon.requestRaw('GET', '/healthz', from(ip))).status);
+      statuses.push((await anon.requestRaw('GET', '/ingest/health', from(ip))).status);
     }
     expect(statuses).toEqual(ROTATING_64.map(() => 200));
   });

@@ -1521,3 +1521,82 @@
 - **Blast radius if wrong:** Low. A deployment that set a negative/garbage value now
   fails boot (intended); the warning never blocks.
 - **Status:** UNCONFIRMED (2026-10-04)
+
+## Readiness late-settle semantics: late success refreshes, late failure does not (issue #210, Phase 1)
+- **Plan:** `plans/readyz-db-down-fix.md` (Phase 1, Edge cases): "The timed-out query
+  settles later as success. It must not overwrite a newer verdict … If it is the
+  latest, it may update the cache, so recovery is seen early." Late failures and
+  metrics for a late settle are unspecified.
+- **Assumed:**
+  - A query that SUCCEEDS after its deadline already answered `timeout` refreshes the
+    cached verdict (ready, new `checkedAt`), sets `acdp_dependency_up` to 1 and logs the
+    recovery transition, but does NOT increment `acdp_readiness_checks_total` again —
+    one real probe is counted once, as the `timeout` decided at the deadline.
+  - A query that FAILS after its deadline changes nothing (same "down"; its error
+    text would only relabel `reason` from `timeout` to `error`).
+  - The sequence-number guard ("must not overwrite a newer verdict") is kept, but is
+    unreachable by construction: single-flight retains the in-flight probe until its
+    query settles, so no newer probe — hence no newer verdict — can exist meanwhile.
+    The unit spec asserts that invariant instead of the unreachable overwrite case.
+  - Before the first probe the service assumes `ready` (migrations proved
+    connectivity at boot), so a first `up` verdict logs nothing and a first `down`
+    verdict logs one `readiness changed` warn.
+- **Blast radius if wrong:** Low. Only affects which verdict a probe sees for at most
+  one cache window, and counter-vs-gauge bookkeeping on a late success.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## `/readyz` `Cache-Control: no-store` set before the drain check; `/healthz` untouched (issue #210, Phase 1)
+- **Plan:** D9 says both arms of both probes send `no-store`; Phase 1's Files say
+  "Leave `/healthz` alone in this phase" and keep the #192 drain check the FIRST
+  statement of `readyz()`.
+- **Assumed:** `readyz()` sets `Cache-Control: no-store` as its very first line (a
+  header write, not a decision), then the unchanged `isDraining()` check, then
+  `ReadinessService.evaluate()` — so the drain arm, the 200 arm and the
+  `DEPENDENCY_UNAVAILABLE` arm all carry it. `/healthz` gets `no-store` in Phase 2
+  together with its liveness rewrite. The drain check keeps `isDraining()`
+  (= `phase() !== 'serving'`, identical semantics to the plan's wording).
+- **Blast radius if wrong:** Low. A cache in front of `/healthz` could serve a stale
+  liveness body until Phase 2.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## Probe log demotion threshold and path matching (issue #210, Phase 1, D11)
+- **Plan:** D11: successful `GET`/`HEAD` `/healthz`, `/readyz` lines at `debug` when
+  `statusCode < 400`; non-2xx stay `info`; match the path without the query string.
+- **Assumed:** the test is `statusCode < 400` (a 3xx probe answer, which the CP never
+  produces, would also be `debug`), on the request logger's existing normalized path
+  (query string stripped, exact match — `/readyz/` with a trailing slash or
+  `/readyz/x` stays `info`). Only the log level changes; `http_requests_total` /
+  `http_request_duration_seconds` are untouched.
+- **Blast radius if wrong:** Low. Log volume/visibility only.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## The pool-error counter (D12) lands with Phase 2, not Phase 1 (issue #210)
+- **Plan:** D12 says `ReadinessService` attaches its own pool `'error'` listener to
+  count `acdp_db_pool_errors_total`; the plan places that listener, the counter and
+  its tests under Phase 2's Files (with the `hasFatalError` latch deletion).
+- **Assumed:** Phase 1 does not attach the listener or construct the counter; it only
+  makes `ReadinessService` an `AppModule` provider that injects both `DatabaseService`
+  and `InstrumentationService` — the wiring D12 relies on. `hasFatalError`, the
+  `/healthz` body and its TROUBLESHOOTING entry (which still misattributes the latch
+  to `/readyz`) are untouched until Phase 2.
+- **Blast radius if wrong:** Low. Idle-client pool losses stay log-only for one more
+  phase.
+- **Status:** UNCONFIRMED (2026-10-04)
+
+## Integration criteria measured through an in-process TCP fault proxy (issue #210, Phase 1)
+- **Plan:** Phase 1 Tests: `test/helpers/pg-fault-proxy.ts`; the
+  `cacheMs + timeout + 500` recovery criterion is proxy-dependent.
+- **Assumed:**
+  - The pending-connect case forces a NEW-client connect by booting with
+    `DB_POOL_IDLE_TIMEOUT=1` and waiting for `pool.totalCount === 0` before the
+    black-hole, then asserts exactly one socket was accepted into the black hole.
+  - The "50 concurrent probes add ≤ 1 pool client" criterion runs one burst of 50
+    AND five waves of 10 spanning several cache windows, taking the max
+    `pool.totalCount` sampled between waves — a single burst all joins one probe
+    inside one cache window and on its own proves less.
+  - The proxy maps a `localhost` target to `127.0.0.1` (IPv4 loopback is reachable
+    in both the compose and native-Postgres setups).
+  - "`/healthz` stays fast" is asserted with the DB *refused* only; a black-holed
+    `/healthz` still hangs until Phase 2 (by design of this phase).
+- **Blast radius if wrong:** Low (test-only).
+- **Status:** UNCONFIRMED (2026-10-04)

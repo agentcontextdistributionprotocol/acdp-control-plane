@@ -354,6 +354,46 @@ SELECT name FROM _migrations ORDER BY name;
 `max_connections` or lower `DB_POOL_MAX` (must stay ≥ 2; the config service
 refuses `< 2`).
 
+### `GET /readyz` returns `503 DEPENDENCY_UNAVAILABLE`
+
+Expected while Postgres cannot serve this replica (issue #210): the load balancer
+should stop routing here until it recovers. The body is the standard error envelope;
+`error.details.checks.database.reason` says why:
+
+- `"error"` — the probe failed fast: connection refused, authentication failure,
+  `max_connections` exhausted, the pool ended. The driver's error text is never in
+  the body (the endpoint is unauthenticated); it is in the `readiness changed` warn
+  log line, logged once per transition, along with `latencyMs`.
+- `"timeout"` — no answer within `READINESS_DB_TIMEOUT_MS` (default 1000 ms): a
+  network partition, an overloaded database, or a **saturated pool**. The probe uses
+  the shared app pool, so if every connection is busy for longer than the timeout,
+  readiness reads as down too — real requests are also waiting at that point. Check
+  for long-running queries and `DB_POOL_MAX` before suspecting the network.
+
+Also check:
+
+- **Kubernetes `timeoutSeconds`.** With the default 1000 ms probe timeout, set the
+  `readinessProbe`'s `timeoutSeconds` to at least `2`; with the k8s default of `1`
+  the kubelet gives up first and reports a failure without our label or metric.
+- **A few seconds of 503 after the database is back is normal.** The verdict is
+  cached for `READINESS_CACHE_MS` and the probe is single-flight, so a probe still
+  stuck in a connect or checkout must finish first. Recovery takes up to
+  `READINESS_CACHE_MS + max(READINESS_DB_TIMEOUT_MS, DB_POOL_CONNECTION_TIMEOUT)`
+  (defaults: about 6 s), and in the worst case (wait for a connection, then a slow
+  `SELECT 1`) `READINESS_CACHE_MS + DB_POOL_CONNECTION_TIMEOUT + READINESS_DB_TIMEOUT_MS`
+  (about 7 s).
+- **Metrics.** `acdp_dependency_up{dependency="database"}` is 0 while down;
+  `acdp_readiness_checks_total{dependency="database",result="error"|"timeout"}` counts
+  the real probes (cache hits are not counted). Alert on the gauge being 0 for 1m.
+- **Probes used to be `429`'d.** Before #210, `/healthz` and `/readyz` were
+  rate-limited per IP like any public route, so a busy load-balancer fleet or a
+  shared-NAT monitor could read "unready" from a `429`. Fixed for `/readyz`: it is now
+  `@SkipThrottle()` (its database cost is bounded by the cache instead). `/healthz`
+  stays throttled until it becomes pure liveness (#210 Phase 2). Upgrade.
+- **Probe request logs are now `debug`.** Successful `GET`/`HEAD` `/healthz` and
+  `/readyz` request-log lines moved from `info` to `debug` (the throttle no longer
+  caps their volume); a non-2xx probe answer still logs at `info`.
+
 ### `GET /readyz` reports `database: "unhealthy"` though Postgres is up
 
 The pool hit a fatal error (`hasFatalError=true`), which sticks for the process

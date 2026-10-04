@@ -123,7 +123,8 @@ jobs:
             exit 1
           fi
           curl -fsS http://localhost:3001/healthz
-          # /readyz proves migrations ran and the DB pool is live.
+          # /readyz proves migrations ran and the DB pool is live: it answers 503
+          # (DEPENDENCY_UNAVAILABLE) when Postgres is unreachable (#210), so -f fails.
           curl -fsS http://localhost:3001/readyz
           docker rm -f cp pg
           docker network rm smoke

@@ -73,6 +73,7 @@ wherever one exists. `INTERNAL_ERROR` is reserved for genuine server faults
 | `VALIDATION_ERROR` | 400 | specific | Malformed witness query parameter (`schema_violation`). |
 | `FEDERATION_UPSTREAM_RATE_LIMITED` | 503 | specific | The federated registry answered 429. |
 | `SERVICE_DRAINING` | 503 | specific | This instance is shutting down; retry (honour `Retry-After`) — another replica will serve it. Transient. |
+| `DEPENDENCY_UNAVAILABLE` | 503 | specific | A required backing dependency (today: Postgres) failed the readiness probe; `error.details.checks` names it. Readiness only. Transient; retry with backoff. CP-local SCREAMING_SNAKE code with no RFC-ACDP-0007 §5 mapping (that closed enum has no 503 member). |
 | `FEDERATION_UPSTREAM_ERROR` | 502 | specific | No usable response from the federated registry: SSRF-refused base URL, transport/timeout failure, rejected redirect, or body over 1 MiB. |
 | `CONTEXT_ID_MISMATCH` | 502 | specific | The registry served a different `ctx_id` than requested. |
 | `CONTEXT_BINDING_UNVERIFIABLE` | 502 | specific | The served body's `ctx_id` could not be checked. |
@@ -91,6 +92,17 @@ A CORS preflight is still answered `204` by the CORS layer. The two SSE routes
 are exempt (see `GET /runs/:runId/events/stream`). It is a CP-local
 SCREAMING_SNAKE code: RFC-ACDP-0007 §5's closed enum has no 503 code, so no
 RFC code is minted or reused.
+
+`DEPENDENCY_UNAVAILABLE` (issue #210) is returned by `GET /readyz` while the
+instance is serving but a required dependency failed its readiness probe —
+Postgres refused, timed out (`READINESS_DB_TIMEOUT_MS`), or the pool could not
+hand out a connection in time. It is distinct from `SERVICE_DRAINING` (this
+process is leaving, not broken) and from `INTERNAL_ERROR` (the CP itself is
+fine). The body is the standard envelope; `error.details` (= `metadata`)
+carries the legacy `ok: false` / `database: "unhealthy"` keys plus
+`checks.database = { status: "down", reason: "error" | "timeout", latencyMs }`
+— an enum reason, never the driver's error text, host or port. No
+`Retry-After` (an outage has no known duration).
 
 `INVALID_LOG_PROOF` and `INVALID_WITNESS_COSIGNATURE` are deliberately
 distinct (RFC-ACDP-0015 §10): the former indicts a transparency-log proof or
@@ -149,7 +161,7 @@ fields also appear as `error.details`.
 | GET  | `/.well-known/acdp-witness.json` | Public | Witness capabilities (RFC-ACDP-0015 §9) |
 | GET  | `/.well-known/did.json` | Public | Witness DID document (assertionMethod key) |
 | POST | `/admin/pinned-keys/reload` | admin | Reload pinned keys from env |
-| GET  | `/healthz` `/readyz` `/metrics` | Public | Probes / Prometheus |
+| GET  | `/healthz` `/readyz` `/metrics` | Public | Probes / Prometheus (`/readyz` unthrottled, 503 when not ready; `/healthz` still throttled until #210 Phase 2) |
 | GET  | `/docs` | dev | Swagger UI |
 
 > The list is authoritative against the controllers as of this writing, but
@@ -861,8 +873,8 @@ the `did:web` document to resolve.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET`  | `/healthz` | Liveness (`{ ok, service, version }`); pings DB. **Public.** |
-| `GET`  | `/readyz` | Readiness (`{ ok, database }`). **Public.** Once a shutdown signal has arrived it answers `503 SERVICE_DRAINING` (with `Retry-After`) without querying the database, so a load balancer stops routing here; with `SHUTDOWN_DRAIN_DELAY_MS` set that happens while every other route still serves (issue #192). |
+| `GET`  | `/healthz` | Liveness (`{ ok, service, version }`); pings DB. **Public**; throttled until #210 Phase 2. |
+| `GET`  | `/readyz` | Readiness. **Public**, not throttled (issue #210), `Cache-Control: no-store` on every arm. Drain first: once a shutdown signal has arrived it answers `503 SERVICE_DRAINING` (with `Retry-After`) without consulting readiness or the database, so a load balancer stops routing here; with `SHUTDOWN_DRAIN_DELAY_MS` set that happens while every other route still serves (issue #192). Otherwise **200** `{ ok: true, database: "ok", checks }` when Postgres answers `SELECT 1` within `READINESS_DB_TIMEOUT_MS` (default 1000 ms), else **503** `DEPENDENCY_UNAVAILABLE` (standard envelope; `error.details` = `{ ok: false, database: "unhealthy", checks }`). `checks.database` = `{ status: "up" \| "down", reason?: "error" \| "timeout", latencyMs }`. The verdict is cached for `READINESS_CACHE_MS` (default 1000 ms) and the probe is single-flight, so any probe rate costs at most one DB query per window and at most one pool connection. `HEAD` gets the same status. |
 | `GET`  | `/metrics` | Prometheus text-format metrics. **Public.** |
 | `GET`  | `/docs` | Swagger UI (dev / opt-in). |
 
@@ -876,6 +888,8 @@ Key metrics (all constructed in `InstrumentationService`):
 | `acdp_sse_streams_terminated_total` | counter | `reason` | SSE streams ended by the server (`shutdown` = graceful drain, issue #192). Best effort: a dying process is rarely scraped. |
 | `acdp_shutdown_drain_rejections_total` | counter | — | New requests answered `503 SERVICE_DRAINING` by the drain gate (issue #192). Best effort; the `shutdown drain complete` log line is the primary signal. |
 | `acdp_shutdown_forced_connections_total` | counter | — | Sockets still open when a graceful close overran `SHUTDOWN_TIMEOUT_MS` and was forced (issue #192). Best effort. |
+| `acdp_readiness_checks_total` | counter | `dependency`, `result` | Readiness probes actually executed (not cache hits) by result `ok` \| `error` \| `timeout` (issue #210). `dependency` is `database`. |
+| `acdp_dependency_up` | gauge | `dependency` | 1 if the dependency's last real readiness probe succeeded, else 0 (issue #210). Alert on `acdp_dependency_up{dependency="database"} == 0` for 1m. |
 | `acdp_events_ingested_total` | counter | `event_type` | Ingested events |
 | `acdp_webhook_deliveries_total` | counter | `status` | Outbound deliveries by status |
 | `acdp_ingest_rejected_total` | counter | `reason` | Ingest rejections (e.g. `pack_gate`) |

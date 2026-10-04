@@ -54,7 +54,9 @@ production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startu
 | `DATABASE_URL` | string | `postgres://postgres:postgres@localhost:5432/acdp_control_plane` | Postgres connection string. |
 | `DB_POOL_MAX` | number | `20` | Max pool connections per replica. **Must be ≥ 2.** |
 | `DB_POOL_IDLE_TIMEOUT` | number (ms) | `30000` | Idle connection timeout. |
-| `DB_POOL_CONNECTION_TIMEOUT` | number (ms) | `5000` | Connection-acquisition timeout. |
+| `DB_POOL_CONNECTION_TIMEOUT` | number (ms) | `5000` | Connection-acquisition timeout: bounds both waiting for a pool checkout and opening a new connection. **Must be an integer > 0** (every environment, issue #210); 0 would disable pg-pool's checkout/connect timeouts — an unbounded wait on a black-holed database — and a negative value makes every connect fail at once. |
+| `READINESS_DB_TIMEOUT_MS` | integer (ms), 50–30000 | `1000` | `GET /readyz` database probe deadline (issue #210): `SELECT 1` with this `query_timeout`, raced against an outer deadline of the same length that also covers the checkout and connect wait. Past it, `/readyz` answers `503 DEPENDENCY_UNAVAILABLE` with `reason: "timeout"`. Keep it below your probe's own timeout — with the default, a Kubernetes `readinessProbe` needs `timeoutSeconds: 2` (the k8s default of 1 would time out first). A value ≥ `DB_POOL_CONNECTION_TIMEOUT` only **warns**: the pool's bound then fires first and a slow connect reads as `reason: "error"`. Strict. |
+| `READINESS_CACHE_MS` | integer (ms), 0–60000 | `1000` | How long a readiness verdict is reused (issue #210). Caps probe-driven database load at about one `SELECT 1` per window per replica, whatever the probe rate (which is why the probes are not throttled). `0` disables the cache; the probe stays single-flight (never more than one probe query, so never more than one pool connection). Strict. |
 
 ## Authentication & issuance
 
@@ -403,6 +405,11 @@ as its fan-out cap. See `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section.
 - Production with empty `WEBHOOK_SECRET` (inbound webhook HMAC verification would
   otherwise be silently disabled — see `src/ingest/hmac.ts`).
 - `DB_POOL_MAX < 2`.
+- `DB_POOL_CONNECTION_TIMEOUT` not an integer > 0 (`0`, `-1`, `1.5`) — in every environment
+  (issue #210). A non-numeric value still falls back to `5000`.
+- `READINESS_DB_TIMEOUT_MS` not an integer in [50, 30000], or `READINESS_CACHE_MS` not an
+  integer in [0, 60000] (e.g. `abc`, `-1`) — in every environment (issue #210).
+  `READINESS_DB_TIMEOUT_MS >= DB_POOL_CONNECTION_TIMEOUT` only **warns**.
 - `SHUTDOWN_TIMEOUT_MS` not an integer in 1000–2147483647, `SHUTDOWN_RETRY_AFTER_SECONDS` not an
   integer in [1, 300], `STREAM_SSE_SHUTDOWN_RETRY_MS` not an integer in [0, 60000], or
   `SHUTDOWN_DRAIN_DELAY_MS` not an integer in [0, 2147483647] (e.g. `-1`, `abc`)

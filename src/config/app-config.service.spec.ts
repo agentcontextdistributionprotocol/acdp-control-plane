@@ -261,6 +261,115 @@ describe('AppConfigService', () => {
     }
   });
 
+  describe('readiness knobs + DB_POOL_CONNECTION_TIMEOUT (issue #210)', () => {
+    function throwsNamed(fn: () => void, name: string): boolean {
+      try {
+        fn();
+        return false;
+      } catch (err) {
+        return err instanceof Error && err.message.startsWith(name);
+      }
+    }
+
+    it('defaults: READINESS_DB_TIMEOUT_MS 1000, READINESS_CACHE_MS 1000; passes validation', () => {
+      process.env.NODE_ENV = 'development';
+      delete process.env.READINESS_DB_TIMEOUT_MS;
+      delete process.env.READINESS_CACHE_MS;
+      delete process.env.DB_POOL_CONNECTION_TIMEOUT;
+      const cfg = freshConfig();
+      expect(cfg.readinessDbTimeoutMs).toBe(1000);
+      expect(cfg.readinessCacheMs).toBe(1000);
+      expect(cfg.dbPoolConnectionTimeout).toBe(5000);
+      expect(() => cfg.onModuleInit()).not.toThrow();
+    });
+
+    it('accepts in-range strict integers', () => {
+      process.env.NODE_ENV = 'development';
+      for (const [t, c] of [
+        ['50', '0'],
+        [' 300 ', '200'],
+        ['4999', '60000'],
+      ]) {
+        process.env.READINESS_DB_TIMEOUT_MS = t;
+        process.env.READINESS_CACHE_MS = c;
+        const cfg = freshConfig();
+        expect([cfg.readinessDbTimeoutMs, cfg.readinessCacheMs]).toEqual([Number(t), Number(c)]);
+        expect(() => cfg.onModuleInit()).not.toThrow();
+      }
+    });
+
+    // Every environment: the dev harness must reject these too, which proves the
+    // checks sit BEFORE validate()'s `isDevelopment` early return.
+    it.each(['development', 'production'])('fails startup on bad values in %s', (env) => {
+      process.env.NODE_ENV = env;
+      process.env.AUTH_API_KEYS = 'k';
+      process.env.WEBHOOK_SECRET = 'shh';
+      const cases: Array<[string, string]> = [
+        ['READINESS_DB_TIMEOUT_MS', 'abc'],
+        ['READINESS_DB_TIMEOUT_MS', '0'],
+        ['READINESS_DB_TIMEOUT_MS', '49'],
+        ['READINESS_DB_TIMEOUT_MS', '30001'],
+        ['READINESS_DB_TIMEOUT_MS', '40000'],
+        ['READINESS_DB_TIMEOUT_MS', '1.5'],
+        ['READINESS_DB_TIMEOUT_MS', ''],
+        ['READINESS_CACHE_MS', '-1'],
+        ['READINESS_CACHE_MS', 'x'],
+        ['READINESS_CACHE_MS', '60001'],
+        ['READINESS_CACHE_MS', '1e3'],
+        ['DB_POOL_CONNECTION_TIMEOUT', '0'],
+        ['DB_POOL_CONNECTION_TIMEOUT', '-1'],
+        ['DB_POOL_CONNECTION_TIMEOUT', '1.5'],
+      ];
+      for (const [name, v] of cases) {
+        process.env = { ...process.env };
+        delete process.env.READINESS_DB_TIMEOUT_MS;
+        delete process.env.READINESS_CACHE_MS;
+        delete process.env.DB_POOL_CONNECTION_TIMEOUT;
+        process.env[name] = v;
+        expect({ name, v, threw: throwsNamed(() => freshConfig().onModuleInit(), name) }).toEqual({
+          name,
+          v,
+          threw: true,
+        });
+      }
+    });
+
+    it('the DB_POOL_CONNECTION_TIMEOUT error names the variable, the value and why 0 is refused', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.DB_POOL_CONNECTION_TIMEOUT = '0';
+      expect(() => freshConfig().onModuleInit()).toThrow(
+        /DB_POOL_CONNECTION_TIMEOUT must be an integer > 0 \(got "0"\); 0 disables pg-pool's checkout and connect timeouts/,
+      );
+    });
+
+    it('warns (does not fail) when the readiness timeout >= DB_POOL_CONNECTION_TIMEOUT', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.READINESS_DB_TIMEOUT_MS = '2000';
+      process.env.DB_POOL_CONNECTION_TIMEOUT = '2000';
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      try {
+        expect(() => freshConfig().onModuleInit()).not.toThrow();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            msg: expect.stringContaining('READINESS_DB_TIMEOUT_MS >= DB_POOL_CONNECTION_TIMEOUT'),
+            readinessDbTimeoutMs: 2000,
+            dbPoolConnectionTimeout: 2000,
+          }),
+        );
+        warnSpy.mockClear();
+        process.env.READINESS_DB_TIMEOUT_MS = '1999';
+        freshConfig().onModuleInit();
+        expect(warnSpy).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            msg: expect.stringContaining('READINESS_DB_TIMEOUT_MS >= DB_POOL_CONNECTION_TIMEOUT'),
+          }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
   describe('TRUST_PROXY', () => {
     it('is off (undefined) when unset, empty, 0, 00 or false', () => {
       delete process.env.TRUST_PROXY;
