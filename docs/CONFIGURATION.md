@@ -130,6 +130,25 @@ See [INGEST.md](./INGEST.md).
 |-----|------|---------|---------|
 | `THROTTLE_TTL_MS` | number | `60000` | Throttle window per `(actorId\|ip)`. |
 | `THROTTLE_LIMIT` | number | `200` | Requests per window. `/auth/*` uses a tighter override. |
+| `THROTTLE_IPV6_SUBNET_PREFIX` | integer `1`–`128` | `64` | Prefix an unauthenticated IPv6 caller's address is collapsed to before keying. Out-of-range or fractional values fail startup (every environment). `128` = per-address. |
+
+**Tracker.** An authenticated request (API key or bearer JWT) is keyed on its
+principal (`actorId`), whatever address it comes from. An unauthenticated
+request — every `@Public()` route, including the 20/min `/auth/challenge` +
+`/auth/token` override — is keyed on the client IP, normalized by
+`@nestjs/throttler`'s `normalizeIp` (issue #187): IPv4 as-is, IPv4-mapped IPv6
+(`::ffff:a.b.c.d`) onto its IPv4, loopback `::1` as-is, any other IPv6 address
+onto its `/THROTTLE_IPV6_SUBNET_PREFIX` network, so a host rotating source
+addresses inside its own `/64` still lands in one bucket. Values below `48` are
+almost always wrong (they merge unrelated sites); lower to `56`/`48` only to
+blunt an abuser spreading across a larger allocation. Known coarse cases:
+NAT64 (`64:ff9b::/96`) and Teredo clients share one `/64` bucket per
+translator/relay.
+
+The client IP is Express's `req.ip`. No `trust proxy` is configured, so behind
+a reverse proxy every caller shares the proxy's bucket. If you enable it,
+trust a hop count or the proxy's CIDR — never `true`, which lets any client
+choose its own `X-Forwarded-For` and therefore its own bucket.
 
 ## Receipt audit (RFC-ACDP-0010)
 

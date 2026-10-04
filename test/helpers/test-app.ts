@@ -63,6 +63,14 @@ export interface TestAppOptions {
    * per-tenant per-action windowed counters. Cleared when unset.
    */
   tenantQuotas?: string;
+  /**
+   * Express `trust proxy` setting, applied before `listen`. The harness
+   * listens on loopback, so a suite that needs a specific client address
+   * (e.g. an IPv6 caller for the throttle tracker, issue #187) sets
+   * `'loopback'` and sends `X-Forwarded-For`. Unset = Express default (false),
+   * mirroring production, which configures no trust proxy.
+   */
+  trustProxy?: boolean | string | number;
   tokenIssuance?: {
     jwtSecret: string;
     authority?: string;
@@ -214,6 +222,10 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
       forbidNonWhitelisted: false,
     }),
   );
+
+  if (opts.trustProxy !== undefined) {
+    app.set('trust proxy', opts.trustProxy);
+  }
 
   await app.listen(0);
   const url = await app.getUrl();

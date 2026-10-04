@@ -3694,3 +3694,18 @@ Re-run after rebasing onto f438d55 (#195, Dependabot `nestjs` group: `@nestjs/cl
 in the `nestjs` group, not `major-updates`, as Phase 5 of #155 intended.
 Bookkeeping: 18 ASSUMPTIONS.md entries UNCONFIRMED (#182: 10, #156: 2,
 #155: 6) — left for `/reconcile`.
+
+## Issue #187 — IPv6 /64 throttle tracker (`plans/throttle-ipv6-187.md`) — 2026-10-03
+
+`ThrottleByUserGuard.getTracker` now keys unauthenticated callers on
+`normalizeIp(req.ip, this.ipv6SubnetPrefix)` (throttler 6.7's exported helper):
+IPv6 collapsed to its `/64`, IPv4-mapped onto the IPv4, `'anonymous'` for an
+absent/empty/non-string IP; authenticated `actorId` path unchanged. New knob
+`THROTTLE_IPV6_SUBNET_PREFIX` (default 64, integer 1–128, fail-fast in every
+env), wired via ThrottlerModule's object-form `ipv6SubnetPrefix`. `createTestApp`
+gained `trustProxy`; new `test/integration/throttle-ipv6.integration.spec.ts`
+proves a rotating-/64 caller gets 429 `RATE_LIMITED` + `Retry-After` and that
+`=128` restores per-address buckets. Plan review: 1 round (APPROVE w/ fixes);
+gate: fresh Opus verifier PASS round 1. Checks: typecheck (TS7+TS6), lint,
+conventions, check:build ok; unit 83 suites/1220 passed; integration 32
+suites/224 passed. 3 ASSUMPTIONS.md entries UNCONFIRMED (#187).

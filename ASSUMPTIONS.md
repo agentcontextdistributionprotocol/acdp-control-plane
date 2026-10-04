@@ -1172,3 +1172,34 @@
 - **Blast radius if wrong:** Low — a mis-grouped Dependabot PR (observable on
   the next monthly run) or an install warning.
 - **Status:** CONFIRMED (2026-10-03) — decided by the user (pre-made decision); supersedes the earlier "Not declaring an engines field" entry
+
+## Unauthenticated IPv6 throttle tracker collapses to /64 by default (issue #187)
+- **Plan:** `plans/throttle-ipv6-187.md` (Phase 1)
+- **Assumed:** `/64` (throttler 6.7's own default, `THROTTLE_IPV6_SUBNET_PREFIX`)
+  is the right default granularity: one site/host allocation = one bucket. A caller
+  holding a /48 (or a 6to4 `2002:V4::/48`) can still spread over 65 536 /64s, and
+  NAT64 (`64:ff9b::/96`) / Teredo relays collapse many unrelated clients into one
+  /64 bucket. Operators tune the prefix; no per-range special-casing is done.
+- **Blast radius if wrong:** Medium — too coarse throttles unrelated callers
+  sharing a translator; too fine leaves the rotation evasion open for larger
+  allocations. Reversible via env.
+- **Status:** UNCONFIRMED
+
+## Prefix knob range is [1, 128], fail-fast in every environment (issue #187)
+- **Plan:** `plans/throttle-ipv6-187.md` (Open questions)
+- **Assumed:** rejecting only the degenerate `0` and out-of-range/fractional values
+  is enough; a legal-but-silly `/1`–`/47` is documented ("below 48 is almost
+  always wrong") rather than refused. Non-numeric input falls back to 64 per the
+  repo-wide `readNumber` semantics instead of failing startup.
+- **Blast radius if wrong:** Low — operator misconfiguration only.
+- **Status:** UNCONFIRMED
+
+## Normalizing via the throttler's exported `normalizeIp` (issue #187)
+- **Plan:** `plans/throttle-ipv6-187.md` (Phase 1 Approach)
+- **Assumed:** `@nestjs/throttler`'s public `normalizeIp` export (6.7.x) stays
+  stable across minors; we depend on it instead of a hand-rolled parser. Side
+  effects accepted: dual-stack IPv4 (`::ffff:a.b.c.d`) now shares the plain IPv4
+  bucket (one-time bucket reset at deploy), an empty-string `req.ip` now keys on
+  `'anonymous'` instead of `''`, and malformed strings still key on themselves.
+- **Blast radius if wrong:** Low — a removed export fails typecheck/CI loudly.
+- **Status:** UNCONFIRMED

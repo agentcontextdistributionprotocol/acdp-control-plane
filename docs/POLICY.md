@@ -194,5 +194,7 @@ per-principal throttle (`THROTTLE_LIMIT`), which is not action-scoped.
 
 `ThrottleByUserGuard` (`@nestjs/throttler`, always on) is a *coarse* per-principal
 request limiter (`THROTTLE_LIMIT` per `THROTTLE_TTL_MS`, with a tighter override
-on `/auth/challenge` + `/auth/token`). `QuotaGuard` is the *business* quota:
+on `/auth/challenge` + `/auth/token`), keyed on the principal when
+authenticated and on the client IP otherwise (IPv6 collapsed to its `/64`,
+`THROTTLE_IPV6_SUBNET_PREFIX` — see `docs/CONFIGURATION.md`). `QuotaGuard` is the *business* quota:
 per-tenant, per-action, and only where opted in. They are independent layers.

@@ -144,7 +144,7 @@ order**. Each later guard depends on state pinned by an earlier one.
 | # | Guard                  | Always on? | Opt-in                | Responsibility |
 |---|------------------------|------------|-----------------------|----------------|
 | 1 | `AuthGuard`            | yes        | `@Public()` bypasses  | API-key or bearer-JWT auth; pins `req.tenantId`, `req.actorDid`, `req.actorScopes`, `req.actorIsAdmin` |
-| 2 | `ThrottleByUserGuard`  | yes        | —                     | Coarse per-principal request rate limit (`THROTTLE_LIMIT`/`THROTTLE_TTL_MS`) |
+| 2 | `ThrottleByUserGuard`  | yes        | —                     | Coarse per-principal request rate limit (`THROTTLE_LIMIT`/`THROTTLE_TTL_MS`); unauthenticated → client IP, IPv6 per `/64` (`THROTTLE_IPV6_SUBNET_PREFIX`) |
 | 3 | `PolicyGuard`          | no-op      | `@CheckPolicy(action)`| Per-action authorization via a pluggable `PolicyDecider` |
 | 4 | `QuotaGuard`           | no-op      | `@CheckQuota(action)` | Per-tenant per-action windowed counters; runs **last** so denied requests don't burn an increment |
 
