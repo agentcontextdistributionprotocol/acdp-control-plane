@@ -74,6 +74,19 @@ export interface TestAppOptions {
    * (Express default, no trust), so it never leaks across suites.
    */
   trustProxy?: string;
+  /**
+   * The app's `DATABASE_URL` (issue #210): e.g. a `PgFaultProxy` URL in front
+   * of the test Postgres, so a suite can refuse / black-hole the database the
+   * running app sees. Migrations still run directly against `TEST_DB_URL`.
+   * Unset = `TEST_DB_URL`.
+   */
+  databaseUrl?: string;
+  /**
+   * `READINESS_DB_TIMEOUT_MS` / `READINESS_CACHE_MS` (issue #210). Each is set
+   * when given and CLEARED otherwise, so values never leak across suites. A
+   * string is passed through verbatim (to prove a garbage value fails boot).
+   */
+  readiness?: { timeoutMs?: number | string; cacheMs?: number | string };
   tokenIssuance?: {
     jwtSecret: string;
     authority?: string;
@@ -106,8 +119,18 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
   const webhookSecret = opts.webhookSecret ?? '';
   const tenantApiKeys = opts.tenantApiKeys ?? [];
 
-  process.env.DATABASE_URL = TEST_DB_URL;
+  process.env.DATABASE_URL = opts.databaseUrl ?? TEST_DB_URL;
   process.env.NODE_ENV = 'development';
+  if (opts.readiness?.timeoutMs !== undefined) {
+    process.env.READINESS_DB_TIMEOUT_MS = String(opts.readiness.timeoutMs);
+  } else {
+    delete process.env.READINESS_DB_TIMEOUT_MS;
+  }
+  if (opts.readiness?.cacheMs !== undefined) {
+    process.env.READINESS_CACHE_MS = String(opts.readiness.cacheMs);
+  } else {
+    delete process.env.READINESS_CACHE_MS;
+  }
   // When tenantApiKeys is set, AUTH_API_KEYS is the union of all keys
   // (the AuthGuard validates against this list); TENANT_API_KEYS maps
   // each key to its tenant.

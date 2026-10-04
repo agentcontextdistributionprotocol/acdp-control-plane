@@ -43,6 +43,22 @@ export class InstrumentationService implements OnModuleInit {
     help: 'Connections force-closed when a graceful shutdown overran SHUTDOWN_TIMEOUT_MS (issue #192)',
   });
 
+  /** #210: REAL readiness probe executions (cache hits and joins of an
+   *  in-flight probe are not counted), by dependency and result
+   *  (`ok` | `error` | `timeout`). */
+  readonly readinessChecksTotal = new client.Counter({
+    name: 'acdp_readiness_checks_total',
+    help: 'Readiness dependency probes actually executed (not cache hits), by dependency and result (ok|error|timeout) (issue #210)',
+    labelNames: ['dependency', 'result'] as const,
+  });
+
+  /** #210: 1 when the dependency's last real readiness probe succeeded, else 0. */
+  readonly dependencyUp = new client.Gauge({
+    name: 'acdp_dependency_up',
+    help: 'Whether the last readiness probe of a dependency succeeded (1) or not (0) (issue #210)',
+    labelNames: ['dependency'] as const,
+  });
+
   readonly eventsIngestedTotal = new client.Counter({
     name: 'acdp_events_ingested_total',
     help: 'Total ACDP webhook events ingested',

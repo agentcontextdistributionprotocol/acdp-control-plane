@@ -424,7 +424,21 @@ export class AppConfigService implements OnModuleInit {
   // DB pool
   readonly dbPoolMax = readNumber('DB_POOL_MAX', 20);
   readonly dbPoolIdleTimeout = readNumber('DB_POOL_IDLE_TIMEOUT', 30000);
+  // pg-pool's checkout-wait AND new-connect bound (ms). Must be an integer > 0
+  // (validate(), every environment, #210 D10): pg-pool and pg skip both timers
+  // when it is 0, so a checkout or a connect to a black-holed host would wait
+  // forever — and the single-flight readiness probe would stick at `down`.
   readonly dbPoolConnectionTimeout = readNumber('DB_POOL_CONNECTION_TIMEOUT', 5000);
+
+  // Readiness probe (#210, `src/health/readiness.service.ts`). The DB check is
+  // `SELECT 1` with a `query_timeout` of READINESS_DB_TIMEOUT_MS raced against
+  // an outer deadline of the same length; its verdict is cached for
+  // READINESS_CACHE_MS (0 = no cache, single-flight still applies), which caps
+  // probe-driven DB load at ~1 query per window regardless of probe rate.
+  // Strict integers, validated in every environment: timeout in [50, 30000],
+  // cache in [0, 60000].
+  readonly readinessDbTimeoutMs = readStrictInteger('READINESS_DB_TIMEOUT_MS', 1000);
+  readonly readinessCacheMs = readStrictInteger('READINESS_CACHE_MS', 1000);
 
   // Throttler — global default applied per (actorId|ip). A tighter
   // override applies to /auth/challenge + /auth/token; see
@@ -685,6 +699,35 @@ export class AppConfigService implements OnModuleInit {
         shutdownDrainDelayMs: this.shutdownDrainDelayMs,
         shutdownTimeoutMs: this.shutdownTimeoutMs,
         worstCaseShutdownMs,
+      });
+    }
+
+    // Readiness + pool bounds (#210), enforced in EVERY environment — the
+    // integration harness runs as development, and a probe that can hang or
+    // stick is a production outage either way.
+    assertIntegerInRange('READINESS_DB_TIMEOUT_MS', this.readinessDbTimeoutMs, 50, 30000, 1000);
+    assertIntegerInRange('READINESS_CACHE_MS', this.readinessCacheMs, 0, 60000, 1000);
+    // D10: 0 disables pg-pool's checkout and connect timeouts (both guarded by
+    // a truthiness check), so a stuck connect never settles; a negative value
+    // makes every connect fail at once. Read leniently (readNumber), so a
+    // non-numeric value still falls back to 5000 — pre-existing and bounded.
+    if (!Number.isInteger(this.dbPoolConnectionTimeout) || this.dbPoolConnectionTimeout <= 0) {
+      throw new Error(
+        `DB_POOL_CONNECTION_TIMEOUT must be an integer > 0 ` +
+          `(got ${JSON.stringify(process.env.DB_POOL_CONNECTION_TIMEOUT ?? this.dbPoolConnectionTimeout)}); ` +
+          `0 disables pg-pool's checkout and connect timeouts (an unbounded wait). Default 5000 when unset.`,
+      );
+    }
+    // Harmless but worth knowing: the pool's own checkout/connect bound fires
+    // before the probe's deadline, so a connect-phase failure reads as
+    // `reason: "error"` after DB_POOL_CONNECTION_TIMEOUT rather than `timeout`.
+    if (this.readinessDbTimeoutMs >= this.dbPoolConnectionTimeout) {
+      this.logger.warn({
+        msg:
+          'READINESS_DB_TIMEOUT_MS >= DB_POOL_CONNECTION_TIMEOUT — the pool checkout/connect ' +
+          'timeout fires first, so a slow connect is reported as an error, not a timeout',
+        readinessDbTimeoutMs: this.readinessDbTimeoutMs,
+        dbPoolConnectionTimeout: this.dbPoolConnectionTimeout,
       });
     }
 

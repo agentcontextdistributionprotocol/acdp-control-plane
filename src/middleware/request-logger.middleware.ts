@@ -2,6 +2,9 @@ import { Injectable, Logger, NestMiddleware } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
 
+/** Probe routes whose SUCCESSFUL request lines log at `debug` (issue #210, D11). */
+const PROBE_PATHS = new Set(['/healthz', '/readyz']);
+
 @Injectable()
 export class RequestLoggerMiddleware implements NestMiddleware {
   private readonly logger = new Logger('HTTP');
@@ -33,17 +36,27 @@ export class RequestLoggerMiddleware implements NestMiddleware {
       // `requestId` is read off the request rather than the ambient store
       // because this fires from a `res` 'finish' listener, which is not
       // guaranteed to run inside the AsyncLocalStorage context.
-      this.logger.log({
+      const fields = {
         msg: `${method} ${originalUrl} ${statusCode} ${duration}ms`,
         method,
         path: originalUrl,
         statusCode,
         durationMs: duration,
         requestId,
-      });
+      };
+      // Probes are unthrottled since #210 (the per-IP throttle was the only cap
+      // on their log volume), so a successful GET/HEAD /healthz or /readyz logs
+      // at `debug`; a failing probe (503 etc.) stays at `info` — those must
+      // stay visible. Metrics above are unaffected.
+      if (this.isProbe(method, path) && statusCode < 400) this.logger.debug(fields);
+      else this.logger.log(fields);
     });
 
     next();
+  }
+
+  private isProbe(method: string, path: string): boolean {
+    return (method === 'GET' || method === 'HEAD') && PROBE_PATHS.has(path);
   }
 
   private normalizePath(url: string): string {

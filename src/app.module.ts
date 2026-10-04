@@ -31,6 +31,7 @@ import { RedisStreamHubStrategy } from './events/redis-stream-hub.strategy';
 import { STREAM_HUB_STRATEGY } from './events/stream-hub.interface';
 import { StreamHubService } from './events/stream-hub.service';
 import { HealthController } from './health/health.controller';
+import { ReadinessService } from './health/readiness.service';
 import { IngestController } from './ingest/ingest.controller';
 import { IngestService } from './ingest/ingest.service';
 import { MetricsController } from './metrics/metrics.controller';
@@ -173,6 +174,10 @@ import { WitnessSigningService } from './witness/witness-signing.service';
     // Services
     SafeFederationClient,
     InstrumentationService,
+    // #210: the readiness authority behind GET /readyz (bounded, single-flight,
+    // cached DB probe). An AppModule provider so it can inject both the global
+    // DatabaseService and InstrumentationService.
+    ReadinessService,
     EventProcessorService,
     IngestService,
     RunsService,

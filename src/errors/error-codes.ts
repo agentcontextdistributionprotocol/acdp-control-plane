@@ -137,4 +137,16 @@ export enum ErrorCode {
    * The body keeps its documented top-level `code: "rate_limited"` etc.
    */
   QUOTA_EXCEEDED = "QUOTA_EXCEEDED",
+
+  // 503 from `GET /readyz` (#210, `src/health/readiness.service.ts`): a
+  // REQUIRED backing dependency of this instance (today: Postgres) failed the
+  // readiness probe — refused, timed out, or pool-starved. Readiness-only for
+  // now. Deliberately generic over dependencies: `error.details.checks` names
+  // which one (an enum `status`/`reason`, never the driver's error text).
+  // Distinct from INTERNAL_ERROR (the CP itself is fine; its dependency is
+  // not), from SERVICE_DRAINING (that process is leaving, not broken), and
+  // from FEDERATION_UPSTREAM_* (a REMOTE registry, not our own backing store).
+  // Transient — retry with backoff. CP-local SCREAMING_SNAKE like
+  // SERVICE_DRAINING: RFC-ACDP-0007 §5's closed enum has no 503 code.
+  DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE",
 }

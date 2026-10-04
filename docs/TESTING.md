@@ -110,7 +110,8 @@ npm run test:integration -- ingest.integration # single spec (regex against path
 
 | Spec | Covers |
 |------|--------|
-| `health.integration.spec.ts` | `/healthz`, `/readyz`, `/metrics` shape + public access |
+| `health.integration.spec.ts` | `/healthz`, `/readyz`, `/metrics` shape + public access; `/readyz` `no-store` + HEAD; probes public under strict tenancy |
+| `readiness.integration.spec.ts` | Issue #210: `/readyz` 503 `DEPENDENCY_UNAVAILABLE` with the DB refused / black-holed (via `test/helpers/pg-fault-proxy.ts`), recovery bounds incl. a connect pending at restore, ≤ 1 probe pool client under 50 concurrent probes, probes never `429`, metrics, boot validation of the readiness knobs |
 | `auth.integration.spec.ts` | Missing / wrong / valid bearer; `@Public()` bypass |
 | `auth-persistence.integration.spec.ts` | Postgres-backed challenge / revocation / ledger |
 | `pinned-keys-admin.integration.spec.ts` | Admin pinned-key reload |
@@ -143,6 +144,12 @@ npm run test:integration -- ingest.integration # single spec (regex against path
   and `GlobalExceptionFilter` — same wiring as `src/bootstrap.ts` minus helmet and swagger.
 - Listens on a random port (`app.listen(0)`); reach it via `ctx.url` or the typed
   `ctx.client` (`TestClient`).
+- `databaseUrl` points the app (not the migrations) at another URL — e.g. a
+  `PgFaultProxy` (`test/helpers/pg-fault-proxy.ts`), an in-process TCP proxy in
+  front of the test Postgres that can `refuse()` (ECONNREFUSED), `blackhole()`
+  (sockets stay open, bytes dropped), and `restore()` (optionally `keepPending`,
+  leaving the black-holed sockets dead) without ever stopping the shared database.
+  `readiness: { timeoutMs, cacheMs }` sets `READINESS_*` (cleared when unset).
 - `createTestApp(opts)` returns `{ app, url, client, module, cleanup }`.
 
 ### Writing a new integration spec

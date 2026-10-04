@@ -109,7 +109,7 @@ src/
 ├── domain-packs/              # Vertical context_type packs + admin reload
 ├── dashboard/                 # /dashboard/overview KPIs (tenant-scoped)
 ├── retention/                 # DataRetentionService (periodic purge)
-├── health/                    # /healthz, /readyz
+├── health/                    # /healthz, /readyz + ReadinessService (bounded DB probe)
 ├── metrics/                   # /metrics (Prometheus)
 │
 ├── contracts/                 # Wire types (AcdpWebhookEvent, AcdpStreamEvent, LineageDag)
@@ -388,6 +388,21 @@ only on full success.
 - **Migrations** run programmatically at boot (`src/db/migrate.ts`) from SQL
   files committed under `drizzle/` (no `drizzle-kit` at runtime). Applied
   migrations are tracked in `_migrations`.
+- **Readiness** (issue #210): `GET /readyz` is drain-first (`DrainState`, #192),
+  then asks `ReadinessService` (`src/health/readiness.service.ts`) — the single
+  authority for dependency health, itself drain-agnostic. Its database check is
+  `SELECT 1` on the **shared** app pool (so it measures what a request would get,
+  checkout included), bounded by pg's `query_timeout` and an outer deadline of
+  `READINESS_DB_TIMEOUT_MS`, **single-flight** (one probe query at a time, held
+  until the query really settles, so probes never pin more than one pool client)
+  and **cached** for `READINESS_CACHE_MS`. Not ready → `503
+  DEPENDENCY_UNAVAILABLE` with an enum reason (`error`/`timeout`), never driver
+  text. Because cost is bounded by the cache rather than the request rate, the
+  `/readyz` is `@SkipThrottle()` (`/healthz` stays throttled until #210 Phase 2); successful probe request-log lines are
+  `debug`. State changes log once (`readiness changed`) and move
+  `acdp_dependency_up` / `acdp_readiness_checks_total`. Single-flight relies on
+  the pool's own bounds releasing a stuck probe, hence `DB_POOL_CONNECTION_TIMEOUT
+  > 0` at boot. `/healthz` is unchanged in this phase.
 - **Graceful shutdown** via `src/shutdown.ts`: a single idempotent handler on
   SIGINT/SIGTERM first **begins the drain** (issue #192), optionally waits
   `SHUTDOWN_DRAIN_DELAY_MS`, and then calls `app.close()`. `DrainState` moves
@@ -553,6 +568,7 @@ terminationGracePeriodSeconds: 30   # >= (5000 + 10000)/1000 + 5 = 20
 readinessProbe:
   httpGet: { path: /readyz, port: 3001 }
   periodSeconds: 1
+  timeoutSeconds: 2                 # > READINESS_DB_TIMEOUT_MS (default 1000 ms, #210)
   failureThreshold: 2               # 2 s to notice < 5 s delay
 ```
 
