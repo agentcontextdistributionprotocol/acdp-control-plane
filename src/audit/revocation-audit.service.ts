@@ -278,23 +278,27 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
     const intervalMs = this.config.receiptAuditIntervalSeconds * 1000;
     this.timer = setInterval(() => {
       void this.sweep().catch((err) =>
-        this.logger.warn(
-          `key-revocation sweep failed: ${err instanceof Error ? err.message : String(err)}`,
-        ),
+        this.logger.warn({
+          msg: 'key-revocation sweep failed',
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
     }, intervalMs);
     if (typeof this.timer === 'object' && 'unref' in this.timer) {
       this.timer.unref();
     }
-    this.logger.log(
-      `key-revocation check enabled: interval=${this.config.receiptAuditIntervalSeconds}s ` +
-        `batch=${this.config.receiptAuditBatchSize} lookback=${this.config.keyRevocationLookbackHours}h ` +
-        `attestedScope=${this.config.keyRevocationAttestedScope}`,
-    );
+    this.logger.log({
+      msg: 'key-revocation check enabled',
+      intervalSeconds: this.config.receiptAuditIntervalSeconds,
+      batchSize: this.config.receiptAuditBatchSize,
+      lookbackHours: this.config.keyRevocationLookbackHours,
+      attestedScope: this.config.keyRevocationAttestedScope,
+    });
     void this.sweep().catch((err) =>
-      this.logger.warn(
-        `initial key-revocation sweep failed: ${err instanceof Error ? err.message : String(err)}`,
-      ),
+      this.logger.warn({
+        msg: 'initial key-revocation sweep failed',
+        error: err instanceof Error ? err.message : String(err),
+      }),
     );
   }
 
@@ -345,26 +349,33 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
         // default.
         switch (outcome.status) {
           case 'invalid':
-            this.logger.warn(
-              `key-revocation rejected ctx=${ev.ctxId ?? '?'} registry=${ev.registryAuthority}: ${outcome.reason ?? ''}`,
-            );
+            this.logger.warn({
+              msg: 'key-revocation rejected',
+              ctxId: ev.ctxId ?? '?',
+              registry: ev.registryAuthority,
+              reason: outcome.reason ?? '',
+            });
             continue;
           case 'unavailable':
-            this.logger.debug(
-              `key-revocation unverifiable this pass ctx=${ev.ctxId ?? '?'}: ${outcome.reason ?? ''}`,
-            );
+            this.logger.debug({
+              msg: 'key-revocation unverifiable this pass',
+              ctxId: ev.ctxId ?? '?',
+              reason: outcome.reason ?? '',
+            });
             continue;
           case 'unsupported':
-            this.logger.warn(
-              `key-revocation unsupported (capability gap, not a verification failure) ` +
-                `ctx=${ev.ctxId ?? '?'} registry=${ev.registryAuthority}: ${outcome.reason ?? ''}`,
-            );
+            this.logger.warn({
+              msg: 'key-revocation unsupported (capability gap, not a verification failure)',
+              ctxId: ev.ctxId ?? '?',
+              registry: ev.registryAuthority,
+              reason: outcome.reason ?? '',
+            });
             continue;
           case 'verified':
             break;
           default: {
             const _exhaustive: never = outcome.status;
-            this.logger.warn(`key-revocation: unexpected status '${String(_exhaustive)}' — dropping`);
+            this.logger.warn({ msg: 'key-revocation: unexpected status — dropping', status: String(_exhaustive) });
             continue;
           }
         }
@@ -426,11 +437,13 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (lineageQueue.size > MAX_LINEAGE_WALKS) {
-        this.logger.error(
-          `key-revocation lineage walk: ${lineageQueue.size} distinct lineages exceed ` +
-            `MAX_LINEAGE_WALKS=${MAX_LINEAGE_WALKS} this pass — refusing a partial walk, ` +
-            `skipping all lineage walks this pass (they retry next sweep)`,
-        );
+        this.logger.error({
+          msg:
+            'key-revocation lineage walk: distinct lineages exceed MAX_LINEAGE_WALKS this pass — ' +
+            'refusing a partial walk, skipping all lineage walks this pass (they retry next sweep)',
+          lineageCount: lineageQueue.size,
+          maxLineageWalks: MAX_LINEAGE_WALKS,
+        });
       } else {
         for (const item of lineageQueue.values()) {
           await this.walkAndPersistLineage(item);
@@ -447,10 +460,12 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
           try {
             await this.receiptAuditService.reauditForFingerprint(tenantId, fingerprint);
           } catch (err) {
-            this.logger.warn(
-              `key-revocation re-audit failed fingerprint=${fingerprint} tenant=${tenantId}: ` +
-                `${err instanceof Error ? err.message : String(err)}`,
-            );
+            this.logger.warn({
+              msg: 'key-revocation re-audit failed',
+              fingerprint,
+              tenantId,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         }
       }
@@ -499,10 +514,13 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
       if (count > 0) this.instrumentation.keyRevocationLineageMembersTotal.inc({ status }, count);
     }
     if (!result.ok) {
-      this.logger.warn(
-        `key-revocation lineage walk failed lineage=${item.lineageId} registry=${item.registryAuthority} ` +
-          `kind=${result.kind}: ${result.reason}`,
-      );
+      this.logger.warn({
+        msg: 'key-revocation lineage walk failed',
+        lineageId: item.lineageId,
+        registry: item.registryAuthority,
+        kind: result.kind,
+        reason: result.reason,
+      });
       return;
     }
     for (const member of result.members) {

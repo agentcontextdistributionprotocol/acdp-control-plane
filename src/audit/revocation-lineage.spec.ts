@@ -223,7 +223,7 @@ describe('walkRevocationLineage', () => {
       expect(result.members[0].revocation).toEqual(good);
       expect(result.memberVerdictCounts).toEqual({ verified: 1, invalid: 1, unavailable: 0, unsupported: 0 });
     }
-    expect(d.logger.warn).toHaveBeenCalledWith(expect.stringContaining('ctx-1'));
+    expect(d.logger.warn).toHaveBeenCalledWith(expect.objectContaining({ ctxId: 'ctx-1' }));
     void bad;
   });
 
@@ -257,7 +257,7 @@ describe('walkRevocationLineage', () => {
       // Both members were reached — proving the walk did not abort on ctx-1,
       // the exact contrast with the 'unavailable' case in AC4 below.
       expect(verify).toHaveBeenCalledTimes(2);
-      expect(d.logger.warn).toHaveBeenCalledWith(expect.stringContaining('ctx-1'));
+      expect(d.logger.warn).toHaveBeenCalledWith(expect.objectContaining({ ctxId: 'ctx-1' }));
     },
   );
 

@@ -26,7 +26,7 @@ export class DatabaseService implements OnModuleDestroy {
       connectionTimeoutMillis: config.dbPoolConnectionTimeout,
     });
     this.pool.on('error', (err) => {
-      this.logger.error(`database pool error: ${err.message}`);
+      this.logger.error({ msg: 'database pool error', error: err.message });
       this.hasFatalError = true;
     });
     this.db = drizzle(this.pool, { schema });

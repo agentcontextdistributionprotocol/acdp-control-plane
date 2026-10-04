@@ -41,17 +41,20 @@ export class DataRetentionService implements OnModuleInit, OnModuleDestroy {
     const intervalMs = this.config.dataRetentionIntervalHours * 60 * 60 * 1000;
     this.timer = setInterval(() => {
       void this.purge().catch((err) =>
-        this.logger.warn(
-          `retention purge failed: ${err instanceof Error ? err.message : String(err)}`,
-        ),
+        this.logger.warn({
+          msg: 'retention purge failed',
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
     }, intervalMs);
     if (typeof this.timer === 'object' && 'unref' in this.timer) {
       this.timer.unref();
     }
-    this.logger.log(
-      `data retention enabled: ttl=${this.config.dataRetentionTtlDays}d interval=${this.config.dataRetentionIntervalHours}h`,
-    );
+    this.logger.log({
+      msg: 'data retention enabled',
+      ttlDays: this.config.dataRetentionTtlDays,
+      intervalHours: this.config.dataRetentionIntervalHours,
+    });
   }
 
   onModuleDestroy(): void {
@@ -97,9 +100,14 @@ export class DataRetentionService implements OnModuleInit, OnModuleDestroy {
       );
 
       if (events || runs || deliveries || cosignatures) {
-        this.logger.log(
-          `retention purge: events=${events} runs=${runs} deliveries=${deliveries} cosignatures=${cosignatures} cutoff=${cutoffIso}`,
-        );
+        this.logger.log({
+          msg: 'retention purge',
+          events,
+          runs,
+          deliveries,
+          cosignatures,
+          cutoff: cutoffIso,
+        });
       }
       return { events, runs, deliveries, cosignatures };
     } finally {

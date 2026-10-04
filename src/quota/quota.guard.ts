@@ -75,10 +75,14 @@ export class QuotaGuard implements CanActivate {
     }
 
     if (count > limit.count) {
-      this.logger.warn(
-        `quota exceeded: tenant=${tenantId} action=${action} ` +
-          `count=${count}/${limit.count} window=${limit.windowSeconds}s`,
-      );
+      this.logger.warn({
+        msg: 'quota exceeded',
+        tenantId,
+        action,
+        count,
+        limit: limit.count,
+        windowSeconds: limit.windowSeconds,
+      });
       const retryAfter = Math.max(1, ttlSeconds);
       const res = req.res ?? context.switchToHttp().getResponse();
       if (res?.setHeader) res.setHeader('Retry-After', String(retryAfter));

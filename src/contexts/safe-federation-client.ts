@@ -132,10 +132,11 @@ export class SafeFederationClient {
           }
           const retryAfter = resp.headers.get('retry-after');
           const host = safeHost(url);
-          this.logger.warn(
-            `federation upstream '${host}' returned 429 Too Many Requests` +
-              (retryAfter ? ` (Retry-After: ${retryAfter})` : ' (no Retry-After)'),
-          );
+          this.logger.warn({
+            msg: 'federation upstream returned 429 Too Many Requests',
+            host,
+            retryAfter: retryAfter ?? null,
+          });
           throw new AppException(
             ErrorCode.FEDERATION_UPSTREAM_RATE_LIMITED,
             `upstream '${host}' is rate limiting` +

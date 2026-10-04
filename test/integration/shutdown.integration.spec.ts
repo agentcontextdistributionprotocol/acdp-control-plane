@@ -119,7 +119,11 @@ describe('graceful shutdown (real process, real signal)', () => {
     // The cause: DatabaseService.onModuleDestroy ran twice.
     expect(app.output()).not.toContain('Called end on pool more than once');
     // And the handler really ran, rather than the process dying some other way.
-    expect(app.output()).toContain('received SIGTERM, closing gracefully');
+    // Structured line (rule 9): the signal is its own pino field, not text in msg.
+    expect(app.output()).toContain('received signal, closing gracefully');
+    // JSON (`"signal":"SIGTERM"`) or pino-pretty (`signal: "SIGTERM"`, ANSI-coloured).
+    const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+    expect(app.output().replace(ansi, '')).toMatch(/"?signal"?:\s*"SIGTERM"/);
   });
 
   it('exits on SIGINT too', async () => {

@@ -65,13 +65,15 @@ export class RedisStreamHubStrategy implements StreamHubStrategy {
           if (failed.has(which)) return;
           failed.add(which);
           const err = args[0];
-          this.logger.error(
-            `Redis ${which} error: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          this.logger.error({
+            msg: 'Redis connection error',
+            which,
+            error: err instanceof Error ? err.message : String(err),
+          });
         };
       const onReady = (which: string) => (): void => {
         if (failed.delete(which)) {
-          this.logger.log(`Redis ${which} reconnected`);
+          this.logger.log({ msg: 'Redis connection reconnected', which });
         }
       };
       this.publisher!.on('error', onError('publisher'));
@@ -83,7 +85,7 @@ export class RedisStreamHubStrategy implements StreamHubStrategy {
       // declared `Error | null` only, which the untyped require() concealed.
       void this.subscriber!.subscribe(this.channel, (err?: Error | null) => {
         if (err) {
-          this.logger.error(`Failed to subscribe to Redis channel: ${err.message}`);
+          this.logger.error({ msg: 'Failed to subscribe to Redis channel', error: err.message });
         } else {
           this.logger.log('Connected to Redis stream hub');
         }
@@ -94,15 +96,17 @@ export class RedisStreamHubStrategy implements StreamHubStrategy {
           const parsed = JSON.parse(message as string) as RedisEnvelope;
           this.localSubject.next(parsed);
         } catch (err) {
-          this.logger.warn(
-            `Failed to parse Redis message: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          this.logger.warn({
+            msg: 'Failed to parse Redis message',
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       });
     } catch (err) {
-      this.logger.error(
-        `Failed to connect to Redis: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger.error({
+        msg: 'Failed to connect to Redis',
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -140,7 +144,7 @@ export class RedisStreamHubStrategy implements StreamHubStrategy {
   private publish(envelope: RedisEnvelope): void {
     if (this.publisher) {
       this.publisher.publish(this.channel, JSON.stringify(envelope)).catch((err: Error) => {
-        this.logger.warn(`Failed to publish to Redis: ${err.message}`);
+        this.logger.warn({ msg: 'Failed to publish to Redis', error: err.message });
       });
     }
     // Do NOT also emit locally: the subscriber connection receives every

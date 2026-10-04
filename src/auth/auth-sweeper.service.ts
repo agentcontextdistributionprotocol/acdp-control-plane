@@ -52,7 +52,7 @@ export class AuthSweeperService implements OnModuleInit, OnModuleDestroy {
     }, ms);
     // Don't keep the process alive just to sweep.
     if (typeof this.timer.unref === 'function') this.timer.unref();
-    this.logger.log(`auth sweeper started, interval=${ms}ms`);
+    this.logger.log({ msg: 'auth sweeper started', intervalMs: ms });
   }
 
   onModuleDestroy(): void {
@@ -69,9 +69,7 @@ export class AuthSweeperService implements OnModuleInit, OnModuleDestroy {
       this.safeEvict('revocations', () => this.revocations.evictExpired()),
     ]);
     if (challenges > 0 || revocations > 0) {
-      this.logger.debug(
-        `swept challenges=${challenges} revocations=${revocations}`,
-      );
+      this.logger.debug({ msg: 'swept auth state', challenges, revocations });
     }
     return { challenges, revocations };
   }
@@ -81,7 +79,7 @@ export class AuthSweeperService implements OnModuleInit, OnModuleDestroy {
       return await fn();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      this.logger.warn(`auth sweep[${label}] failed: ${msg}`);
+      this.logger.warn({ msg: 'auth sweep failed', label, error: msg });
       return 0;
     }
   }

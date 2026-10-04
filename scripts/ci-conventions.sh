@@ -29,9 +29,16 @@
 #    client can tell "admin required" from "tenant mismatch" from "policy".
 #    No file exemptions: a ratchet that starts at zero.
 # 8. No `new BadGatewayException(` / `new ServiceUnavailableException(` /
-#    `new GatewayTimeoutException(` — an unlabelled 502/503/504 falls back to
+#    `new GatewayTimeoutException(`, and no `new HttpException(<x>, 502|503|504)`
+#    or `new HttpException(<x>, HttpStatus.BAD_GATEWAY|SERVICE_UNAVAILABLE|
+#    GATEWAY_TIMEOUT)` — an unlabelled 502/503/504 falls back to
 #    INTERNAL_ERROR, blaming the control plane for an upstream fault (#200).
 #    Throw AppException with a specific ErrorCode. Ratchet at zero.
+# 9. No template literal with `${…}` as a log MESSAGE — `logger.warn(`x ${y}`)`.
+#    Same reason as rule 5: interpolated values are buried in `msg` instead of
+#    landing as top-level pino fields. Pass `{ msg: 'static summary', y }`.
+#    Interpolation-free template literals and `msg: `…${y}`` inside an object
+#    are allowed.
 #
 # Usage: ci-conventions.sh [SOURCE_DIR]   (SOURCE_DIR defaults to ./src; the
 # argument exists so the unit spec can point the script at a scratch tree and
@@ -40,6 +47,11 @@
 set -u
 
 src_dir="${1:-src}"
+# A missing tree would make every grep/perl check "pass" on zero files.
+if [ ! -d "$src_dir" ]; then
+  echo "✗ source directory '$src_dir' does not exist"
+  exit 1
+fi
 
 fail=0
 
@@ -132,10 +144,83 @@ check "no unlabelled NotFound/Forbidden exceptions (see #182)" \
 # 8. Unlabelled gateway-family 5xx (#200). Same BRE caveat as rule 7 — the ERE
 #    spelling would be a malformed BRE that grep rejects with exit 2 and the
 #    rule would pass forever; src/ci-conventions.spec.ts proves it fires for
-#    each class name. Known gap: a string-bodied `new HttpException('x', 502)`
-#    is not matched (ASSUMPTIONS.md, #200). Comment lines are exempt.
+#    each class name. Comment lines are exempt.
 check "no unlabelled BadGateway/ServiceUnavailable/GatewayTimeout exceptions (see #200)" \
   'new \(BadGateway\|ServiceUnavailable\|GatewayTimeout\)Exception(' \
   '(\.spec\.ts|:[0-9]+: *(//|\*))'
+
+# 8b. The same unlabelled 5xx spelled through the generic class:
+#    `new HttpException(<body>, 502|503|504)` or `…, HttpStatus.BAD_GATEWAY |
+#    SERVICE_UNAVAILABLE | GATEWAY_TIMEOUT)`. Perl, not grep: every
+#    HttpException in src/ is prettier-wrapped, so the status sits lines below
+#    the `new`; the balanced-paren recursion `(?1)` captures the whole argument
+#    list however it is wrapped or nested. `new AppException(…, HttpStatus.
+#    BAD_GATEWAY)` is NOT matched (it carries a specific ErrorCode), nor are
+#    non-gateway statuses (429, 403) or `5020`. A match whose line starts with
+#    `//` or ` *` is a comment and skipped; *.spec.ts is excluded.
+#    Unlike grep-with-`|| true`, a perl compile/runtime error FAILS the rule
+#    (xargs exits non-zero) instead of passing it silently.
+#    Known limits (ASSUMPTIONS.md): a status in a variable, `super(x, 502)` in
+#    an HttpException subclass, unbalanced parens inside a string argument.
+gateway_hits=$(
+  find "$src_dir" -name '*.ts' ! -name '*.spec.ts' -print0 |
+    xargs -0 perl -0777 -ne '
+      while (/new\s+HttpException\s*(\((?:[^()]++|(?1))*\))/g) {
+        my ($start, $args) = ($-[0], $1);
+        next unless $args =~ /(?<![\w.])50[234](?![\w.])|HttpStatus\.(?:BAD_GATEWAY|SERVICE_UNAVAILABLE|GATEWAY_TIMEOUT)\b/;
+        my $bol = rindex($_, "\n", $start - 1) + 1;
+        next if substr($_, $bol, $start - $bol) =~ m{^\s*(?://|\*)};
+        my $line = (substr($_, 0, $start) =~ tr/\n//) + 1;
+        print "$ARGV:$line: new HttpException(…, 502|503|504)\n";
+      }
+    '
+)
+gateway_status=$?
+if [ "$gateway_status" -ne 0 ]; then
+  echo "✗ no unlabelled HttpException(…, 502|503|504) (see #200) — scanner failed (exit $gateway_status)"
+  fail=1
+elif [ -n "$gateway_hits" ]; then
+  echo "✗ no unlabelled HttpException(…, 502|503|504) (see #200) — forbidden occurrences:"
+  echo "$gateway_hits"
+  fail=1
+else
+  echo "✓ no unlabelled HttpException(…, 502|503|504) (see #200)"
+fi
+
+# 9. Template-literal log messages. Perl (multi-line, like rule 5): the
+#    wrapped form `this.logger.warn(\n  `…${x}…`,\n)` is the common one.
+#    Receivers: anything ending in `logger`/`Logger` (`this.logger`,
+#    `deps.logger`, `logger`), a bare `log` identifier (`log.warn`,
+#    `this.log.warn`), and an inline `new Logger('X')` — each also through
+#    `?.` / `!.` (`this.logger?.warn` is the form that slipped through once). Only a FIRST
+#    argument that is a template literal containing `${` fires; comment lines
+#    and *.spec.ts are exempt; a perl failure fails the rule.
+#    Known limits (ASSUMPTIONS.md): string concatenation (`'a ' + x`), a
+#    pre-built message variable, `String.raw` tags, a comment between `(` and
+#    the literal, and other receiver names are not detected.
+tpl_hits=$(
+  find "$src_dir" -name '*.ts' ! -name '*.spec.ts' -print0 |
+    xargs -0 perl -0777 -ne '
+      while (/(?:[lL]ogger|(?<![\w\$])log|\bLogger\([^()]*\))[?!]?\.(?:log|warn|error|debug|verbose|fatal)\(\s*`([^`]*)`/g) {
+        my ($start, $body) = ($-[0], $1);
+        next unless $body =~ /\$\{/;
+        my $bol = rindex($_, "\n", $start - 1) + 1;
+        next if substr($_, $bol, $start - $bol) =~ m{^\s*(?://|\*)};
+        my $line = (substr($_, 0, $start) =~ tr/\n//) + 1;
+        print "$ARGV:$line: logger.<level>(`…\${…}…`)\n";
+      }
+    '
+)
+tpl_status=$?
+if [ "$tpl_status" -ne 0 ]; then
+  echo "✗ no template-literal log messages (structured fields instead) — scanner failed (exit $tpl_status)"
+  fail=1
+elif [ -n "$tpl_hits" ]; then
+  echo "✗ no template-literal log messages (structured fields instead) — forbidden occurrences:"
+  echo "$tpl_hits"
+  fail=1
+else
+  echo "✓ no template-literal log messages (structured fields instead)"
+fi
 
 exit $fail

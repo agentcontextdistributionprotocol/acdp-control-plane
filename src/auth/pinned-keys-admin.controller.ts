@@ -70,7 +70,7 @@ export class PinnedKeysAdminController {
     assertAdmin(req, 'pinned-keys reload is admin-only');
     const raw = process.env.CONTROL_PLANE_PINNED_KEYS ?? '';
     const count = this.pinned.load(raw);
-    this.logger.log(`pinned-keys reloaded; count=${count}`);
+    this.logger.log({ msg: 'pinned-keys reloaded', count });
     return { ok: true, count };
   }
 }

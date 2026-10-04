@@ -58,16 +58,18 @@ describe('RedisQuotaStore', () => {
   });
 
   it('fails open on transport error (returns {0,0})', async () => {
-    const logs: string[] = [];
+    const logger = { warn: jest.fn() };
     const fakeRedis = {
       eval: jest.fn().mockRejectedValue(new Error('CONNREFUSED')),
       quit: jest.fn().mockResolvedValue('OK'),
     };
-    const logger = { warn: (m: string) => logs.push(m) };
     const s = new RedisQuotaStore(fakeRedis, logger);
     const r = await s.increment('k', 60);
     expect(r).toEqual({ count: 0, ttlSeconds: 0 });
-    expect(logs[0]).toMatch(/CONNREFUSED/);
+    expect(logger.warn).toHaveBeenCalledWith({
+      msg: 'quota store unavailable, failing open',
+      error: 'CONNREFUSED',
+    });
   });
 
   it('fails open on malformed eval result', async () => {
@@ -91,13 +93,13 @@ describe('RedisQuotaStore', () => {
   });
 
   it('close() never throws, so a failing transport cannot block shutdown', async () => {
-    const logs: string[] = [];
+    const logger = { warn: jest.fn() };
     const fakeRedis = {
       eval: jest.fn(),
       quit: jest.fn().mockRejectedValue(new Error('ECONNRESET')),
     };
-    const s = new RedisQuotaStore(fakeRedis, { warn: (m: string) => logs.push(m) });
+    const s = new RedisQuotaStore(fakeRedis, logger);
     await expect(s.close()).resolves.toBeUndefined();
-    expect(logs[0]).toMatch(/ECONNRESET/);
+    expect(logger.warn).toHaveBeenCalledWith({ msg: 'redis quota quit failed', error: 'ECONNRESET' });
   });
 });

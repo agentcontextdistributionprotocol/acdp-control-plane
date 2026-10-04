@@ -26,9 +26,11 @@ import { StaticRulesPolicyDecider } from './static-rules-policy.decider';
         const logger = new Logger('PolicyModule');
         let inner: PolicyDecider;
         if (config.policyBackend === 'opa') {
-          logger.log(
-            `Policy backend: OPA (${config.opaBaseUrl}/${config.opaPackagePath})`,
-          );
+          logger.log({
+            msg: 'Policy backend: OPA',
+            opaBaseUrl: config.opaBaseUrl,
+            opaPackagePath: config.opaPackagePath,
+          });
           inner = new OpaPolicyDecider({
             baseUrl: config.opaBaseUrl,
             packagePath: config.opaPackagePath,

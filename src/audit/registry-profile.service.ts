@@ -147,9 +147,11 @@ export class RegistryProfileService {
         acdpVersion: typeof doc.acdp_version === 'string' ? doc.acdp_version : null,
       };
     } catch (err) {
-      this.logger.debug(
-        `capabilities probe for '${authority}' failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger.debug({
+        msg: 'capabilities probe failed',
+        authority,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return unreadable;
     }
   }

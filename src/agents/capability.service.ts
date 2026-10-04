@@ -143,9 +143,12 @@ export class CapabilityService {
       tenantId,
     });
 
-    this.logger.log(
-      `capability declared: agent=${req.agentDid} cap=${req.capabilityUri} key=${req.keyId}`,
-    );
+    this.logger.log({
+      msg: 'capability declared',
+      agentDid: req.agentDid,
+      capabilityUri: req.capabilityUri,
+      keyId: req.keyId,
+    });
     return row;
   }
 

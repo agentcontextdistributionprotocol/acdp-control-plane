@@ -110,9 +110,11 @@ export class RunsService {
         this.bandit.recordReward(run.scenarioId, agentDid, reward);
       }
     } catch (err) {
-      this.logger.warn(
-        `bandit reward for run ${run.runId} failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger.warn({
+        msg: 'bandit reward failed',
+        runId: run.runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -130,14 +132,18 @@ export class RunsService {
         signal: AbortSignal.timeout(5000),
       });
       if (!response.ok) {
-        this.logger.warn(
-          `playground notify ${runId} returned ${response.status}`,
-        );
+        this.logger.warn({
+          msg: 'playground notify returned non-OK status',
+          runId,
+          status: response.status,
+        });
       }
     } catch (err) {
-      this.logger.warn(
-        `playground notify ${runId} failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger.warn({
+        msg: 'playground notify failed',
+        runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 }

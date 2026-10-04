@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 /**
  * Quota counter storage abstraction.
  *
@@ -87,7 +88,7 @@ return {v, ttl}
       eval: (script: string, numKeys: number, ...args: (string | number)[]) => Promise<unknown>;
       quit: () => Promise<unknown>;
     },
-    private readonly logger?: { warn: (msg: string) => void },
+    private readonly logger?: Pick<Logger, 'warn'>,
   ) {}
 
   /**
@@ -100,9 +101,10 @@ return {v, ttl}
     try {
       await this.redis.quit();
     } catch (e) {
-      this.logger?.warn(
-        `redis quota quit failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      this.logger?.warn({
+        msg: 'redis quota quit failed',
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
   }
 
@@ -125,9 +127,10 @@ return {v, ttl}
         ttlSeconds: Number(result[1]),
       };
     } catch (e) {
-      this.logger?.warn(
-        `quota store unavailable, failing open: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      this.logger?.warn({
+        msg: 'quota store unavailable, failing open',
+        error: e instanceof Error ? e.message : String(e),
+      });
       return { count: 0, ttlSeconds: 0 };
     }
   }

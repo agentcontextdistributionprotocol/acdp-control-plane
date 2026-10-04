@@ -133,9 +133,10 @@ export class IntrospectController {
       // RFC 7662 §2.2: any failure mode collapses to {active: false}.
       // We DON'T log token contents at warn level (PII / secret hygiene);
       // a debug-level breadcrumb is enough for triage.
-      this.logger.debug(
-        `introspect: token rejected (${e instanceof Error ? e.message : 'unknown'})`,
-      );
+      this.logger.debug({
+        msg: 'introspect: token rejected',
+        error: e instanceof Error ? e.message : 'unknown',
+      });
       return { active: false };
     }
   }

@@ -1231,9 +1231,11 @@
 - **Assumed:** `defaultErrorCode` is unchanged: after #200 nothing in `src/`
   throws an unlabelled 502/503/504, and minting a generic fallback with zero
   producers would be a permanent public name for a hypothetical. CI rule 8 bans
-  bare `new BadGateway|ServiceUnavailable|GatewayTimeoutException(`. Known gap:
-  a string-bodied `new HttpException('x', 502)` is not matched by rule 8 and
-  would still report `INTERNAL_ERROR` (pinned by `exception.filter.spec.ts`).
+  bare `new BadGateway|ServiceUnavailable|GatewayTimeoutException(`. The former
+  known gap (a string-bodied `new HttpException('x', 502)`) is closed by rule 8b
+  (`plans/proxy-and-lint-followups.md` Phase 2); such a throw would still report
+  `INTERNAL_ERROR` at runtime (pinned by `exception.filter.spec.ts`), but CI now
+  rejects it.
 - **Blast radius if wrong:** Low — a future upstream 5xx would be mislabelled
   retryable `INTERNAL_ERROR`, which is still a retryable status.
 - **Status:** UNCONFIRMED
@@ -1289,4 +1291,47 @@
 - **Alternatives:** add `clientIp: req.ip` to every request line (one-line change
   once the privacy call is made).
 - **Blast radius if wrong:** Low — additive later.
+- **Status:** UNCONFIRMED
+
+## CI rule 8b uses perl, not basic grep (follow-up to #200)
+- **Plan:** `plans/proxy-and-lint-followups.md` (Phase 2, Plan review item 5)
+- **Assumed:** the brief asked for BASIC grep because `check()`'s `|| true`
+  swallows a malformed ERE. Every `new HttpException(` in `src/` is prettier-
+  wrapped, so a line grep would miss the realistic form entirely.
+- **Chose:** one perl `-0777` pass with a balanced-paren recursive capture of
+  the argument list, matching `(?<![\w.])50[234](?![\w.])` or
+  `HttpStatus.(BAD_GATEWAY|SERVICE_UNAVAILABLE|GATEWAY_TIMEOUT)`; the perl/xargs
+  exit status is checked so a broken pattern FAILS the rule; the spec proves each
+  of the 6 spellings fires single-line AND wrapped, and that AppException/429/
+  403/`5020`/comments/specs don't. Rule 8's BRE class-name check is unchanged.
+- **Known limits:** a status held in a variable; `super(x, 502)` in an
+  HttpException subclass; unbalanced parens inside a string argument;
+  `HttpStatus['BAD_GATEWAY']`. False positive (accepted, rewordable): a gateway
+  number inside a string argument, e.g. `new HttpException('upstream said 502', 400)`.
+  The script now fails outright when its source directory is missing.
+- **Alternatives:** BRE single-line only (misses every real-world form); BRE +
+  perl (double-reports single-line hits; BSD/GNU `\b` portability question).
+- **Blast radius if wrong:** Low — CI-only.
+- **Status:** UNCONFIRMED
+
+## All template-literal log messages converted; CI rule 9 added (follow-up to #200)
+- **Plan:** `plans/proxy-and-lint-followups.md` (Phase 3)
+- **Assumed:** CLAUDE.md's structured-logging convention applies to every
+  interpolated log message, not only the federation 429 warn — 107 sites (106 +
+  `bootstrap.ts`'s inline `new Logger('Bootstrap').error`).
+- **Chose:** convert all to `{ msg: '<static summary>', <camelCase fields> }`
+  (error text always `error`; pino/PinoLogger-reserved names avoided), then add
+  rule 9 at zero (perl, multi-line, receivers `*logger`/`*Logger`/`log`/inline
+  `new Logger(…)`, optionally via `?.`/`!.`). Log line shapes change (fields move out of `msg`) — any
+  dashboard/alert grepping old message text needs updating.
+- **Known limits:** `'a ' + x` concatenation, pre-built message variables,
+  `String.raw` tags, a comment between `(` and the literal, and receivers not
+  named `*logger`/`*Logger`/`log`/inline `new Logger(…)` are not detected;
+  `src/db/migrate.ts` uses `console` (rule-2 exempt). `?.`/`!.` receivers ARE
+  covered (gate round 1 found `quota-store.ts`'s two `this.logger?.warn` sites
+  had slipped past the first regex; converted, logger type widened from a
+  string-only interface to `Pick<Logger, 'warn'>`) — 109 sites total.
+- **Alternatives:** fix only the 429 warn (no ratchet possible with 105 left);
+  an ESLint rule (more machinery than the script-based conventions).
+- **Blast radius if wrong:** Low — log shape only; reversible.
 - **Status:** UNCONFIRMED

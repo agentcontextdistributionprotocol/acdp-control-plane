@@ -105,15 +105,18 @@ export class RevocationPollerService implements OnModuleInit, OnModuleDestroy {
         const persisted = await this.revocations.getRevocationCursor(feed.issuer);
         if (persisted !== null) {
           cursor = persisted;
-          this.logger.log(
-            `revocation poller resumed issuer=${feed.issuer} cursor=${cursor}`,
-          );
+          this.logger.log({
+            msg: 'revocation poller resumed',
+            issuer: feed.issuer,
+            cursor,
+          });
         }
       } catch (e) {
-        this.logger.warn(
-          `failed to load revocation cursor for issuer=${feed.issuer}, ` +
-            `starting at 0: ${msgOf(e)}`,
-        );
+        this.logger.warn({
+          msg: 'failed to load revocation cursor, starting at 0',
+          issuer: feed.issuer,
+          error: msgOf(e),
+        });
       }
       this.cursors.set(feed.issuer, cursor);
 
@@ -123,10 +126,12 @@ export class RevocationPollerService implements OnModuleInit, OnModuleDestroy {
       }, ms);
       if (typeof timer.unref === 'function') timer.unref();
       this.timers.push(timer);
-      this.logger.log(
-        `revocation poller started issuer=${feed.issuer} url=${feed.feedUrl} ` +
-          `interval=${ms}ms`,
-      );
+      this.logger.log({
+        msg: 'revocation poller started',
+        issuer: feed.issuer,
+        url: feed.feedUrl,
+        intervalMs: ms,
+      });
       // Poll immediately so a revocation isn't missed for a whole interval.
       void this.pollFeed(feed);
     }
@@ -149,9 +154,11 @@ export class RevocationPollerService implements OnModuleInit, OnModuleDestroy {
     try {
       page = await this.fetchOnce(feed, cursor);
     } catch (e) {
-      this.logger.warn(
-        `revocation feed poll failed issuer=${feed.issuer}: ${msgOf(e)} (will retry)`,
-      );
+      this.logger.warn({
+        msg: 'revocation feed poll failed (will retry)',
+        issuer: feed.issuer,
+        error: msgOf(e),
+      });
       return { fetched: 0, applied: 0, dropped: 0, allSucceeded: false, cursor };
     }
 
@@ -168,18 +175,24 @@ export class RevocationPollerService implements OnModuleInit, OnModuleDestroy {
       } catch (e) {
         // Advance in-memory anyway so this process doesn't refetch; a restart
         // would replay the page but revoke() is idempotent so it's harmless.
-        this.logger.warn(
-          `failed to persist revocation cursor issuer=${feed.issuer} ` +
-            `cursor=${newCursor} (will replay on restart): ${msgOf(e)}`,
-        );
+        this.logger.warn({
+          msg: 'failed to persist revocation cursor (will replay on restart)',
+          issuer: feed.issuer,
+          cursor: newCursor,
+          error: msgOf(e),
+        });
       }
     }
 
-    this.logger.log(
-      `revocation feed poll issuer=${feed.issuer} fetched=${page.entries.length} ` +
-        `applied=${applied} dropped=${dropped} allSucceeded=${allSucceeded} ` +
-        `cursor=${newCursor}`,
-    );
+    this.logger.log({
+      msg: 'revocation feed poll',
+      issuer: feed.issuer,
+      fetched: page.entries.length,
+      applied,
+      dropped,
+      allSucceeded,
+      cursor: newCursor,
+    });
     return {
       fetched: page.entries.length,
       applied,
@@ -289,10 +302,12 @@ export class RevocationPollerService implements OnModuleInit, OnModuleDestroy {
         });
         applied++;
       } catch (err) {
-        this.logger.warn(
-          `failed to apply propagated revocation jti=${e.jti} ` +
-            `issuer=${feed.issuer}; cursor will not advance this tick: ${msgOf(err)}`,
-        );
+        this.logger.warn({
+          msg: 'failed to apply propagated revocation; cursor will not advance this tick',
+          jti: e.jti,
+          issuer: feed.issuer,
+          error: msgOf(err),
+        });
         allSucceeded = false;
       }
     }

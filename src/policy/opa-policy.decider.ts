@@ -104,24 +104,30 @@ export class OpaPolicyDecider implements PolicyDecider {
         signal: ctrl.signal,
       });
     } catch (e) {
-      this.logger.warn(
-        `OPA unreachable: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      this.logger.warn({
+        msg: 'OPA unreachable',
+        error: e instanceof Error ? e.message : String(e),
+      });
       return this.onError();
     } finally {
       clearTimeout(t);
     }
     if (!resp.ok) {
-      this.logger.warn(`OPA returned HTTP ${resp.status} ${resp.statusText}`);
+      this.logger.warn({
+        msg: 'OPA returned non-OK HTTP status',
+        status: resp.status,
+        statusText: resp.statusText,
+      });
       return this.onError();
     }
     let payload: OpaResponseBody;
     try {
       payload = (await resp.json()) as OpaResponseBody;
     } catch (e) {
-      this.logger.warn(
-        `OPA response is not JSON: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      this.logger.warn({
+        msg: 'OPA response is not JSON',
+        error: e instanceof Error ? e.message : String(e),
+      });
       return this.onError();
     }
     return interpretOpa(payload);

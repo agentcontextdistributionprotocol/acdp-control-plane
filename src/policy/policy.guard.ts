@@ -58,9 +58,10 @@ export class PolicyGuard implements CanActivate {
     // so operators notice they decorated handlers without wiring
     // the engine.
     if (!this.decider) {
-      this.logger.warn(
-        `PolicyGuard hit @CheckPolicy(${action}) but no POLICY_DECIDER is registered`,
-      );
+      this.logger.warn({
+        msg: 'PolicyGuard hit @CheckPolicy but no POLICY_DECIDER is registered',
+        action,
+      });
       return true;
     }
 
@@ -89,18 +90,25 @@ export class PolicyGuard implements CanActivate {
       case 'allow':
         return true;
       case 'deny':
-        this.logger.warn(
-          `policy deny: action=${action} subject=${policyReq.subjectDid} reason=${decision.code} (${decision.reason})`,
-        );
+        this.logger.warn({
+          msg: 'policy deny',
+          action,
+          subject: policyReq.subjectDid,
+          reasonCode: decision.code,
+          reason: decision.reason,
+        });
         throw policyDenied({
           message: 'policy denied',
           code: decision.code,
           reason: decision.reason,
         });
       case 'indeterminate':
-        this.logger.warn(
-          `policy indeterminate: action=${action} subject=${policyReq.subjectDid} note=${decision.note ?? ''} — treating as DENY`,
-        );
+        this.logger.warn({
+          msg: 'policy indeterminate, treating as DENY',
+          action,
+          subject: policyReq.subjectDid,
+          note: decision.note ?? '',
+        });
         throw policyDenied({
           message: 'policy indeterminate',
           code: 'indeterminate',
