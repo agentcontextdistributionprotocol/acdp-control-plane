@@ -3783,3 +3783,5 @@ cumulative verify was run.
 ## 2026-10-04 — #210 Phases 2+3 PASS (Opus verifier, 1 round, mutation checks). Follow-ups: acdp-website #45 (config page), acdp-website troubleshooting.mdx:194-197 still describes hasFatalError latch (to add to #45), acdp-ui-console #159.
 
 ## 2026-10-04 — #191 PASS (Opus verifier, 1 round). swc transform for @nestjs/* only; flag removed. Advisories: tripwire(b) message scope (A1), TESTING.md .mjs note (A3).
+
+## 2026-10-04 — #156 toolchain tripwire workflow added (.github/workflows/toolchain-tripwire.yml): weekly + dispatch, inverted signal (red only if every probe passes). Local dry-run proved the red path with TS 6 / min_major=6; verify on GitHub via workflow_dispatch (default run must be green with failing probes; typescript_spec=6.0.3 min_major=6 must be red).
