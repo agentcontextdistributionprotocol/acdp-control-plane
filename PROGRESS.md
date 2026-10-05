@@ -3833,3 +3833,4 @@ PR opened
 ## #221 Phase 3 — boot-time strict-Ed25519 self-test (2026-10-05)
 - assertStrictEd25519 (src/auth/acdp-verify.ts), called first in bootstrap(); specs acdp-verify.spec.ts + bootstrap.spec.ts; docs TROUBLESHOOTING/ARCHITECTURE. Unit 1527, integration 262 green. Verifier pending (batched with Phase 2 gap closure).
 - Phase 3 verifier round 1 GAPS (embedded sig constant was 61 bytes → gate vacuous); fixed, constants exported + pinned to fixture, mutation on 0.14.3 fails 2 tests. Re-verify pending.
+- Phase 3 re-verify PASS. pushing PR-B
