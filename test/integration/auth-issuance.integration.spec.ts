@@ -124,6 +124,25 @@ describe('Auth issuance (integration)', () => {
     expect(res.status).toBe(401);
   });
 
+  it('rejects a key_id whose DID is not the agent_id, even with a valid signature (401, #221)', async () => {
+    const ch = await pub.requestJson<ChallengeResp>('POST', '/auth/challenge', {
+      body: { agent_id: DID },
+    });
+    const signature = sign(null, Buffer.from(ch.signing_input), privateKey).toString('base64');
+    const res = await pub.requestRaw('POST', '/auth/token', {
+      body: {
+        agent_id: DID,
+        key_id: `${DID}.attacker.net#key-1`,
+        nonce: ch.nonce,
+        expires_at: ch.expires_at,
+        algorithm: 'ed25519',
+        signature,
+      },
+    });
+    expect(res.status).toBe(401);
+    expect((res.body as { errorCode: string }).errorCode).toBe('UNAUTHORIZED');
+  });
+
   it('rejects an unknown / never-issued nonce (401)', async () => {
     const res = await pub.requestRaw('POST', '/auth/token', {
       body: {

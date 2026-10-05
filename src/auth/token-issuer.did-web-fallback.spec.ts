@@ -190,4 +190,137 @@ describe('TokenIssuer × DidWebResolverService (fallback chain)', () => {
       }),
     ).rejects.toMatchObject({ errorCode: ErrorCode.INVALID_SIGNATURE, status: 401 });
   });
+
+  describe('key_id ↔ agent_id binding (#221)', () => {
+    /** Resolver whose resolveKey is a spy returning the attacker's key. */
+    function buildAttackIssuer(attackerRaw: Buffer, pinnedSpec?: string) {
+      const resolveKey = jest.fn(async (keyUrl: string) => ({
+        keyId: keyUrl,
+        algorithm: 'ed25519' as const,
+        publicKeyB64: attackerRaw.toString('base64'),
+      }));
+      const ledger = { record: jest.fn() };
+      const store = new ChallengeStore(new InMemoryChallengeRepository());
+      const pinned = new PinnedKeysService();
+      if (pinnedSpec) pinned.load(pinnedSpec);
+      const cfg = fakeConfig();
+      const issuer = new TokenIssuer(
+        cfg,
+        store,
+        pinned,
+        { material: buildSigningMaterial({ algorithm: 'HS256', hsSecret: cfg.jwtSecret }) } as any,
+        null,
+        ledger as any,
+        { resolveKey } as any,
+      );
+      return { issuer, resolveKey, ledger };
+    }
+
+    async function attempt(
+      agentDid: string,
+      keyIdValue: string,
+      opts: { pinnedSpec?: string } = {},
+    ) {
+      const attacker = ed25519Pair();
+      const { issuer, resolveKey, ledger } = buildAttackIssuer(attacker.raw, opts.pinnedSpec);
+      const ch = await issuer.issueChallenge(agentDid);
+      const out = issuer.issueToken({
+        agentDid,
+        keyId: keyIdValue,
+        nonce: ch.nonce,
+        expiresAt: ch.expiresAt,
+        algorithm: 'ed25519',
+        signature: signEd25519(attacker.privateKey, ch.signingInput),
+      });
+      return { out, resolveKey, ledger };
+    }
+
+    it('rejects a key_id naming a sibling-suffixed host (did:web:example.com.attacker.net)', async () => {
+      const { out, resolveKey, ledger } = await attempt(
+        'did:web:example.com',
+        'did:web:example.com.attacker.net#k',
+      );
+      await expect(out).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(resolveKey).not.toHaveBeenCalled();
+      expect(ledger.record).toHaveBeenCalledTimes(1);
+      expect(ledger.record.mock.calls[0][0].decision).toBe('reject_key_id_mismatch');
+    });
+
+    it('rejects a key_id naming a path-prefixed sibling (…:alice vs …:alicebob)', async () => {
+      const { out, resolveKey, ledger } = await attempt(
+        'did:web:host:agents:alice',
+        'did:web:host:agents:alicebob#k',
+      );
+      await expect(out).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(resolveKey).not.toHaveBeenCalled();
+      expect(ledger.record).toHaveBeenCalledTimes(1);
+      expect(ledger.record.mock.calls[0][0].decision).toBe('reject_key_id_mismatch');
+    });
+
+    it.each([
+      ['full DID URL without a fragment', 'did:web:example.com'],
+      ['empty fragment', 'did:web:example.com#'],
+      ['bare empty fragment', ''],
+      ['fragment containing #', 'did:web:example.com#a#b'],
+      ['empty DID portion', '#key-1'],
+      ['bare id that looks like a DID (case/space/encoding)', 'DID:web:other'],
+      ['leading-space DID', ' did:web:other'],
+    ])('rejects a malformed key_id: %s', async (_n, bad) => {
+      const { out, resolveKey, ledger } = await attempt('did:web:example.com', bad);
+      await expect(out).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(resolveKey).not.toHaveBeenCalled();
+      expect(ledger.record).toHaveBeenCalledTimes(1);
+      expect(ledger.record.mock.calls[0][0].decision).toBe('reject_key_id_malformed');
+    });
+
+    it('still mints for the full DID URL form and for a bare fragment', async () => {
+      for (const k of ['did:web:example.com#key-1', 'key-1']) {
+        const { out, resolveKey } = await attempt('did:web:example.com', k);
+        await expect(out).resolves.toMatchObject({ tokenType: 'Bearer' });
+        expect(resolveKey).toHaveBeenCalledWith(
+          'did:web:example.com#key-1',
+          'ed25519',
+        );
+      }
+    });
+
+    it('applies on the pinned-key path: a foreign DID key_id is rejected even with a valid pinned-key signature', async () => {
+      const pinnedPair = ed25519Pair();
+      const store = new ChallengeStore(new InMemoryChallengeRepository());
+      const pinned = new PinnedKeysService();
+      pinned.load(`did:web:example.com=${pinnedPair.raw.toString('base64')}`);
+      const ledger = { record: jest.fn() };
+      const cfg = fakeConfig();
+      const issuer = new TokenIssuer(
+        cfg,
+        store,
+        pinned,
+        { material: buildSigningMaterial({ algorithm: 'HS256', hsSecret: cfg.jwtSecret }) } as any,
+        null,
+        ledger as any,
+        null,
+      );
+      const mint = async (keyIdValue: string) => {
+        const ch = await issuer.issueChallenge('did:web:example.com');
+        return issuer.issueToken({
+          agentDid: 'did:web:example.com',
+          keyId: keyIdValue,
+          nonce: ch.nonce,
+          expiresAt: ch.expiresAt,
+          algorithm: 'ed25519',
+          signature: signEd25519(pinnedPair.privateKey, ch.signingInput),
+        });
+      };
+      await expect(mint('did:web:other#k')).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(ledger.record).toHaveBeenCalledTimes(1);
+      expect(ledger.record.mock.calls[0][0].decision).toBe('reject_key_id_mismatch');
+
+      // Bare fragment: mints, acdp.key_id = the supplied value.
+      const out = await mint('key-1');
+      const claims = JSON.parse(
+        Buffer.from(out.token.split('.')[1], 'base64url').toString(),
+      );
+      expect(claims.acdp.key_id).toBe('key-1');
+    });
+  });
 });

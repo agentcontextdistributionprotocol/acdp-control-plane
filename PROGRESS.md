@@ -3785,3 +3785,39 @@ cumulative verify was run.
 ## 2026-10-04 — #191 PASS (Opus verifier, 1 round). swc transform for @nestjs/* only; flag removed. Advisories: tripwire(b) message scope (A1), TESTING.md .mjs note (A3).
 
 ## 2026-10-04 — #156 toolchain tripwire workflow added (.github/workflows/toolchain-tripwire.yml): weekly + dispatch, inverted signal (red only if every probe passes). Local dry-run proved the red path with TS 6 / min_major=6; verify on GitHub via workflow_dispatch (default run must be green with failing probes; typescript_spec=6.0.3 min_major=6 must be red).
+
+## Repo map — strict-ed25519-bearer-jwt-221
+
+From `plans/strict-ed25519-bearer-jwt-221.md` (issue #221). Reuse this map; don't re-scan.
+
+- Ed25519 verification sites:
+  - SDK `verifySignatureB64` (`src/auth/acdp-verify.ts:29-43`), called from
+    `token-issuer.service.ts:256`, `agents/capability.service.ts:123`,
+    `audit/revocation-audit.service.ts:768`, `audit/log-verify.ts:357` and `audit/cosign.ts:576`.
+  - SDK-internal: `cosign.ts:527` (verifyWitnessCosignature), `cosign.ts:802` (evaluateWitnessQuorum)
+    and `receipt-verify.ts:202` (verifyReceipt).
+  - `node:crypto`: `auth/jwt-codec.ts:108` (EdDSA JWTs; local + trusted JWKS via `jwks-client.ts:187`).
+- Probe result: the acdp SDK 0.14.3 accepts `sig-004` and small-order forgeries; 0.14.4 (`verify_strict`,
+  acdp-rs 75afef2) rejects them. Node 26.8.1 with OpenSSL 3.6.3 already rejects them. The bot's PR #220
+  (0.14.4) fails `npm ci` because its lockfile is incomplete, so it needs a #209-style regenerated lockfile.
+- Spec pin: `.github/workflows/ci.yml:37` (comment at `:27-33`); only the unit job reads it (`:90-91`).
+  The 9deb7e7..34f14ab range is fb76f6d (docs), 6d5cdb8 (#73, §5.10 + sig-004) and 34f14ab (#74, bearer_jwt).
+- Conformance-fixture loader is duplicated in `cosign.spec.ts:45`, `log-verify.parity.spec.ts:37`,
+  `revocation-verify.spec.ts:316` and `revocation-lineage.spec.ts:465`.
+- bearer_jwt surface:
+  - `token-issuer.service.ts` (mint `:390-432`, verify `:294-320`).
+  - **The key_id prefix bug is at `:362`.**
+  - `cross-issuer-validator.service.ts` (local `:146`, trusted `:164`).
+  - `trusted-issuers.ts:13-17,44-50` (audience = peer's own authority).
+  - `auth.guard.ts:75-147`.
+  - `introspect.controller.ts:112-142`.
+  - Ledger decisions are in `issuance-ledger.service.ts:40-48`.
+- Registry parity references (read-only):
+  - `acdp-registry-rs/crates/acdp-registry-auth/src/service.rs:185-193` (exact key_id DID match).
+  - `.../jwt.rs:241-242` (required exp/iss/aud).
+  - `acdp-registry-server/src/main.rs:1437` (advertises `bearer_jwt`).
+
+## #221 Phase 5 — key_id ↔ agent_id binding (2026-10-05)
+- Verdict PASS (Opus verifier, 2 rounds; round 1 GAPS: weak pinned-path test, missing bare-fragment/envelope/ledger assertions, `#frag` and DID-lookalike bare ids). Complex → solo gate.
+- Files: src/auth/token-issuer.service.ts, issuance-ledger.service.ts, token-issuer.did-web-fallback.spec.ts, test/integration/auth-issuance.integration.spec.ts, docs/AUTH.md, ASSUMPTIONS.md.
+- PR strategy: PR-A = Phase 5 (this branch); PR-B = Phases 1-3; PR-C = Phases 4+6. Next: ship PR-A, then Phase 1.

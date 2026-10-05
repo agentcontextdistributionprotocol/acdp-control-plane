@@ -88,6 +88,13 @@ Agent                                   Control Plane
 - **Key resolution**: `PinnedKeysService.get(agentDid)` first (local emergency
   control, with optional validity window); for `did:web:` subjects, falls back to
   `DidWebResolverService` (SSRF-gated). No key → `401`.
+- **`key_id` binding**: the DID portion of `key_id` must **equal** `agent_id`
+  exactly (never a string prefix); a bare fragment (`key-1`) is expanded to
+  `<agent_id>#key-1`. A DID URL without a fragment, an empty fragment, an empty DID portion
+  (`#frag`), a fragment containing `#`, or a bare id containing `:`, `%` or
+  whitespace is malformed. Checked before key resolution, on both
+  the pinned and `did:web` paths → `401` (`reject_key_id_mismatch` /
+  `reject_key_id_malformed` in the ledger). Mirrors the registry's `KeyIdMismatch`.
 - **Downgrade defense**: the request `algorithm` must match the pinned key's
   algorithm.
 - **Atomic nonce consumption**: on Postgres, `DELETE … RETURNING` so a nonce is

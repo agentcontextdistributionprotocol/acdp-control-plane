@@ -204,6 +204,12 @@ export class TokenIssuer {
       );
     }
 
+    // Bind key_id to agent_id (exact DID match, never a string prefix) so
+    // the verifying key is provably the agent's own — on BOTH the pinned
+    // and the did:web path — and a caller cannot stamp a foreign key id
+    // into a minted token. Mirrors the registry's KeyIdMismatch check.
+    const keyUrl = this.bindKeyId(req, ctx);
+
     // Resolve the public key. Fallback chain per deferred-plan §1:
     //   1. PinnedKeysService.get() — lets operators stage emergency
     //      key revocations locally, overriding the DID document.
@@ -213,7 +219,7 @@ export class TokenIssuer {
     //      did-web/ssrf-guard.ts).
     let pinned: PinnedKey | undefined = this.pinned.get(req.agentDid);
     if (!pinned && this.didWebResolver && isDidWeb(req.agentDid)) {
-      pinned = await this.resolveDidWebKey(req, ctx);
+      pinned = await this.resolveDidWebKey(req, keyUrl, ctx);
       if (!pinned) {
         // resolveDidWebKey already logged + recorded the rejection.
         throw new UnauthorizedException(
@@ -340,6 +346,51 @@ export class TokenIssuer {
   // ── internals ────────────────────────────────────────────────────────
 
   /**
+   * Validate `key_id` against `agent_id` and return the full DID URL.
+   *
+   * - `<did>#<fragment>`: the DID portion must EQUAL `agent_id` exactly.
+   * - bare `<fragment>` (no `:`/whitespace/`%`): expanded to `<agent_id>#<fragment>`.
+   * - a DID URL with no/empty fragment, an empty key_id, or a fragment
+   *   containing `#` is malformed.
+   * Throws 401 (ledgered) otherwise.
+   */
+  private bindKeyId(
+    req: { agentDid: string; keyId: string },
+    ctx: IssueTokenContext,
+  ): string {
+    const reject = (
+      decision: 'reject_key_id_mismatch' | 'reject_key_id_malformed',
+      message: string,
+    ): never => {
+      this.ledger?.record({
+        sub: req.agentDid,
+        iss: this.config.jwtAuthority,
+        signerIp: ctx.signerIp,
+        decision,
+        decisionDetail: `agent=${req.agentDid} key_id=${req.keyId}`,
+      });
+      throw new UnauthorizedException(message);
+    };
+    const { keyId, agentDid } = req;
+    const hash = keyId.indexOf('#');
+    if (hash === -1) {
+      if (keyId === '' || /[:\s%]/.test(keyId)) {
+        return reject('reject_key_id_malformed', 'key_id is malformed: expected a fragment');
+      }
+      return `${agentDid}#${keyId}`;
+    }
+    const didPortion = keyId.slice(0, hash);
+    const fragment = keyId.slice(hash + 1);
+    if (didPortion === '' || fragment === '' || fragment.includes('#')) {
+      return reject('reject_key_id_malformed', 'key_id is malformed: invalid fragment');
+    }
+    if (didPortion !== agentDid) {
+      return reject('reject_key_id_mismatch', 'key_id does not belong to agent_id');
+    }
+    return keyId;
+  }
+
+  /**
    * Resolve a `did:web` agent's public key via the DID document.
    *
    * Returns a `PinnedKey`-shaped record so the dispatch / verify
@@ -353,13 +404,14 @@ export class TokenIssuer {
    * `assertionMethod` and the method's key type (downgrade defense).
    */
   private async resolveDidWebKey(
-    req: { agentDid: string; keyId: string; algorithm: string },
+    req: { agentDid: string; algorithm: string },
+    keyUrl: string,
     ctx: IssueTokenContext,
   ): Promise<PinnedKey | undefined> {
     if (!this.didWebResolver) return undefined;
     try {
       const resolved = await this.didWebResolver.resolveKey(
-        req.keyId.startsWith(req.agentDid) ? req.keyId : `${req.agentDid}#${req.keyId}`,
+        keyUrl,
         req.algorithm as 'ed25519' | 'ecdsa-p256',
       );
       this.logger.log({
