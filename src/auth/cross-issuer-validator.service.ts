@@ -204,17 +204,15 @@ export class CrossIssuerValidator {
         );
       }
     }
-    this.logger.log(
-      'trusted-issuer JWT accepted',
-      JSON.stringify({
-        event: 'acdp.jwt.trusted_issuer_accept',
-        iss: decoded.iss,
-        sub: decoded.sub,
-        jti: decoded.jti,
-        audience_required: trusted.audience ?? null,
-        scope_required: trusted.requiredScope ?? null,
-      }),
-    );
+    this.logger.log({
+      msg: 'trusted-issuer JWT accepted',
+      event: 'acdp.jwt.trusted_issuer_accept',
+      iss: decoded.iss,
+      sub: decoded.sub,
+      jti: decoded.jti,
+      audienceRequired: trusted.audience ?? null,
+      scopeRequired: trusted.requiredScope ?? null,
+    });
     return decoded;
   }
 }

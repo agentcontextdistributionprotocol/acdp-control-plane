@@ -45,6 +45,13 @@ export interface VerifyJwtOptions {
   audience?: string;
   /** Seconds of leeway applied to exp/nbf. Defaults to 0. */
   clockToleranceSec?: number;
+  /**
+   * Reject a token with no numeric `exp`. Defaults to `true`: a bearer token that
+   * never expires is not acceptable (RFC-ACDP-0008 §6.2 `bearer_jwt` requires
+   * `exp`; the reference registry requires `exp`/`iss`/`aud` too). `jsonwebtoken`
+   * alone only checks `exp` when present.
+   */
+  requireExp?: boolean;
 }
 
 /**
@@ -78,12 +85,14 @@ export function verifyJwt(token: string, opts: VerifyJwtOptions): Record<string,
   if (alg === 'EdDSA') {
     return verifyEdDSA(token, opts);
   }
-  return jwt.verify(token, opts.key as Secret, {
+  const payload = jwt.verify(token, opts.key as Secret, {
     algorithms: [alg as Algorithm],
     issuer: opts.issuer,
     audience: opts.audience,
     clockTolerance: opts.clockToleranceSec ?? 0,
   }) as Record<string, unknown>;
+  requireExpClaim(payload, opts);
+  return payload;
 }
 
 // ── EdDSA (Ed25519): sign via Node crypto, verify via the acdp SDK ──────────────────────────────────────
@@ -113,8 +122,9 @@ function verifyEdDSA(token: string, opts: VerifyJwtOptions): Record<string, unkn
   if (sig.length !== ED25519_SIGNATURE_BYTES) {
     throw new Error('invalid signature');
   }
-  // The SDK verifies strictly (RFC-ACDP-0001 §5.10); it never throws past
-  // `verifySignatureB64`, so any malformed key/signature is "invalid signature".
+  // The SDK verifies strictly (RFC-ACDP-0001 §5.10); `verifySignatureB64` maps
+  // any SDK failure (bad signature, malformed key) to `false` → "invalid signature".
+  // (A key that isn't Ed25519 throws earlier, from `rawEd25519PublicKeyB64`.)
   const ok = verifySignatureB64(
     'ed25519',
     rawEd25519PublicKeyB64(toPublicKey(opts.key)),
@@ -132,6 +142,12 @@ function verifyEdDSA(token: string, opts: VerifyJwtOptions): Record<string, unkn
   return payload;
 }
 
+function requireExpClaim(payload: Record<string, unknown>, opts: VerifyJwtOptions): void {
+  if ((opts.requireExp ?? true) && typeof payload.exp !== 'number') {
+    throw new Error('jwt exp claim is required');
+  }
+}
+
 /** exp/nbf/iss/aud validation — parity with `jsonwebtoken`'s verify options. */
 function validateRegisteredClaims(
   payload: Record<string, unknown>,
@@ -139,6 +155,7 @@ function validateRegisteredClaims(
 ): void {
   const now = Math.floor(Date.now() / 1000);
   const tol = opts.clockToleranceSec ?? 0;
+  requireExpClaim(payload, opts);
   if (typeof payload.exp === 'number' && now > payload.exp + tol) {
     throw new Error('jwt expired');
   }

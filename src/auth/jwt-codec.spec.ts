@@ -18,6 +18,12 @@ function claims(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** A claim set with the `exp` key absent (jsonwebtoken refuses `exp: undefined`). */
+function claimsNoExp() {
+  const { exp: _exp, ...rest } = claims();
+  return rest;
+}
+
 describe('jwt-codec', () => {
   describe('HS256', () => {
     it('signs a token jsonwebtoken can verify (interop)', () => {
@@ -170,6 +176,38 @@ describe('jwt-codec', () => {
         clockToleranceSec: 30,
       });
       expect(decoded.sub).toBe('did:web:alice');
+    });
+  });
+
+  describe('exp is required (RFC-ACDP-0008 §6.2 bearer_jwt)', () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+
+    it('rejects an HS256 token with no exp', () => {
+      const token = signJwt(claimsNoExp(), { algorithm: 'HS256', key: HS_SECRET });
+      expect(() => verifyJwt(token, { algorithms: ['HS256'], key: HS_SECRET })).toThrow(
+        /exp claim is required/,
+      );
+    });
+
+    it('rejects an EdDSA token with no exp', () => {
+      const token = signJwt(claimsNoExp(), { algorithm: 'EdDSA', key: privateKey });
+      expect(() => verifyJwt(token, { algorithms: ['EdDSA'], key: publicKey })).toThrow(
+        /exp claim is required/,
+      );
+    });
+
+    it('rejects a non-numeric exp', () => {
+      const token = signJwt(claims({ exp: '9999999999' }), { algorithm: 'EdDSA', key: privateKey });
+      expect(() => verifyJwt(token, { algorithms: ['EdDSA'], key: publicKey })).toThrow();
+    });
+
+    it('requireExp:false is an explicit opt-out; tokens with exp still verify by default', () => {
+      const noExp = signJwt(claimsNoExp(), { algorithm: 'HS256', key: HS_SECRET });
+      expect(
+        verifyJwt(noExp, { algorithms: ['HS256'], key: HS_SECRET, requireExp: false }).sub,
+      ).toBe('did:web:alice');
+      const ok = signJwt(claims(), { algorithm: 'HS256', key: HS_SECRET });
+      expect(verifyJwt(ok, { algorithms: ['HS256'], key: HS_SECRET }).sub).toBe('did:web:alice');
     });
   });
 

@@ -529,6 +529,15 @@ local Redis). Start it with the command above. The skip is local-only by
 design — in CI the spec fails loudly rather than skipping, because a
 wire-protocol spec that silently skips reports green while proving nothing.
 
+## Auth
+
+### Trusted peer tokens are rejected after upgrade: `jwt exp claim is required`
+
+`verifyJwt` now requires a numeric `exp` on **every** token — local and trusted-issuer
+(RFC-ACDP-0008 §6.2 `bearer_jwt`; the reference registry stamps `exp` on everything it
+issues). A peer or script minting tokens without `exp` is rejected with 401 (and
+`{ "active": false }` from `/auth/introspect`). Fix the issuer to set `exp`.
+
 ## Build / TypeScript
 
 ### Boot fails: `The loaded acdp SDK binding verifies Ed25519 non-strictly … sig-004`
