@@ -1710,7 +1710,7 @@
 - **Chose:** exact DID-portion equality on both pinned and did:web paths (D7); malformed/mismatch → 401 with ledger rows `reject_key_id_malformed|mismatch`. Phase 5 executed first (own branch/PR-A) rather than in numeric order, since it is an independent security fix (D8).
 - **Alternatives:** applying the check only on the did:web path (leaves foreign key ids stampable into minted claims).
 - **Blast radius if wrong:** a client sending a key_id for a different DID than agent_id (previously silently accepted on the pinned path) now gets 401 (also a did:key agent sending key_id == agent_id, no fragment). `key_id` length is unbounded in the ledger detail (pre-existing, same as the mint row). Revert = one commit.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-05) — decided by Opus; follow-up: @MaxLength on auth DTO fields (see DECISIONS.md)
 
 ## bearer_jwt conformance decisions (#221 Phases 4 & 6)
 - **Plan:** plans/strict-ed25519-bearer-jwt-221.md
@@ -1718,4 +1718,4 @@
 - **Chose:** the recommendations above. D3 changes nothing (docs only).
 - **Alternatives:** require `aud` to name the CP for peers (breaks federation); advertise via a new acdp.json (CP would look like a registry); runtime TLS enforcement (new knob, req.protocol only trustworthy with TRUST_PROXY).
 - **Blast radius if wrong:** D6 — a peer that mints tokens without `exp` gets 401 (one-line opt-out via `requireExp:false` per call site). D3 — one-way for federated deployments; no code change here.
-- **Status:** UNCONFIRMED
+- **Status:** D2/D4/D5/D6 CONFIRMED (2026-10-05, decided by Opus on Fable's analysis); D3 CONFIRMED by the user (2026-10-05) with a hardening follow-up, acdp-control-plane#225 (see DECISIONS.md)
