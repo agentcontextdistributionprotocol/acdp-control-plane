@@ -126,6 +126,11 @@ Agent                                   Control Plane
 | `HS256` (default) | `JWT_SECRET` (≥32 bytes, validated at boot) | `{ "keys": [] }` (no public material) |
 | `EdDSA` | `JWT_PRIVATE_KEY_PEM` (Ed25519 PKCS8) | `OKP`/`Ed25519` public JWK |
 
+EdDSA tokens (local issuer and trusted peers' JWKS keys) are **verified through the
+`acdp` SDK's strict Ed25519** (RFC-ACDP-0001 §5.10: `s ≥ L` and small-order A/R are
+rejected), not `node:crypto`, so strictness doesn't depend on the OpenSSL Node links.
+Signing still uses `node:crypto`.
+
 `kid` is `JWT_KID` if set, else derived from a stable fingerprint of the key
 material. It is embedded in the JWT header and published in JWKS so verifiers can
 match. The supported signature algorithms are governed by the spec's
@@ -138,6 +143,32 @@ the CP accepts exactly the set the SDK verifies.
 > `WITNESS_ID`, published via `/.well-known/did.json`) — never the JWT
 > issuance key above. The two identities must not share key material; see
 > [CONFIGURATION.md](./CONFIGURATION.md#transparency-log-witnessing-rfc-acdp-0012--rfc-acdp-0015).
+
+## Relation to RFC-ACDP-0008 §6.2 `bearer_jwt`
+
+RFC-ACDP-0008 §6.2 (spec `34f14ab`, registered in `registries/auth-methods.md`) lets a
+**registry** admit a DID-bound bearer JWT for reads. The control plane is not a registry:
+it serves no `/.well-known/acdp.json`, so there is no `read_authentication_methods` field
+to advertise `bearer_jwt` in, and it deliberately does not. Its `/auth/challenge` +
+`/auth/token` flow mirrors the registry's, and the rules map as follows:
+
+| §6.2 rule | Control plane | Verdict |
+|-----------|---------------|---------|
+| Signed by the issuer's own key | HS256 `JWT_SECRET` or EdDSA `JWT_PRIVATE_KEY_PEM` (`token-issuer.service.ts`) | OK |
+| `sub` = requester DID, control verified first | `sub` is the agent DID, minted only after nonce consume, agent match, `key_id` ↔ `agent_id` binding and signature verification | OK |
+| `exp` present | Always minted; **required on verify** for local and trusted-issuer tokens (`jwt-codec.ts` `requireExp`, default on) | OK |
+| `aud` = issuing service; mismatch rejected | Local tokens: `aud` = `JWT_AUDIENCE` (default authority), required on verify. Trusted peers: `aud` must match the configured per-issuer `audience` (conventionally the **peer's own** authority; see Federation) | Local OK; see note |
+| TLS only | Not enforced in-process — TLS terminates in front of the CP (helmet sets HSTS, `bootstrap.ts`; JWKS fetches are https-only). Never expose the CP over plain HTTP | Deployment requirement |
+| Reads only; never substitutes a producer signature | A bearer never substitutes for a producer signature (capability declarations carry their own, ingest is HMAC). But `AuthGuard` accepts a bearer on every non-`@Public()` route, so it also authorizes CP-**local** writes (e.g. `POST /webhooks`, `POST /auth/revoke`, `POST /capabilities`); those are CP resources, not ACDP context publishes | OK for producer signatures; CP-local writes are accepted |
+| Listed in `read_authentication_methods` | N/A — the CP is not a registry | Not advertised |
+
+**Deliberate deviation (federation).** A registry's `bearer_jwt` is bound to that registry
+(`aud` = the registry), yet a trusted-issuer entry makes the CP accept such a token
+(see Federation below). Whoever holds an agent's read token for registry X can therefore act
+as that agent at this CP. That is the existing federation design and changing it would
+break federated deployments; scope trust with the per-issuer `audience` and
+`requiredScope`, and raise multi-audience tokens (`aud: [registry, cp]`) with the
+registry rather than loosening the CP.
 
 ## Pinned keys
 

@@ -9,8 +9,11 @@
  * is built for it.
  *
  * This codec closes that gap WITHOUT a new dependency: Node's `crypto`
- * natively signs/verifies Ed25519 (algorithm identifier `null` — the digest
- * is intrinsic to the curve). HS256 still delegates to `jsonwebtoken` so its
+ * signs Ed25519 (algorithm identifier `null` — the digest is intrinsic to the
+ * curve), but VERIFICATION goes through the `acdp` SDK (`verifySignatureB64`),
+ * which enforces RFC-ACDP-0001 §5.10 strict Ed25519 (reject `s >= L` and
+ * small-order A or R) by construction rather than by whichever OpenSSL this
+ * Node happens to link. HS256 still delegates to `jsonwebtoken` so its
  * behavior is unchanged.
  *
  * Each call site allows exactly ONE algorithm (the configured signing alg, or
@@ -18,7 +21,8 @@
  * `verifyJwt` rejects any token whose header `alg` isn't in the allowed set
  * before selecting a verification path.
  */
-import { createPublicKey, KeyObject, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
+import { createPublicKey, KeyObject, sign as cryptoSign } from 'node:crypto';
+import { verifySignatureB64 } from './acdp-verify';
 import jwt, { type Algorithm, type Secret, type SignOptions } from 'jsonwebtoken';
 
 export type JwtAlgorithm = 'HS256' | 'EdDSA';
@@ -41,6 +45,13 @@ export interface VerifyJwtOptions {
   audience?: string;
   /** Seconds of leeway applied to exp/nbf. Defaults to 0. */
   clockToleranceSec?: number;
+  /**
+   * Reject a token with no numeric `exp`. Defaults to `true`: a bearer token that
+   * never expires is not acceptable (RFC-ACDP-0008 §6.2 `bearer_jwt` requires
+   * `exp`; the reference registry requires `exp`/`iss`/`aud` too). `jsonwebtoken`
+   * alone only checks `exp` when present.
+   */
+  requireExp?: boolean;
 }
 
 /**
@@ -74,15 +85,17 @@ export function verifyJwt(token: string, opts: VerifyJwtOptions): Record<string,
   if (alg === 'EdDSA') {
     return verifyEdDSA(token, opts);
   }
-  return jwt.verify(token, opts.key as Secret, {
+  const payload = jwt.verify(token, opts.key as Secret, {
     algorithms: [alg as Algorithm],
     issuer: opts.issuer,
     audience: opts.audience,
     clockTolerance: opts.clockToleranceSec ?? 0,
   }) as Record<string, unknown>;
+  requireExpClaim(payload, opts);
+  return payload;
 }
 
-// ── EdDSA (Ed25519) via Node crypto ──────────────────────────────────────
+// ── EdDSA (Ed25519): sign via Node crypto, verify via the acdp SDK ──────────────────────────────────────
 
 function signEdDSA(
   payload: Record<string, unknown>,
@@ -105,11 +118,18 @@ function verifyEdDSA(token: string, opts: VerifyJwtOptions): Record<string, unkn
     throw new Error('malformed JWT: expected three segments');
   }
   const [h, p, s] = parts;
-  const ok = cryptoVerify(
-    null,
-    Buffer.from(`${h}.${p}`),
-    toPublicKey(opts.key),
-    Buffer.from(s, 'base64url'),
+  const sig = Buffer.from(s, 'base64url');
+  if (sig.length !== ED25519_SIGNATURE_BYTES) {
+    throw new Error('invalid signature');
+  }
+  // The SDK verifies strictly (RFC-ACDP-0001 §5.10); `verifySignatureB64` maps
+  // any SDK failure (bad signature, malformed key) to `false` → "invalid signature".
+  // (A key that isn't Ed25519 throws earlier, from `rawEd25519PublicKeyB64`.)
+  const ok = verifySignatureB64(
+    'ed25519',
+    rawEd25519PublicKeyB64(toPublicKey(opts.key)),
+    `${h}.${p}`,
+    sig.toString('base64'),
   );
   if (!ok) {
     throw new Error('invalid signature');
@@ -122,6 +142,12 @@ function verifyEdDSA(token: string, opts: VerifyJwtOptions): Record<string, unkn
   return payload;
 }
 
+function requireExpClaim(payload: Record<string, unknown>, opts: VerifyJwtOptions): void {
+  if ((opts.requireExp ?? true) && typeof payload.exp !== 'number') {
+    throw new Error('jwt exp claim is required');
+  }
+}
+
 /** exp/nbf/iss/aud validation — parity with `jsonwebtoken`'s verify options. */
 function validateRegisteredClaims(
   payload: Record<string, unknown>,
@@ -129,6 +155,7 @@ function validateRegisteredClaims(
 ): void {
   const now = Math.floor(Date.now() / 1000);
   const tol = opts.clockToleranceSec ?? 0;
+  requireExpClaim(payload, opts);
   if (typeof payload.exp === 'number' && now > payload.exp + tol) {
     throw new Error('jwt expired');
   }
@@ -145,6 +172,20 @@ function validateRegisteredClaims(
       throw new Error('jwt audience invalid');
     }
   }
+}
+
+const ED25519_SIGNATURE_BYTES = 64;
+
+/** Raw 32-byte Ed25519 public key (standard base64) from a KeyObject. */
+function rawEd25519PublicKeyB64(key: KeyObject): string {
+  if (key.asymmetricKeyType !== 'ed25519') {
+    throw new Error('EdDSA verification key is not an Ed25519 key');
+  }
+  const { x } = key.export({ format: 'jwk' });
+  if (typeof x !== 'string') {
+    throw new Error('EdDSA verification key has no raw public component');
+  }
+  return Buffer.from(x, 'base64url').toString('base64');
 }
 
 function toPublicKey(key: KeyLike): KeyObject {

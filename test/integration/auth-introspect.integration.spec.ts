@@ -131,6 +131,27 @@ describe('Token introspection (integration)', () => {
     expect(res.body).toEqual({ active: false });
   });
 
+  it('reports active=false for a validly-signed token with no exp claim (#221)', async () => {
+    const noExp = jwt.sign({ sub: DID, iss: AUTHORITY, aud: AUTHORITY }, JWT_SECRET, {
+      algorithm: 'HS256',
+    });
+    const res = await client.requestRaw('POST', '/auth/introspect', {
+      body: { token: noExp },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ active: false });
+
+    // Control: the same claims WITH exp are active, so only exp tipped it.
+    const withExp = jwt.sign({ sub: DID, iss: AUTHORITY, aud: AUTHORITY }, JWT_SECRET, {
+      algorithm: 'HS256',
+      expiresIn: 300,
+    });
+    const ok = await client.requestRaw('POST', '/auth/introspect', {
+      body: { token: withExp },
+    });
+    expect((ok.body as IntrospectResp).active).toBe(true);
+  });
+
   it('rejects unauthenticated introspection — the endpoint must not be a public validity oracle', async () => {
     const tok = await mintToken();
     const res = await pub.requestRaw('POST', '/auth/introspect', {

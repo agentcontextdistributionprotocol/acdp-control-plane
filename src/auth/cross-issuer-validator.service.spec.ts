@@ -1,6 +1,8 @@
 import { UnauthorizedException } from '@nestjs/common';
 import jwt from 'jsonwebtoken';
 import { CrossIssuerValidator } from './cross-issuer-validator.service';
+import { generateKeyPairSync } from 'node:crypto';
+import { signJwt } from './jwt-codec';
 import { buildSigningMaterial } from './jwt-signing';
 import { TrustedIssuerRegistry } from './trusted-issuers';
 
@@ -25,17 +27,20 @@ function mint(
   overrides: Record<string, unknown> = {},
 ): string {
   const now = Math.floor(Date.now() / 1000);
+  const payload: Record<string, unknown> = {
+    iss,
+    sub: 'did:web:alice',
+    jti: 'jti-test',
+    iat: now,
+    nbf: now,
+    exp: now + 3600,
+    acdp: { registry: iss, key_id: 'k1' },
+    ...overrides,
+  };
+  // jsonwebtoken refuses `exp: undefined`; an undefined override means "omit".
+  for (const k of Object.keys(payload)) if (payload[k] === undefined) delete payload[k];
   return jwt.sign(
-    {
-      iss,
-      sub: 'did:web:alice',
-      jti: 'jti-test',
-      iat: now,
-      nbf: now,
-      exp: now + 3600,
-      acdp: { registry: iss, key_id: 'k1' },
-      ...overrides,
-    },
+    payload,
     secret,
     { algorithm: 'HS256', noTimestamp: true },
   );
@@ -176,5 +181,88 @@ describe('CrossIssuerValidator', () => {
     const claims = await v.verify(peerToken);
     expect(claims.sub).toBe('did:web:federated:bob');
     expect(claims.iss).toBe(PEER_ISS);
+  });
+
+  describe('tokens without exp are rejected (#221)', () => {
+    it('local issuer (HS256)', async () => {
+      const token = mint(LOCAL_ISS, LOCAL_SECRET, { exp: undefined });
+      await expect(makeValidator().verify(token)).rejects.toThrow(/exp claim is required/);
+    });
+
+    it('local issuer (EdDSA)', async () => {
+      const kp = generateKeyPairSync('ed25519');
+      const pem = kp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+      const v = new CrossIssuerValidator(
+        { jwtSecret: LOCAL_SECRET, jwtAuthority: LOCAL_ISS } as any,
+        new TrustedIssuerRegistry([]),
+        { material: buildSigningMaterial({ algorithm: 'EdDSA', privateKeyPem: pem }) } as any,
+        null,
+      );
+      const base = {
+        iss: LOCAL_ISS,
+        sub: 'did:web:alice',
+        jti: 'j',
+        iat: Math.floor(Date.now() / 1000),
+      };
+      const noExp = signJwt(base, { algorithm: 'EdDSA', key: kp.privateKey });
+      await expect(v.verify(noExp)).rejects.toThrow(/exp claim is required/);
+      // Control: with exp the same key/claims verify.
+      const withExp = signJwt(
+        { ...base, exp: base.iat + 300 },
+        { algorithm: 'EdDSA', key: kp.privateKey },
+      );
+      expect((await v.verify(withExp)).sub).toBe('did:web:alice');
+    });
+
+    it('trusted HS256 peer', async () => {
+      const token = mint(PEER_ISS, PEER_SECRET, { exp: undefined });
+      const v = makeValidator({
+        peers: [{ iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET }] as any,
+      });
+      await expect(v.verify(token)).rejects.toThrow(/exp claim is required/);
+    });
+  });
+
+  describe('EdDSA trusted peer (JWKS), verified via the acdp SDK', () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const pubPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const now = Math.floor(Date.now() / 1000);
+    const peerClaims = () => ({
+      iss: PEER_ISS,
+      sub: 'did:web:federated:carol',
+      jti: 'jti-eddsa',
+      iat: now,
+      nbf: now,
+      exp: now + 3600,
+    });
+
+    function edValidator(jwksKeyPem: string) {
+      const v = makeValidator({
+        peers: [{ iss: PEER_ISS, alg: 'EdDSA', jwksUrl: 'https://peer.example/jwks.json' }] as any,
+      });
+      // Stub the JWKS fetch: the codec is what's under test, not the network.
+      (v as any).jwksClients.set(PEER_ISS, { getSigningKey: async () => jwksKeyPem });
+      return v;
+    }
+
+    it('accepts a token signed by the JWKS key', async () => {
+      const token = signJwt(peerClaims(), { algorithm: 'EdDSA', key: privateKey });
+      const claims = await edValidator(pubPem).verify(token);
+      expect(claims.sub).toBe('did:web:federated:carol');
+    });
+
+    it('rejects an EdDSA peer token with no exp', async () => {
+      const token = signJwt(((c) => (delete c.exp, c))({ ...peerClaims() } as Record<string, unknown>), {
+        algorithm: 'EdDSA',
+        key: privateKey,
+      });
+      await expect(edValidator(pubPem).verify(token)).rejects.toThrow(/exp claim is required/);
+    });
+
+    it('rejects a token signed by a different key', async () => {
+      const other = generateKeyPairSync('ed25519');
+      const token = signJwt(peerClaims(), { algorithm: 'EdDSA', key: other.privateKey });
+      await expect(edValidator(pubPem).verify(token)).rejects.toThrow(UnauthorizedException);
+    });
   });
 });

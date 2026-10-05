@@ -1711,3 +1711,11 @@
 - **Alternatives:** applying the check only on the did:web path (leaves foreign key ids stampable into minted claims).
 - **Blast radius if wrong:** a client sending a key_id for a different DID than agent_id (previously silently accepted on the pinned path) now gets 401 (also a did:key agent sending key_id == agent_id, no fragment). `key_id` length is unbounded in the ledger detail (pre-existing, same as the mint row). Revert = one commit.
 - **Status:** UNCONFIRMED
+
+## bearer_jwt conformance decisions (#221 Phases 4 & 6)
+- **Plan:** plans/strict-ed25519-bearer-jwt-221.md
+- **Assumed:** (D2) EdDSA JWT verification delegates to the SDK; (D3) trusted-issuer tokens whose `aud` is the peer registry stay accepted (existing federation design, documented as a deliberate deviation); (D4) CP does not advertise `bearer_jwt` (not a registry, no capabilities doc); (D5) TLS-only is a deployment requirement, not enforced in code; (D6) `exp` is required for local AND trusted-issuer tokens.
+- **Chose:** the recommendations above. D3 changes nothing (docs only).
+- **Alternatives:** require `aud` to name the CP for peers (breaks federation); advertise via a new acdp.json (CP would look like a registry); runtime TLS enforcement (new knob, req.protocol only trustworthy with TRUST_PROXY).
+- **Blast radius if wrong:** D6 — a peer that mints tokens without `exp` gets 401 (one-line opt-out via `requireExp:false` per call site). D3 — one-way for federated deployments; no code change here.
+- **Status:** UNCONFIRMED

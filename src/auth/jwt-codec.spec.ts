@@ -18,6 +18,12 @@ function claims(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** A claim set with the `exp` key absent (jsonwebtoken refuses `exp: undefined`). */
+function claimsNoExp() {
+  const { exp: _exp, ...rest } = claims();
+  return rest;
+}
+
 describe('jwt-codec', () => {
   describe('HS256', () => {
     it('signs a token jsonwebtoken can verify (interop)', () => {
@@ -115,6 +121,52 @@ describe('jwt-codec', () => {
       ).toThrow(/audience invalid/);
     });
 
+    describe('strict Ed25519 (RFC-ACDP-0001 §5.10 / sig-004) — verification via the acdp SDK', () => {
+      // SPKI wrapper for a raw 32-byte Ed25519 key.
+      const SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+      const identityKey = createPublicKey({
+        key: Buffer.concat([SPKI_PREFIX, Buffer.from('01' + '00'.repeat(31), 'hex')]),
+        format: 'der',
+        type: 'spki',
+      });
+      // R = identity, s = 0 — satisfies the loose verification equation under
+      // the identity public key for EVERY message (the sig-004 forgery).
+      const forgedSig = Buffer.from('01' + '00'.repeat(63), 'hex').toString('base64url');
+      const forgedToken = () => {
+        const h = Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' })).toString('base64url');
+        const p = Buffer.from(JSON.stringify(claims())).toString('base64url');
+        return `${h}.${p}.${forgedSig}`;
+      };
+
+      it('rejects the small-order forgery under an identity verification key', () => {
+        expect(() =>
+          verifyJwt(forgedToken(), {
+            algorithms: ['EdDSA'],
+            key: identityKey,
+            issuer: 'cp.test',
+            audience: 'cp.test',
+          }),
+        ).toThrow(/invalid signature/);
+      });
+
+      it('rejects a signature that is not 64 bytes (never throws past the codec contract)', () => {
+        const [h, p] = forgedToken().split('.');
+        for (const bad of ['', 'AAAA', Buffer.alloc(65).toString('base64url')]) {
+          expect(() =>
+            verifyJwt(`${h}.${p}.${bad}`, { algorithms: ['EdDSA'], key: publicKey }),
+          ).toThrow(/invalid signature|malformed/);
+        }
+      });
+
+      it('rejects a verification key that is not Ed25519', () => {
+        const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
+        const token = signJwt(claims(), { algorithm: 'EdDSA', key: privateKey });
+        expect(() =>
+          verifyJwt(token, { algorithms: ['EdDSA'], key: rsa.publicKey }),
+        ).toThrow(/not an Ed25519 key/);
+      });
+    });
+
     it('honors clock tolerance on exp', () => {
       const token = signJwt(claims({ exp: NOW - 5 }), { algorithm: 'EdDSA', key: privateKey });
       // 5s past exp, but a 30s tolerance keeps it valid.
@@ -124,6 +176,38 @@ describe('jwt-codec', () => {
         clockToleranceSec: 30,
       });
       expect(decoded.sub).toBe('did:web:alice');
+    });
+  });
+
+  describe('exp is required (RFC-ACDP-0008 §6.2 bearer_jwt)', () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+
+    it('rejects an HS256 token with no exp', () => {
+      const token = signJwt(claimsNoExp(), { algorithm: 'HS256', key: HS_SECRET });
+      expect(() => verifyJwt(token, { algorithms: ['HS256'], key: HS_SECRET })).toThrow(
+        /exp claim is required/,
+      );
+    });
+
+    it('rejects an EdDSA token with no exp', () => {
+      const token = signJwt(claimsNoExp(), { algorithm: 'EdDSA', key: privateKey });
+      expect(() => verifyJwt(token, { algorithms: ['EdDSA'], key: publicKey })).toThrow(
+        /exp claim is required/,
+      );
+    });
+
+    it('rejects a non-numeric exp', () => {
+      const token = signJwt(claims({ exp: '9999999999' }), { algorithm: 'EdDSA', key: privateKey });
+      expect(() => verifyJwt(token, { algorithms: ['EdDSA'], key: publicKey })).toThrow();
+    });
+
+    it('requireExp:false is an explicit opt-out; tokens with exp still verify by default', () => {
+      const noExp = signJwt(claimsNoExp(), { algorithm: 'HS256', key: HS_SECRET });
+      expect(
+        verifyJwt(noExp, { algorithms: ['HS256'], key: HS_SECRET, requireExp: false }).sub,
+      ).toBe('did:web:alice');
+      const ok = signJwt(claims(), { algorithm: 'HS256', key: HS_SECRET });
+      expect(verifyJwt(ok, { algorithms: ['HS256'], key: HS_SECRET }).sub).toBe('did:web:alice');
     });
   });
 
