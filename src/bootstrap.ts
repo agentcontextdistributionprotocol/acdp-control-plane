@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { Logger, Type, ValidationPipe } from '@nestjs/common';
+import { assertStrictEd25519 } from './auth/acdp-verify';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -26,6 +27,10 @@ import { startTelemetry, stopTelemetry } from './telemetry/telemetry';
  * code must not carry a fault-injection knob (issue #155).
  */
 export async function bootstrap(rootModule: Type<unknown> = AppModule): Promise<void> {
+  // RFC-ACDP-0001 §5.10: never run on a non-strict Ed25519 verifier. First, so
+  // it holds in every configuration (audit sweeps verify even with issuance off).
+  assertStrictEd25519();
+
   const config = new AppConfigService();
 
   // Run database migrations before NestJS bootstraps

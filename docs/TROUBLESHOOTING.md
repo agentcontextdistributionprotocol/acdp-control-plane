@@ -531,6 +531,16 @@ wire-protocol spec that silently skips reports green while proving nothing.
 
 ## Build / TypeScript
 
+### Boot fails: `The loaded acdp SDK binding verifies Ed25519 non-strictly … sig-004`
+
+At startup (`bootstrap()`, before config or the database) the control plane runs the
+RFC-ACDP-0001 §5.10 `sig-004` small-order forgery through `AcdpVerifier` and **refuses to
+start** if the binding accepts it. Cause: an `acdp` older than 0.14.4, or a native
+`optionalDependency` that resolved to an older binary than the JS package. Fix: `npm ci`
+(the lockfile pins all four native packages at the strict version), then confirm
+`node -e "console.log(require('@agentcontextdistributionprotocol/acdp/package.json').version)"`
+prints `0.14.4` or later.
+
 ### `npm run start` fails with `Cannot find module '.../dist/main'`, but `npm run build` exited 0
 
 Almost certainly stale incremental build state that escaped `dist/`.

@@ -7,7 +7,23 @@
  * binding's own producers.
  */
 import { AcdpProducer, AcdpP256Producer } from '@agentcontextdistributionprotocol/acdp';
-import { assertValidPublicKey, verifySignatureB64 } from './acdp-verify';
+import { assertStrictEd25519, assertValidPublicKey, verifySignatureB64 } from './acdp-verify';
+
+// AcdpVerifier's statics are non-configurable on the native class (a Proxy over it
+// can't override them), so stand in a plain-object Proxy that can be flipped to "accept everything" (a non-strict binding).
+let mockNonStrict = false;
+jest.mock('@agentcontextdistributionprotocol/acdp', () => {
+  const actual = jest.requireActual('@agentcontextdistributionprotocol/acdp');
+  return {
+    ...actual,
+    AcdpVerifier: new Proxy({}, {
+      get: (_target, prop) =>
+        prop === 'verifySignature' && mockNonStrict
+          ? () => true
+          : actual.AcdpVerifier[prop],
+    }),
+  };
+});
 
 const DID = 'did:web:agents.example.com';
 const KEY_ID = `${DID}#key-1`;
@@ -79,5 +95,20 @@ describe('assertValidPublicKey', () => {
     const badTag = Buffer.alloc(65);
     badTag[0] = 0x02;
     expect(() => assertValidPublicKey('ecdsa-p256', badTag.toString('base64'))).toThrow(/0x04/);
+  });
+});
+
+describe('assertStrictEd25519 (RFC-ACDP-0001 §5.10 boot self-test)', () => {
+  afterEach(() => {
+    mockNonStrict = false;
+  });
+
+  it('returns normally with the installed (strict) binding', () => {
+    expect(() => assertStrictEd25519()).not.toThrow();
+  });
+
+  it('throws naming §5.10 and sig-004 when the binding accepts the forgery', () => {
+    mockNonStrict = true;
+    expect(() => assertStrictEd25519()).toThrow(/§5\.10.*sig-004|sig-004.*§5\.10/);
   });
 });

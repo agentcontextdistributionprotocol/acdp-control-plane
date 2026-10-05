@@ -3829,3 +3829,6 @@ PR opened
 
 ## #221 Phase 2 — SDK 0.14.4 + sig-004 matrix (2026-10-05)
 - Verdict PASS after 1 GAPS round (docs wording, multibase floor comment). Opus, solo gate. Files: package.json, package-lock.json, src/auth/ed25519-strict.conformance.spec.ts (12 tests, 10 fail on 0.14.3), floor comments in src/audit/*, docs/{API,ARCHITECTURE,TESTING}.md. Unit 1524, integration 262, lint/typecheck/ts6/conventions/check:build clean.
+
+## #221 Phase 3 — boot-time strict-Ed25519 self-test (2026-10-05)
+- assertStrictEd25519 (src/auth/acdp-verify.ts), called first in bootstrap(); specs acdp-verify.spec.ts + bootstrap.spec.ts; docs TROUBLESHOOTING/ARCHITECTURE. Unit 1527, integration 262 green. Verifier pending (batched with Phase 2 gap closure).

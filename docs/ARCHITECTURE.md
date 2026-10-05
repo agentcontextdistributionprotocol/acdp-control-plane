@@ -372,7 +372,8 @@ recording `meets_quorum` per witnessed head. All the crypto is delegated — JCS
 Ed25519, DID/key lifecycle, and the receipt/log verification come from the
 `acdp` SDK: the log surface reached the published binding in `acdp` 0.6.0 and
 the pinned floor is now `^0.14.4` (Ed25519 verification is strict, RFC-ACDP-0001
-§5.10, from 0.14.4 on), so `sdkHasLogSurface()` feature-detects it
+§5.10, from 0.14.4 on; `bootstrap()` self-tests this with the embedded `sig-004`
+forgery and refuses to start otherwise — `assertStrictEd25519`), so `sdkHasLogSurface()` feature-detects it
 and the §9.1/§9.2 folds delegate to the binding in practice, with
 `src/audit/log-verify.ts` (RFC 9162 folds transcribed from the RFC) kept as
 the fallback for an older binding and cross-checked against the SDK path by
