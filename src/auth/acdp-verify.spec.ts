@@ -7,7 +7,15 @@
  * binding's own producers.
  */
 import { AcdpProducer, AcdpP256Producer } from '@agentcontextdistributionprotocol/acdp';
-import { assertStrictEd25519, assertValidPublicKey, verifySignatureB64 } from './acdp-verify';
+import { AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
+import {
+  assertStrictEd25519,
+  assertValidPublicKey,
+  SIG_004_PUBLIC_KEY_B64,
+  SIG_004_SIGNATURE_B64,
+  SIG_004_SIGNATURE_INPUT,
+  verifySignatureB64,
+} from './acdp-verify';
 
 // AcdpVerifier's statics are non-configurable on the native class (a Proxy over it
 // can't override them), so stand in a plain-object Proxy that can be flipped to "accept everything" (a non-strict binding).
@@ -101,6 +109,27 @@ describe('assertValidPublicKey', () => {
 describe('assertStrictEd25519 (RFC-ACDP-0001 §5.10 boot self-test)', () => {
   afterEach(() => {
     mockNonStrict = false;
+  });
+
+  it('embeds a well-formed sig-004 vector (32-byte key, 64-byte signature)', () => {
+    // A malformed constant would be rejected by EVERY verifier, strict or not,
+    // making the boot gate vacuous — pin the lengths and that the binding
+    // rejects it for strictness (a verification failure, not a parse error).
+    expect(Buffer.from(SIG_004_PUBLIC_KEY_B64, 'base64')).toHaveLength(32);
+    expect(Buffer.from(SIG_004_SIGNATURE_B64, 'base64')).toHaveLength(64);
+    expect(Buffer.from(SIG_004_PUBLIC_KEY_B64, 'base64').toString('hex')).toBe(
+      '01' + '00'.repeat(31),
+    );
+    expect(Buffer.from(SIG_004_SIGNATURE_B64, 'base64').toString('hex')).toBe(
+      '01' + '00'.repeat(63),
+    );
+    expect(() =>
+      AcdpVerifier.verifySignature(
+        SIG_004_PUBLIC_KEY_B64,
+        SIG_004_SIGNATURE_B64,
+        SIG_004_SIGNATURE_INPUT,
+      ),
+    ).toThrow(/verification failed/i);
   });
 
   it('returns normally with the installed (strict) binding', () => {

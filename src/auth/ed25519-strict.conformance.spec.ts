@@ -28,7 +28,12 @@ import * as path from 'node:path';
 import { HttpStatus } from '@nestjs/common';
 import { AppException } from '../errors/app-exception';
 import { ErrorCode } from '../errors/error-codes';
-import { verifySignatureB64 } from './acdp-verify';
+import {
+  SIG_004_PUBLIC_KEY_B64,
+  SIG_004_SIGNATURE_B64,
+  SIG_004_SIGNATURE_INPUT,
+  verifySignatureB64,
+} from './acdp-verify';
 import { ChallengeStore } from './challenge-store.service';
 import { InMemoryChallengeRepository } from './in-memory-challenge.repository';
 import { buildSigningMaterial } from './jwt-signing';
@@ -154,6 +159,12 @@ describeConformance('RFC-ACDP-0001 §5.10 strict Ed25519 (sig-004) across every 
     expect(vector.expected.strict_result).toBe('reject');
     expect(vector.public_key_hex).toBe(IDENTITY_HEX);
     expect(vector.signature_value_hex).toBe(FORGED_SIG_HEX);
+  });
+
+  it('the boot self-test constants (assertStrictEd25519) equal the fixture vector', () => {
+    expect(SIG_004_PUBLIC_KEY_B64).toBe(A);
+    expect(SIG_004_SIGNATURE_B64).toBe(FORGED);
+    expect(SIG_004_SIGNATURE_INPUT).toBe(vector.signature_input);
   });
 
   // ── sig-001 positive control (no false rejection) ──────────────────────
