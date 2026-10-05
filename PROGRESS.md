@@ -3821,3 +3821,5 @@ From `plans/strict-ed25519-bearer-jwt-221.md` (issue #221). Reuse this map; don'
 - Verdict PASS (Opus verifier, 2 rounds; round 1 GAPS: weak pinned-path test, missing bare-fragment/envelope/ledger assertions, `#frag` and DID-lookalike bare ids). Complex → solo gate.
 - Files: src/auth/token-issuer.service.ts, issuance-ledger.service.ts, token-issuer.did-web-fallback.spec.ts, test/integration/auth-issuance.integration.spec.ts, docs/AUTH.md, ASSUMPTIONS.md.
 - PR strategy: PR-A = Phase 5 (this branch); PR-B = Phases 1-3; PR-C = Phases 4+6. Next: ship PR-A, then Phase 1.
+- pushed fix/token-key-id-binding-221 df824f2
+PR opened
