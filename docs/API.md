@@ -779,7 +779,9 @@ The §5 mint (and the §8 verify / §8 quorum) run through the native `acdp` bin
 (`AcdpVerifier.buildWitnessCosignature` / `verifyWitnessCosignature` /
 `evaluateWitnessQuorum`, 0.7.0+); a binding that predates the cosignature surface
 (≤ 0.6.0) transparently falls back to the byte-identical host-TS construction.
-**The dependency's pinned floor is `^0.14.1`, which is above every floor named in
+**The dependency's pinned floor is `^0.14.4` (which also makes every Ed25519
+verification strict per RFC-ACDP-0001 §5.10 — `verify_strict`, pinned by the `sig-004`
+conformance spec), which is above every floor named in
 this section**, so on a correctly installed deployment the native path is always
 the one taken — the feature detection guards a mis-resolved native
 `optionalDependency`, not a supported configuration. The

@@ -7,7 +7,31 @@
  * binding's own producers.
  */
 import { AcdpProducer, AcdpP256Producer } from '@agentcontextdistributionprotocol/acdp';
-import { assertValidPublicKey, verifySignatureB64 } from './acdp-verify';
+import { AcdpVerifier } from '@agentcontextdistributionprotocol/acdp';
+import {
+  assertStrictEd25519,
+  assertValidPublicKey,
+  SIG_004_PUBLIC_KEY_B64,
+  SIG_004_SIGNATURE_B64,
+  SIG_004_SIGNATURE_INPUT,
+  verifySignatureB64,
+} from './acdp-verify';
+
+// AcdpVerifier's statics are non-configurable on the native class (a Proxy over it
+// can't override them), so stand in a plain-object Proxy that can be flipped to "accept everything" (a non-strict binding).
+let mockNonStrict = false;
+jest.mock('@agentcontextdistributionprotocol/acdp', () => {
+  const actual = jest.requireActual('@agentcontextdistributionprotocol/acdp');
+  return {
+    ...actual,
+    AcdpVerifier: new Proxy({}, {
+      get: (_target, prop) =>
+        prop === 'verifySignature' && mockNonStrict
+          ? () => true
+          : actual.AcdpVerifier[prop],
+    }),
+  };
+});
 
 const DID = 'did:web:agents.example.com';
 const KEY_ID = `${DID}#key-1`;
@@ -79,5 +103,41 @@ describe('assertValidPublicKey', () => {
     const badTag = Buffer.alloc(65);
     badTag[0] = 0x02;
     expect(() => assertValidPublicKey('ecdsa-p256', badTag.toString('base64'))).toThrow(/0x04/);
+  });
+});
+
+describe('assertStrictEd25519 (RFC-ACDP-0001 §5.10 boot self-test)', () => {
+  afterEach(() => {
+    mockNonStrict = false;
+  });
+
+  it('embeds a well-formed sig-004 vector (32-byte key, 64-byte signature)', () => {
+    // A malformed constant would be rejected by EVERY verifier, strict or not,
+    // making the boot gate vacuous — pin the lengths and that the binding
+    // rejects it for strictness (a verification failure, not a parse error).
+    expect(Buffer.from(SIG_004_PUBLIC_KEY_B64, 'base64')).toHaveLength(32);
+    expect(Buffer.from(SIG_004_SIGNATURE_B64, 'base64')).toHaveLength(64);
+    expect(Buffer.from(SIG_004_PUBLIC_KEY_B64, 'base64').toString('hex')).toBe(
+      '01' + '00'.repeat(31),
+    );
+    expect(Buffer.from(SIG_004_SIGNATURE_B64, 'base64').toString('hex')).toBe(
+      '01' + '00'.repeat(63),
+    );
+    expect(() =>
+      AcdpVerifier.verifySignature(
+        SIG_004_PUBLIC_KEY_B64,
+        SIG_004_SIGNATURE_B64,
+        SIG_004_SIGNATURE_INPUT,
+      ),
+    ).toThrow(/verification failed/i);
+  });
+
+  it('returns normally with the installed (strict) binding', () => {
+    expect(() => assertStrictEd25519()).not.toThrow();
+  });
+
+  it('throws naming §5.10 and sig-004 when the binding accepts the forgery', () => {
+    mockNonStrict = true;
+    expect(() => assertStrictEd25519()).toThrow(/§5\.10.*sig-004|sig-004.*§5\.10/);
   });
 });

@@ -263,7 +263,7 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
     if (!sdkSupportsRevocations()) {
       this.logger.warn(
         'key-revocation check enabled but the installed acdp SDK has no parseKeyRevocation ' +
-          '(pinned floor is >= 0.14.1; a mis-resolved native optionalDependency looks like this) ' +
+          '(pinned floor is >= 0.14.4; a mis-resolved native optionalDependency looks like this) ' +
           '— the revocation sweep cannot run',
       );
       return;

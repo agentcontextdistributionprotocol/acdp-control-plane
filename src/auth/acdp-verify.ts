@@ -75,3 +75,39 @@ export function assertValidPublicKey(
     );
   }
 }
+
+/**
+ * RFC-ACDP-0001 §5.10 `sig-004-ed25519-strict-negative` (embedded so the boot
+ * check needs no spec checkout): identity public key, identity R, s = 0. The
+ * loose equation [s]B = R + [k]A holds for EVERY message, so a non-strict
+ * verifier accepts it; a conformant one MUST reject it (`invalid_signature`).
+ */
+export const SIG_004_PUBLIC_KEY_B64 = 'AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+export const SIG_004_SIGNATURE_B64 =
+  'AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
+export const SIG_004_SIGNATURE_INPUT =
+  'sha256:ccd2641662848a5168095e629c2c90336441bc0d61464e3d8066ea3c147fbaea';
+
+/**
+ * Boot-time self-test: refuse to run on an SDK binding that verifies Ed25519
+ * non-strictly. The lockfile pins a strict `acdp` (>= 0.14.4), but a
+ * mis-resolved native `optionalDependency` could still load an older binary;
+ * every audit verdict this control plane records would then violate a MUST.
+ * Throws (boot-time only — exempt from the request-path `throw new Error` rule).
+ */
+export function assertStrictEd25519(): void {
+  if (
+    verifySignatureB64(
+      'ed25519',
+      SIG_004_PUBLIC_KEY_B64,
+      SIG_004_SIGNATURE_INPUT,
+      SIG_004_SIGNATURE_B64,
+    )
+  ) {
+    throw new Error(
+      'The loaded acdp SDK binding verifies Ed25519 non-strictly: it accepted the ' +
+        'RFC-ACDP-0001 §5.10 sig-004 small-order forgery. Refusing to start. ' +
+        'Install acdp >= 0.14.4 with its native package (run `npm ci`).',
+    );
+  }
+}

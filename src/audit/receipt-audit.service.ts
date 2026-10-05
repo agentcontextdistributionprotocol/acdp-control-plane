@@ -391,7 +391,7 @@ export class ReceiptAuditService implements OnModuleInit, OnModuleDestroy {
     if (!sdkSupportsReceipts()) {
       this.logger.warn(
         'receipt audit enabled but the installed acdp SDK has no receipt API ' +
-          '(pinned floor is >= 0.14.1; a mis-resolved native optionalDependency looks like ' +
+          '(pinned floor is >= 0.14.4; a mis-resolved native optionalDependency looks like ' +
           'this) — running structural cross-checks only, no signature verification',
       );
     }

@@ -8,7 +8,7 @@
  *
  * The receipt API (`AcdpVerifier.verifyReceipt`, `fingerprintEd25519B64`,
  * `verifyBodyOffline`) ships in `acdp` 0.4.0+; the PINNED floor is
- * `^0.14.1`, which is where `verifyReceipt` takes the accompanying body
+ * `^0.14.4`, which is where `verifyReceipt` takes the accompanying body
  * as its second argument and performs the RFC-ACDP-0010 §8 step 3
  * body bindings. `sdkSupportsReceipts()` still feature-detects the
  * surface at runtime — not because a pre-0.4.0 binding is expected under

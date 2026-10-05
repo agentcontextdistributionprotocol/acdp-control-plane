@@ -94,6 +94,18 @@ is covered. Highlights of the contracts most likely to break under refactor:
 > methods must carry `@CheckPolicy`, so a new handler that forgets authorization
 > fails CI.
 
+### Spec conformance vectors
+
+Specs that read golden vectors from the pinned ACDP spec checkout (`ACDP_SPEC_DIR`,
+falling back to the sibling `../agentcontextdistributionprotocol`; CI sets
+`ACDP_REQUIRE_CONFORMANCE=1` so a missing checkout fails instead of skipping) include
+the `wit-*`, `log-*`, `rev-*` and `rcpt-*` goldens and `sig-004-ed25519-strict-negative`
+(RFC-ACDP-0001 §5.10): `auth/ed25519-strict.conformance.spec.ts` forges a small-order
+signature and asserts every Ed25519 entry point (`verifySignatureB64` incl. the 8 small-order
+points, challenge, capability, checkpoint, cosignature host + native, quorum,
+receipt) rejects it. The pin lives in `.github/workflows/ci.yml`
+and must move in the same PR as the first spec reading a new fixture.
+
 ## Integration tests
 
 Live in `test/integration/**.integration.spec.ts`. They boot the full NestJS app,

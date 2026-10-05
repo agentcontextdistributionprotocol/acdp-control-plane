@@ -3823,3 +3823,14 @@ From `plans/strict-ed25519-bearer-jwt-221.md` (issue #221). Reuse this map; don'
 - PR strategy: PR-A = Phase 5 (this branch); PR-B = Phases 1-3; PR-C = Phases 4+6. Next: ship PR-A, then Phase 1.
 - pushed fix/token-key-id-binding-221 df824f2
 PR opened
+
+## #221 Phase 1 — spec pin 9deb7e7 → 34f14ab (2026-10-05)
+- Verdict PASS after 1 GAPS round (comment reworded so the old SHA no longer appears in ci.yml; bookkeeping). Opus verifier, solo gate (next phase complex). Files: .github/workflows/ci.yml. Unit suite green against the new checkout (1512 pass).
+
+## #221 Phase 2 — SDK 0.14.4 + sig-004 matrix (2026-10-05)
+- Verdict PASS after 1 GAPS round (docs wording, multibase floor comment). Opus, solo gate. Files: package.json, package-lock.json, src/auth/ed25519-strict.conformance.spec.ts (12 tests, 10 fail on 0.14.3), floor comments in src/audit/*, docs/{API,ARCHITECTURE,TESTING}.md. Unit 1524, integration 262, lint/typecheck/ts6/conventions/check:build clean.
+
+## #221 Phase 3 — boot-time strict-Ed25519 self-test (2026-10-05)
+- assertStrictEd25519 (src/auth/acdp-verify.ts), called first in bootstrap(); specs acdp-verify.spec.ts + bootstrap.spec.ts; docs TROUBLESHOOTING/ARCHITECTURE. Unit 1527, integration 262 green. Verifier pending (batched with Phase 2 gap closure).
+- Phase 3 verifier round 1 GAPS (embedded sig constant was 61 bytes → gate vacuous); fixed, constants exported + pinned to fixture, mutation on 0.14.3 fails 2 tests. Re-verify pending.
+- Phase 3 re-verify PASS. pushing PR-B
