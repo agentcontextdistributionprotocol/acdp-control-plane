@@ -165,10 +165,21 @@ to advertise `bearer_jwt` in, and it deliberately does not. Its `/auth/challenge
 **Deliberate deviation (federation).** A registry's `bearer_jwt` is bound to that registry
 (`aud` = the registry), yet a trusted-issuer entry makes the CP accept such a token
 (see Federation below). Whoever holds an agent's read token for registry X can therefore act
-as that agent at this CP. That is the existing federation design and changing it would
-break federated deployments; scope trust with the per-issuer `audience` and
-`requiredScope`, and raise multi-audience tokens (`aud: [registry, cp]`) with the
-registry rather than loosening the CP.
+as that agent at this CP, in the tenant named by the token's `tenant` claim. That is the
+existing federation design and changing it would break federated deployments. Know what it
+exposes and what does *not* mitigate it:
+
+- **Blast radius:** reads in that tenant, and CP-local writes — notably `POST /webhooks`
+  (continuous event exfiltration to an attacker URL).
+- **Not mitigations for registry peers:** the per-issuer `audience` only selects the peer's
+  own authority (it stops cross-registry replay, not X→CP replay); `requiredScope` checks
+  `scp`, which the registry never mints, so setting it rejects every registry token; and
+  registry-side revocations never reach the CP (the registry serves no revocation feed), so
+  the replay window is the token TTL (default 3600 s).
+- **Planned:** a per-issuer `read_only` flag (default off) and `iss` in `PolicyRequest`
+  (acdp-control-plane#225); multi-audience `aud: [registry, cp]` minting
+  (acdp-registry-rs#420, after which the per-issuer `audience` can name the CP) and a
+  registry revocation feed (acdp-registry-rs#421).
 
 ## Pinned keys
 
