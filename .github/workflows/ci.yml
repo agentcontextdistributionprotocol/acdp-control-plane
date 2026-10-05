@@ -31,7 +31,7 @@ jobs:
         # Bumped for Phase 13's rev-002 scenarios E-H (revocation-lineage.spec.ts),
         # which need the lineage-fold `revocation_lineage.L1/L2/L3` fixture data
         # added upstream after the prior pin. (spec main HEAD as of 2026-09-21)
-        # Bumped 9deb7e7 -> 34f14ab (#221) for RFC-ACDP-0001 §5.10 strict Ed25519
+        # Bumped from the 2026-09-21 pin to 34f14ab (#221) for RFC-ACDP-0001 §5.10 strict Ed25519
         # (conformance vector sig-004-ed25519-strict-negative, spec #73) and the
         # bearer_jwt registration (spec #74). No existing fixture changed.
         uses: actions/checkout@v7

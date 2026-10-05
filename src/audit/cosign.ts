@@ -218,7 +218,7 @@ const QUORUM_FAILURE_MAX_CHARS = 500;
  * never a string. The bare `String(f)` this replaces coerced every entry to
  * the literal text `"[object Object]"`, destroying the ONLY reason the
  * native path (always taken — the binding is native-first and the pinned
- * floor is `^0.14.1`) ever surfaces for a rejected cosignature. Handles
+ * floor is `^0.14.4`) ever surfaces for a rejected cosignature. Handles
  * every shape defensively, never throws: `{code, error}` → `"code: error"`;
  * a bare string → passthrough (in case a future binding version reverts to
  * strings); anything else → bounded `JSON.stringify` so a shape drift is

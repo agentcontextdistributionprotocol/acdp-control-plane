@@ -4,7 +4,7 @@
  * rather than taking it from the `acdp` SDK.
  *
  * Justification (RFC-ACDP-0015 Phase 8, B2): the published binding's entire
- * public surface was enumerated at the pinned `^0.14.1` floor and exposes no
+ * public surface was enumerated at the pinned `^0.14.4` floor and exposes no
  * `did:key` decoder — `AcdpDid` has only `webToUrl` and `stripFragment`.
  * Multibase is a plain *encoding*, not cryptography (the crypto — Ed25519
  * verification — still comes from the SDK once the raw key bytes are in
