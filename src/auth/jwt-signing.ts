@@ -36,7 +36,7 @@ export interface SigningMaterial {
   kid: string;
   /** Material passed to `jsonwebtoken.sign(payload, signingKey, ...)`. */
   signingKey: Secret;
-  /** Material passed to `jsonwebtoken.verify(token, verifyKey, ...)`. */
+  /** Verification material for `verifyJwt` (jwt-codec): `jsonwebtoken` for HS256, the acdp SDK's strict Ed25519 for EdDSA. */
   verifyKey: Secret;
   /**
    * Public-key JWK for publication in `/.well-known/jwks.json`.
