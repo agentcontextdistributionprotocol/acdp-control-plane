@@ -115,6 +115,52 @@ describe('jwt-codec', () => {
       ).toThrow(/audience invalid/);
     });
 
+    describe('strict Ed25519 (RFC-ACDP-0001 §5.10 / sig-004) — verification via the acdp SDK', () => {
+      // SPKI wrapper for a raw 32-byte Ed25519 key.
+      const SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+      const identityKey = createPublicKey({
+        key: Buffer.concat([SPKI_PREFIX, Buffer.from('01' + '00'.repeat(31), 'hex')]),
+        format: 'der',
+        type: 'spki',
+      });
+      // R = identity, s = 0 — satisfies the loose verification equation under
+      // the identity public key for EVERY message (the sig-004 forgery).
+      const forgedSig = Buffer.from('01' + '00'.repeat(63), 'hex').toString('base64url');
+      const forgedToken = () => {
+        const h = Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' })).toString('base64url');
+        const p = Buffer.from(JSON.stringify(claims())).toString('base64url');
+        return `${h}.${p}.${forgedSig}`;
+      };
+
+      it('rejects the small-order forgery under an identity verification key', () => {
+        expect(() =>
+          verifyJwt(forgedToken(), {
+            algorithms: ['EdDSA'],
+            key: identityKey,
+            issuer: 'cp.test',
+            audience: 'cp.test',
+          }),
+        ).toThrow(/invalid signature/);
+      });
+
+      it('rejects a signature that is not 64 bytes (never throws past the codec contract)', () => {
+        const [h, p] = forgedToken().split('.');
+        for (const bad of ['', 'AAAA', Buffer.alloc(65).toString('base64url')]) {
+          expect(() =>
+            verifyJwt(`${h}.${p}.${bad}`, { algorithms: ['EdDSA'], key: publicKey }),
+          ).toThrow(/invalid signature|malformed/);
+        }
+      });
+
+      it('rejects a verification key that is not Ed25519', () => {
+        const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
+        const token = signJwt(claims(), { algorithm: 'EdDSA', key: privateKey });
+        expect(() =>
+          verifyJwt(token, { algorithms: ['EdDSA'], key: rsa.publicKey }),
+        ).toThrow(/not an Ed25519 key/);
+      });
+    });
+
     it('honors clock tolerance on exp', () => {
       const token = signJwt(claims({ exp: NOW - 5 }), { algorithm: 'EdDSA', key: privateKey });
       // 5s past exp, but a 30s tolerance keeps it valid.

@@ -1,6 +1,8 @@
 import { UnauthorizedException } from '@nestjs/common';
 import jwt from 'jsonwebtoken';
 import { CrossIssuerValidator } from './cross-issuer-validator.service';
+import { generateKeyPairSync } from 'node:crypto';
+import { signJwt } from './jwt-codec';
 import { buildSigningMaterial } from './jwt-signing';
 import { TrustedIssuerRegistry } from './trusted-issuers';
 
@@ -176,5 +178,40 @@ describe('CrossIssuerValidator', () => {
     const claims = await v.verify(peerToken);
     expect(claims.sub).toBe('did:web:federated:bob');
     expect(claims.iss).toBe(PEER_ISS);
+  });
+
+  describe('EdDSA trusted peer (JWKS), verified via the acdp SDK', () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const pubPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const now = Math.floor(Date.now() / 1000);
+    const peerClaims = () => ({
+      iss: PEER_ISS,
+      sub: 'did:web:federated:carol',
+      jti: 'jti-eddsa',
+      iat: now,
+      nbf: now,
+      exp: now + 3600,
+    });
+
+    function edValidator(jwksKeyPem: string) {
+      const v = makeValidator({
+        peers: [{ iss: PEER_ISS, alg: 'EdDSA', jwksUrl: 'https://peer.example/jwks.json' }] as any,
+      });
+      // Stub the JWKS fetch: the codec is what's under test, not the network.
+      (v as any).jwksClients.set(PEER_ISS, { getSigningKey: async () => jwksKeyPem });
+      return v;
+    }
+
+    it('accepts a token signed by the JWKS key', async () => {
+      const token = signJwt(peerClaims(), { algorithm: 'EdDSA', key: privateKey });
+      const claims = await edValidator(pubPem).verify(token);
+      expect(claims.sub).toBe('did:web:federated:carol');
+    });
+
+    it('rejects a token signed by a different key', async () => {
+      const other = generateKeyPairSync('ed25519');
+      const token = signJwt(peerClaims(), { algorithm: 'EdDSA', key: other.privateKey });
+      await expect(edValidator(pubPem).verify(token)).rejects.toThrow(UnauthorizedException);
+    });
   });
 });

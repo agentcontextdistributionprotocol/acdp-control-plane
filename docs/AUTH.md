@@ -126,6 +126,11 @@ Agent                                   Control Plane
 | `HS256` (default) | `JWT_SECRET` (≥32 bytes, validated at boot) | `{ "keys": [] }` (no public material) |
 | `EdDSA` | `JWT_PRIVATE_KEY_PEM` (Ed25519 PKCS8) | `OKP`/`Ed25519` public JWK |
 
+EdDSA tokens (local issuer and trusted peers' JWKS keys) are **verified through the
+`acdp` SDK's strict Ed25519** (RFC-ACDP-0001 §5.10: `s ≥ L` and small-order A/R are
+rejected), not `node:crypto`, so strictness doesn't depend on the OpenSSL Node links.
+Signing still uses `node:crypto`.
+
 `kid` is `JWT_KID` if set, else derived from a stable fingerprint of the key
 material. It is embedded in the JWT header and published in JWKS so verifiers can
 match. The supported signature algorithms are governed by the spec's
