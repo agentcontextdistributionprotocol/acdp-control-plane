@@ -107,6 +107,21 @@ describe('Auth issuance (integration)', () => {
     expect(res.status).toBe(200);
   });
 
+  it('rejects, at the AuthGuard, a validly-signed bearer with no exp (401, #221)', async () => {
+    const noExp = jwt.sign({ sub: DID, iss: AUTHORITY, aud: AUTHORITY, tenant: TENANT }, JWT_SECRET, {
+      algorithm: 'HS256',
+    });
+    const res = await new TestClient(ctx.url, noExp).requestRaw('GET', '/runs');
+    expect(res.status).toBe(401);
+    // Control: the same claims with exp are accepted.
+    const withExp = jwt.sign({ sub: DID, iss: AUTHORITY, aud: AUTHORITY, tenant: TENANT }, JWT_SECRET, {
+      algorithm: 'HS256',
+      expiresIn: 300,
+    });
+    const ok = await new TestClient(ctx.url, withExp).requestRaw('GET', '/runs');
+    expect(ok.status).toBe(200);
+  });
+
   it('rejects a token request carrying a forged signature (401)', async () => {
     const ch = await pub.requestJson<ChallengeResp>('POST', '/auth/challenge', {
       body: { agent_id: DID },

@@ -3840,3 +3840,4 @@ PR opened
 
 ## #221 Phase 6 — require exp + bearer_jwt write-up (2026-10-05)
 - requireExp default on (HS256+EdDSA, local+trusted); structured trusted-issuer log; docs/AUTH.md §6.2 table; TROUBLESHOOTING; ASSUMPTIONS (D3-D6). Unit 1541, integration 263. Verifier pending.
+- Phase 6 round 1 GAPS (local-EdDSA case, guard-level test, reads-only doc overclaim) closed; unit 1542, integration 264.

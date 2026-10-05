@@ -157,14 +157,14 @@ to advertise `bearer_jwt` in, and it deliberately does not. Its `/auth/challenge
 | Signed by the issuer's own key | HS256 `JWT_SECRET` or EdDSA `JWT_PRIVATE_KEY_PEM` (`token-issuer.service.ts`) | OK |
 | `sub` = requester DID, control verified first | `sub` is the agent DID, minted only after nonce consume, agent match, `key_id` ↔ `agent_id` binding and signature verification | OK |
 | `exp` present | Always minted; **required on verify** for local and trusted-issuer tokens (`jwt-codec.ts` `requireExp`, default on) | OK |
-| `aud` = issuing service; mismatch rejected | Local tokens: `aud` = `JWT_AUDIENCE` (default authority), required on verify. Trusted peers: `aud` must equal the **peer's own** authority (see Federation) | Local OK; see note |
-| TLS only | Not enforced in-process — TLS terminates in front of the CP (`TRUST_PROXY`). Never expose the CP over plain HTTP | Deployment requirement |
-| Reads only; never substitutes a producer signature | No producer-signed write is authenticated by a bearer token: capability declarations carry their own signature, ingest is HMAC | OK |
+| `aud` = issuing service; mismatch rejected | Local tokens: `aud` = `JWT_AUDIENCE` (default authority), required on verify. Trusted peers: `aud` must match the configured per-issuer `audience` (conventionally the **peer's own** authority; see Federation) | Local OK; see note |
+| TLS only | Not enforced in-process — TLS terminates in front of the CP (helmet sets HSTS, `bootstrap.ts`; JWKS fetches are https-only). Never expose the CP over plain HTTP | Deployment requirement |
+| Reads only; never substitutes a producer signature | A bearer never substitutes for a producer signature (capability declarations carry their own, ingest is HMAC). But `AuthGuard` accepts a bearer on every non-`@Public()` route, so it also authorizes CP-**local** writes (e.g. `POST /webhooks`, `POST /auth/revoke`, `POST /capabilities`); those are CP resources, not ACDP context publishes | OK for producer signatures; CP-local writes are accepted |
 | Listed in `read_authentication_methods` | N/A — the CP is not a registry | Not advertised |
 
 **Deliberate deviation (federation).** A registry's `bearer_jwt` is bound to that registry
 (`aud` = the registry), yet a trusted-issuer entry makes the CP accept such a token
-(Federation above). Whoever holds an agent's read token for registry X can therefore act
+(see Federation below). Whoever holds an agent's read token for registry X can therefore act
 as that agent at this CP. That is the existing federation design and changing it would
 break federated deployments; scope trust with the per-issuer `audience` and
 `requiredScope`, and raise multi-audience tokens (`aud: [registry, cp]`) with the

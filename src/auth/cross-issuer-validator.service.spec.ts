@@ -186,7 +186,32 @@ describe('CrossIssuerValidator', () => {
   describe('tokens without exp are rejected (#221)', () => {
     it('local issuer (HS256)', async () => {
       const token = mint(LOCAL_ISS, LOCAL_SECRET, { exp: undefined });
-      await expect(makeValidator().verify(token)).rejects.toThrow(UnauthorizedException);
+      await expect(makeValidator().verify(token)).rejects.toThrow(/exp claim is required/);
+    });
+
+    it('local issuer (EdDSA)', async () => {
+      const kp = generateKeyPairSync('ed25519');
+      const pem = kp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+      const v = new CrossIssuerValidator(
+        { jwtSecret: LOCAL_SECRET, jwtAuthority: LOCAL_ISS } as any,
+        new TrustedIssuerRegistry([]),
+        { material: buildSigningMaterial({ algorithm: 'EdDSA', privateKeyPem: pem }) } as any,
+        null,
+      );
+      const base = {
+        iss: LOCAL_ISS,
+        sub: 'did:web:alice',
+        jti: 'j',
+        iat: Math.floor(Date.now() / 1000),
+      };
+      const noExp = signJwt(base, { algorithm: 'EdDSA', key: kp.privateKey });
+      await expect(v.verify(noExp)).rejects.toThrow(/exp claim is required/);
+      // Control: with exp the same key/claims verify.
+      const withExp = signJwt(
+        { ...base, exp: base.iat + 300 },
+        { algorithm: 'EdDSA', key: kp.privateKey },
+      );
+      expect((await v.verify(withExp)).sub).toBe('did:web:alice');
     });
 
     it('trusted HS256 peer', async () => {
