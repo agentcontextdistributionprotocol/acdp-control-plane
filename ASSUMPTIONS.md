@@ -1703,3 +1703,11 @@
   outside Jest) and the release image smoke test. `src/test-harness.spec.ts` fails
   if the flag returns or Nest starts resolving `require` to a CJS file.
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (Variant C first chosen in plan review round 1); re-evaluation TRIGGER recorded: when #156 Phase 3 (TS 7 package move) is planned, decide Option D there — if D is rejected, revisit C vs. the flag
+
+## /auth/token key_id ↔ agent_id binding (#221 Phase 5)
+- **Plan:** plans/strict-ed25519-bearer-jwt-221.md
+- **Assumed:** bare fragments stay accepted (docs/examples use them); `#frag` is rejected as malformed (registry parity).
+- **Chose:** exact DID-portion equality on both pinned and did:web paths (D7); malformed/mismatch → 401 with ledger rows `reject_key_id_malformed|mismatch`. Phase 5 executed first (own branch/PR-A) rather than in numeric order, since it is an independent security fix (D8).
+- **Alternatives:** applying the check only on the did:web path (leaves foreign key ids stampable into minted claims).
+- **Blast radius if wrong:** a client sending a key_id for a different DID than agent_id (previously silently accepted on the pinned path) now gets 401 (also a did:key agent sending key_id == agent_id, no fragment). `key_id` length is unbounded in the ledger detail (pre-existing, same as the mint row). Revert = one commit.
+- **Status:** UNCONFIRMED

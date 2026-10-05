@@ -44,6 +44,8 @@ export type IssuanceDecision =
   | 'reject_agent_mismatch'
   | 'reject_expires_mismatch'
   | 'reject_unpinned'
+  | 'reject_key_id_mismatch'
+  | 'reject_key_id_malformed'
   | 'reject_signature'
   | 'reject_internal';
 
