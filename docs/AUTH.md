@@ -52,7 +52,7 @@ request it:
 
 Delegates to `CrossIssuerValidatorService.verify(token)`, which dispatches on the
 `iss` claim (local issuer vs trusted peer — see [Federation](#federation)). On
-success it sets `actorDid = sub`, `actorScopes` (OAuth `scope`/`scopes` claim),
+success it sets `actorDid = sub`, `actorScopes` (the union of the `scope`, `scopes` and `scp` claims — one vocabulary shared with the trusted-issuer `requiredScope` gate),
 and resolves the tenant from the signed `tenant` claim. JWTs cannot be admin
 today (admin is API-key-gated).
 
@@ -177,7 +177,7 @@ exposes and what does *not* mitigate it:
   (continuous event exfiltration to an attacker URL).
 - **Not mitigations for registry peers:** the per-issuer `audience` only selects the peer's
   own authority (it stops cross-registry replay, not X→CP replay); `requiredScope` checks
-  `scp`, which the registry never mints, so setting it rejects every registry token; and
+  `scope`/`scopes`/`scp`, none of which the registry ever mints, so setting it rejects every registry token; and
   registry-side revocations never reach the CP (the registry serves no revocation feed), so
   the replay window is the token TTL (default 3600 s).
 - **Planned:** a per-issuer `read_only` flag (default off) and `iss` in `PolicyRequest`

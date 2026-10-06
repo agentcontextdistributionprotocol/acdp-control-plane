@@ -51,8 +51,11 @@ export interface TrustedIssuer {
    */
   audience: string;
   /**
-   * Optional space-separated required scopes. The JWT's `scp` claim
-   * (when present) MUST contain ALL listed scopes for acceptance.
+   * Optional space-separated required scopes. The union of the token's
+   * `scope` / `scopes` / `scp` claims (see ./scopes.ts) MUST contain ALL
+   * listed scopes for acceptance. NOT usable against ACDP registry peers:
+   * the registry mints no scope claim, so setting this rejects every one of
+   * their tokens.
    */
   requiredScope?: string;
 }

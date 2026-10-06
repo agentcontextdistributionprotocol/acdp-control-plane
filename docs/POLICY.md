@@ -32,7 +32,7 @@ and asks a pluggable `PolicyDecider`.
   resourceId: string;            // ctx_id / run_id / agent_did ('' for list ops)
   resourceVisibility?: 'public' | 'restricted' | 'private';
   resourceAudience?: string[];   // DIDs explicitly granted access
-  scopes: string[];              // from the JWT scope/scopes claim
+  scopes: string[];              // union of the JWT scope / scopes / scp claims
   tenantId?: string;
 }
 ```

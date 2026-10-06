@@ -46,7 +46,7 @@ export interface PolicyRequest {
   resourceVisibility?: Visibility;
   /** Audience list — for `restricted` resources, the DIDs explicitly granted access. */
   resourceAudience?: ReadonlyArray<string>;
-  /** Scopes carried in the subject's JWT (parsed `scp` claim). Empty array if absent. */
+  /** Scopes carried in the subject's JWT: the union of the `scope` / `scopes` / `scp` claims (see auth/scopes.ts). Empty array if absent. */
   scopes: ReadonlyArray<string>;
   /** Tenant boundary (#6). Empty string means single-tenant deployment. */
   tenantId?: string;

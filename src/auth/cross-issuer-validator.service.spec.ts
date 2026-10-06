@@ -141,6 +141,22 @@ describe('CrossIssuerValidator', () => {
     expect((await v.verify(ok)).scp).toContain('publish');
   });
 
+  it('requiredScope reads scope / scopes / array-scp too, and rejects a token with none (#225)', async () => {
+    const v = makeValidator({
+      peers: [{ iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET, requiredScope: 'publish' }] as any,
+    });
+    for (const claim of [
+      { scp: 'publish' },
+      { scope: 'publish' },
+      { scopes: ['publish'] },
+      { scp: ['publish'] },
+    ]) {
+      await expect(v.verify(mint(PEER_ISS, PEER_SECRET, claim))).resolves.toBeDefined();
+    }
+    // No scope claim at all (what an ACDP registry mints) → 401.
+    await expect(v.verify(mint(PEER_ISS, PEER_SECRET))).rejects.toThrow(/missing required scope/);
+  });
+
   it('rejects garbage tokens without leaking which step failed', async () => {
     const v = makeValidator();
     await expect(v.verify('not-a-jwt')).rejects.toThrow(UnauthorizedException);

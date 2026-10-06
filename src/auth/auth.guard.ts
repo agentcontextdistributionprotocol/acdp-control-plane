@@ -1,3 +1,4 @@
+import { readScopes } from './scopes';
 import {
   CanActivate,
   ExecutionContext,
@@ -93,9 +94,10 @@ export class AuthGuard implements CanActivate {
       request.actorDid = claims.sub;
       request.actorType = 'jwt';
       request.actorIsAdmin = false; // admin is api-key-gated today
-      // Expose JWT scopes for the PolicyGuard. Accepts an OAuth-style
-      // space-delimited `scope` string or a `scopes` array.
-      request.actorScopes = extractScopes(claims);
+      // Expose JWT scopes for the PolicyGuard: the union of `scope`, `scopes`
+      // and `scp` (see ./scopes.ts) — the same vocabulary the trusted-issuer
+      // `requiredScope` gate reads.
+      request.actorScopes = readScopes(claims);
       // Tenant binding order of precedence (claim > header):
       //   1. `tenant` claim in the JWT (authoritative — minted by the
       //      issuer, signed, can't be forged by the bearer).
@@ -226,24 +228,6 @@ export class AuthGuard implements CanActivate {
  */
 function looksLikeJwt(token: string): boolean {
   return token.split('.').length === 3;
-}
-
-/**
- * Extract scopes from JWT claims. Supports the OAuth-style space-delimited
- * `scope` string and a `scopes` array claim. Returns [] when neither is set.
- */
-function extractScopes(claims: unknown): string[] {
-  const c = claims as { scope?: unknown; scopes?: unknown };
-  if (Array.isArray(c.scopes)) {
-    return c.scopes.filter((s): s is string => typeof s === 'string');
-  }
-  if (typeof c.scope === 'string') {
-    return c.scope.split(/\s+/).filter(Boolean);
-  }
-  if (Array.isArray(c.scope)) {
-    return c.scope.filter((s): s is string => typeof s === 'string');
-  }
-  return [];
 }
 
 /**

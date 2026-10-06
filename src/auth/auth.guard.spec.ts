@@ -190,6 +190,27 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
     expect(request.actorIsAdmin).toBe(false);
   });
 
+  it('exposes the union of scope/scopes/scp as actorScopes, and [] when absent (#225)', async () => {
+    const claims = {
+      iss: 'cp.local', sub: 'did:web:alice', jti: 'j1', exp: 9_999_999_999, iat: 0,
+      acdp: { registry: 'cp.local', key_id: 'k' },
+    };
+    (validator.verify as jest.Mock).mockResolvedValueOnce({ ...claims, scp: 'a b', scope: 'b c' });
+    request.headers.authorization = `Bearer ${fakeJwt({ sub: 'x' })}`;
+    await guard.canActivate(ctx(request));
+    expect(request.actorScopes).toEqual(['b', 'c', 'a']);
+
+    const req2: Record<string, any> = { headers: { authorization: request.headers.authorization } };
+    (validator.verify as jest.Mock).mockResolvedValueOnce(claims);
+    await guard.canActivate(ctx(req2));
+    expect(req2.actorScopes).toEqual([]);
+
+    const req3: Record<string, any> = { headers: { authorization: request.headers.authorization } };
+    (validator.verify as jest.Mock).mockResolvedValueOnce({ ...claims, scp: 'only-scp' });
+    await guard.canActivate(ctx(req3));
+    expect(req3.actorScopes).toEqual(['only-scp']);
+  });
+
   it('rejects an invalid JWT (no fallthrough to api-key matching)', async () => {
     config.authApiKeys = ['aaa.bbb.ccc']; // intentionally JWT-shaped api key
     (validator.verify as jest.Mock).mockRejectedValue(
