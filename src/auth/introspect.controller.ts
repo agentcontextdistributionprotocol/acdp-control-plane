@@ -37,7 +37,8 @@ import {
   ApiProperty,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsString, MinLength } from 'class-validator';
+import { IsString, MaxLength, MinLength } from 'class-validator';
+import { BEARER_TOKEN_MAX_LENGTH } from './dto/auth.dto';
 import { CrossIssuerValidator } from './cross-issuer-validator.service';
 
 export class IntrospectRequestDto {
@@ -48,6 +49,7 @@ export class IntrospectRequestDto {
   })
   @IsString()
   @MinLength(1)
+  @MaxLength(BEARER_TOKEN_MAX_LENGTH)
   token!: string;
 }
 

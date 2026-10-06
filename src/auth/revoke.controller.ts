@@ -37,7 +37,8 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { BEARER_TOKEN_MAX_LENGTH } from './dto/auth.dto';
 import { ApiProperty } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { Inject } from '@nestjs/common';
@@ -65,6 +66,7 @@ export class RevokeRequestDto {
   })
   @IsString()
   @MinLength(1)
+  @MaxLength(BEARER_TOKEN_MAX_LENGTH)
   token!: string;
 
   @ApiProperty({

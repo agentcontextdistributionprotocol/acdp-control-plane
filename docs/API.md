@@ -730,7 +730,9 @@ Body:
 ```
 Returns `{ "token": "<jwt>", "token_type": "Bearer", "expires_at": <unix> }`.
 `401` on unknown/expired nonce, agent mismatch, missing pinned key, or bad
-signature; `400` on unsupported algorithm. `/auth/challenge` and `/auth/token`
+signature; `400` on unsupported algorithm or an over-long field (`agent_id`, `key_id`,
+`nonce`, `signature` ≤ 2048 chars, `algorithm` ≤ 64; `INVALID_PAYLOAD`, rejected before the
+nonce is consumed). `/auth/challenge` and `/auth/token`
 carry a tighter per-IP throttle than the global limit (an IPv6 caller is
 counted per `/64` network, not per address — `THROTTLE_IPV6_SUBNET_PREFIX`).
 

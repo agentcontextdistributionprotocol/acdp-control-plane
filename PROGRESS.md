@@ -3842,3 +3842,16 @@ PR opened
 - requireExp default on (HS256+EdDSA, local+trusted); structured trusted-issuer log; docs/AUTH.md §6.2 table; TROUBLESHOOTING; ASSUMPTIONS (D3-D6). Unit 1541, integration 263. Verifier pending.
 - Phase 6 round 1 GAPS (local-EdDSA case, guard-level test, reads-only doc overclaim) closed; unit 1542, integration 264.
 - Final cumulative verify PASS; pushing PR-C (closes #221)
+
+## Repo map — followups-225
+
+From `plans/followups-225.md` (issue #225). Reuse this map; don't re-scan.
+
+- TRUSTED_ISSUERS: grammar + parser `src/auth/trusted-issuers.ts:8-12,34-58,63-119` (min-field check only `:67`, extra fields silently ignored; `:69`/`:113` error messages echo the whole entry incl. HS256 secret); parsed only in `auth.module.ts:101-106` (issuance-enabled boot); raw env `app-config.service.ts:326`.
+- JWT path: `auth.guard.ts:75-147` (actor tagging `:92-98`, tenant `:145`, `extractScopes` `:235-247`); validator `cross-issuer-validator.service.ts` (`verify` `:83-121`, local-first dispatch `:98`, `verifyTrusted` `:164-217`, `scp`-only requiredScope `:197-206`). No integration spec sets TRUSTED_ISSUERS yet.
+- Policy: `policy-decider.ts:38-53` (PolicyRequest), `policy.guard.ts:78-86`, cache key `caching-policy.decider.ts:94-108`, OPA input `opa-policy.decider.ts:146-155`, static decider built with `{}` (`policy.module.ts:41`, requiredScopes never configured). `@CheckPolicy` only on contexts:40, capabilities:94, runs:61/78/88/127/144 — NOT on webhooks. `docs/policies/example.rego` uses complete rules; not run in CI.
+- Non-@Public non-GET routes: webhooks POST/PATCH/DELETE, POST /capabilities, POST /registries/enroll + /:authority/log-witness/ack, POST /admin/pinned-keys/reload, POST /auth/token/revoke, POST /auth/introspect. No state-changing GET.
+- Auth DTOs (no @MaxLength anywhere yet): `auth.dto.ts` (challenge agent_id `:10-12`; token `:49-94`), `RevokeRequestDto` `revoke.controller.ts:63-81`, `IntrospectRequestDto` `introspect.controller.ts:43-52`. Global ValidationPipe `bootstrap.ts:94-100` → 400 INVALID_PAYLOAD before handler.
+- ErrorCode pin: `error-codes.spec.ts:19` (SHIPPED) + `:73` (docs/API.md table `:55-75`).
+- Registry parity: BearerClaims has no scope claim (`acdp-registry-types/src/auth.rs:59-81`); registry stamps raw key_id (`acdp-registry-auth/src/service.rs:327`).
+- Side finding: revoke self-revoke trusts unverified decode (`revoke.controller.ts:131-160`) → jti deny-list of others' tokens.

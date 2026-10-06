@@ -95,6 +95,10 @@ Agent                                   Control Plane
   whitespace is malformed. Checked before key resolution, on both
   the pinned and `did:web` paths → `401` (`reject_key_id_mismatch` /
   `reject_key_id_malformed` in the ledger). Mirrors the registry's `KeyIdMismatch`.
+- **Input bounds**: `agent_id`, `key_id`, `nonce` and `signature` are capped at 2048
+  chars, `algorithm` at 64, and the `token` of `/auth/token/revoke` and `/auth/introspect`
+  at 8192. Enforced by the `ValidationPipe` (`400 INVALID_PAYLOAD`) **before** the
+  nonce is consumed, so an oversized request never burns a challenge.
 - **Downgrade defense**: the request `algorithm` must match the pinned key's
   algorithm.
 - **Atomic nonce consumption**: on Postgres, `DELETE … RETURNING` so a nonce is
