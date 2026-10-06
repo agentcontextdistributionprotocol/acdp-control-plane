@@ -38,8 +38,9 @@ Two opt-in env flags harden which registries the control plane accepts:
 | `INGEST_STRICT_TENANT` | `false` | An unenrolled authority may **not** assert a non-`default` tenant via `X-Tenant-Id`; only a server-side enrollment can bind an event to a non-`default` tenant. Recommended for multi-tenant deployments. |
 
 With both `false` (the default), behavior is backward compatible: any authority
-may ingest and the `X-Tenant-Id` header (subject to the auth-layer rules) binds
-the tenant. See [TENANCY.md](./TENANCY.md) for how the resolved tenant is stamped.
+may ingest and the `X-Tenant-Id` header binds the tenant. `/ingest/acdp` (and
+`/runs/started|complete`) are `@Public()` HMAC routes, so neither the AuthGuard tenant rules
+nor `TENANT_HEADER_TRUST` apply to them — `INGEST_STRICT_TENANT` is their only control. See [TENANCY.md](./TENANCY.md) for how the resolved tenant is stamped.
 
 ## Request limits
 

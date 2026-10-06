@@ -252,6 +252,13 @@ export class AppConfigService implements OnModuleInit {
   // `TENANT_API_KEYS`. A spoofable `X-Tenant-Id` header alone never
   // satisfies this. Default false = the legacy silent-`default` fallback.
   readonly requireTenant = readBoolean('AUTH_REQUIRE_TENANT', false);
+  // Who may assert a tenant via `X-Tenant-Id` on a JWT that carries no `tenant`
+  // claim (parity with the registry's `tenant_header_trust`, 0.4.0): `none`
+  // (default) rejects the header (403 TENANT_HEADER_UNTRUSTED) so a federated
+  // or claim-less token cannot pick a tenant; `any_peer` honours it (the
+  // pre-0.2 behaviour — only safe behind a gateway that authenticates and sets
+  // the header). Raw value; validated in `validate()`.
+  readonly tenantHeaderTrust = (process.env.TENANT_HEADER_TRUST ?? 'none').trim().toLowerCase();
   // Per-tenant quota config. Wire format documented in
   // `src/quota/quota-config.ts`. Empty (default) = no rate limits.
   readonly tenantQuotasRaw = process.env.TENANT_QUOTAS ?? '';
@@ -653,6 +660,24 @@ export class AppConfigService implements OnModuleInit {
           'that resolves to no tenant would run unscoped and leak cross-tenant ' +
           'data. Set AUTH_REQUIRE_TENANT=true to enable strict enforcement.',
       );
+    }
+
+    if (this.tenantHeaderTrust !== 'none' && this.tenantHeaderTrust !== 'any_peer') {
+      throw new Error(
+        `TENANT_HEADER_TRUST must be 'none' or 'any_peer' (got '${this.tenantHeaderTrust}')`,
+      );
+    }
+    if (this.tenantHeaderTrust === 'any_peer') {
+      const loopback = ['127.0.0.1', '::1', 'localhost'].includes(this.host);
+      if (!loopback) {
+        this.logger.warn({
+          msg:
+            'TENANT_HEADER_TRUST=any_peer: any authenticated caller whose token has no tenant ' +
+            'claim can assert any tenant via X-Tenant-Id; use only behind a gateway that ' +
+            'authenticates callers and sets the header',
+          host: this.host,
+        });
+      }
     }
 
     // A rate-limit security control (issue #187): enforced in every

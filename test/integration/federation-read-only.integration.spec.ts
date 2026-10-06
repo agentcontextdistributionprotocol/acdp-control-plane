@@ -102,6 +102,16 @@ describe('Per-issuer read_only (integration)', () => {
     expect((res.body as any).active).toBe(true);
   });
 
+  it('TENANT_HEADER_TRUST=none (default): an X-Tenant-Id on a claim-less federated token is 403 TENANT_HEADER_UNTRUSTED, before ISSUER_READ_ONLY', async () => {
+    for (const c of [ro, rw]) {
+      const res = await c.requestRaw('POST', '/webhooks', { body: hook, headers: { 'x-tenant-id': 'tenant-b' } });
+      expect(res.status).toBe(403);
+      expect((res.body as any).error.code).toBe('TENANT_HEADER_UNTRUSTED');
+    }
+    const get = await rw.requestRaw('GET', '/runs', { headers: { 'x-tenant-id': 'tenant-b' } });
+    expect(get.status).toBe(403);
+  });
+
   it('a bad X-Tenant-Id is TENANT_MISMATCH-class precedence, not masked by read_only (claim vs header)', async () => {
     const tok = peerToken('peer-ro', RO_SECRET, { tenant: 'tenant-a' });
     const c = new TestClient(ctx.url, tok);
@@ -117,5 +127,22 @@ describe('Per-issuer read_only (integration)', () => {
         tokenIssuance: { jwtSecret: LOCAL_SECRET, authority: 'cp.test' },
       }),
     ).rejects.toThrow(/equals JWT_AUTHORITY/);
+  });
+
+  it('any_peer (opt-in) honours the header for a claim-less token, and boot accepts it', async () => {
+    process.env.TENANT_HEADER_TRUST = 'any_peer';
+    let ctx2: TestAppContext | undefined;
+    try {
+      ctx2 = await createTestApp({
+        trustedIssuers: TRUSTED,
+        tokenIssuance: { jwtSecret: LOCAL_SECRET, authority: 'cp.test' },
+      });
+      const c = new TestClient(ctx2.url, peerToken('peer-rw', RW_SECRET));
+      const res = await c.requestRaw('GET', '/runs', { headers: { 'x-tenant-id': 'tenant-b' } });
+      expect(res.status).toBe(200);
+    } finally {
+      delete process.env.TENANT_HEADER_TRUST;
+      await ctx2?.app.close();
+    }
   });
 });

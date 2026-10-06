@@ -106,7 +106,8 @@ export class AuthGuard implements CanActivate {
       // Tenant binding order of precedence (claim > header):
       //   1. `tenant` claim in the JWT (authoritative — minted by the
       //      issuer, signed, can't be forged by the bearer).
-      //   2. `X-Tenant-Id` header (legacy; trust-on-input).
+      //   2. `X-Tenant-Id` header — ONLY with TENANT_HEADER_TRUST=any_peer
+      //      (default none: a claim-less token sending it is rejected below).
       //   3. DEFAULT_TENANT_ID.
       // If both 1 and 2 are present and disagree, reject — the
       // header is asserting a tenant the issuer didn't actually
@@ -146,6 +147,25 @@ export class AuthGuard implements CanActivate {
         throw new AppException(
           ErrorCode.TENANT_REQUIRED,
           'tenant required: token carries no tenant claim (AUTH_REQUIRE_TENANT)',
+          HttpStatus.FORBIDDEN,
+        );
+      }
+      // Header trust (parity with the registry's `tenant_header_trust`): a token
+      // with NO tenant claim may not pick a tenant via the spoofable header
+      // unless the operator declared a trusting boundary (`any_peer`). Reject
+      // rather than ignore — ignoring would silently serve `default`. Runs after
+      // the reserved/mismatch/strict checks, so those keep precedence.
+      if (!claimTenant && headerTenant && this.config.tenantHeaderTrust !== 'any_peer') {
+        this.logger.warn({
+          msg: 'untrusted X-Tenant-Id on a token with no tenant claim',
+          sub: claims.sub,
+          iss: claims.iss,
+          federated: trusted !== null,
+        });
+        throw new AppException(
+          ErrorCode.TENANT_HEADER_UNTRUSTED,
+          'X-Tenant-Id is not trusted for a token with no tenant claim (TENANT_HEADER_TRUST=none); ' +
+            'use a tenant-bound token',
           HttpStatus.FORBIDDEN,
         );
       }

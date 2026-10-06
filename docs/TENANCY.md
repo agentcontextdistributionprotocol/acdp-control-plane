@@ -30,8 +30,11 @@ to make that impossible to reach by accident.
 
 1. **Signed / bound tenant** — the JWT `tenant` claim, or the tenant a
    `TENANT_API_KEYS` entry binds the key to. Authoritative.
-2. **`X-Tenant-Id` header** — only honored when there is no signed/bound tenant,
-   and only outside strict mode.
+2. **`X-Tenant-Id` header** — (JWTs only; API keys never take the tenant from it: a bound key
+   with a different header is `TENANT_MISMATCH`, a bare key ignores it) only honored when there is no signed/bound tenant,
+   only outside strict mode, **and only when `TENANT_HEADER_TRUST=any_peer`** (see
+   below). With the default `none`, a JWT with no `tenant` claim that sends the header
+   is rejected (`403 TENANT_HEADER_UNTRUSTED`).
 3. **Absence → `default`** — when nothing asserts a tenant.
 
 Two hard rules protect the boundary:
@@ -43,6 +46,32 @@ Two hard rules protect the boundary:
   `X-Tenant-Id` or a signed `tenant` claim) is rejected (`403 TENANT_RESERVED`). `default` is reachable
   only through the **absence** of an assertion — never by asserting it (parity
   with the registry's `reject_reserved_tenant`).
+
+### Who may send `X-Tenant-Id` — `TENANT_HEADER_TRUST`
+
+Parity with the registry's `tenant_header_trust` (0.4.0: default `none` in every
+mode). The header is spoofable, so it is trusted only where the operator declares a
+boundary that authenticates callers and sets it:
+
+| JWT `tenant` claim | `X-Tenant-Id` | `none` (default) | `any_peer` |
+|---|---|---|---|
+| present | absent / equal | claim | claim |
+| present | different | `403 TENANT_MISMATCH` | `403 TENANT_MISMATCH` |
+| absent (lax mode) | present | **`403 TENANT_HEADER_UNTRUSTED`** | header |
+| absent (lax mode) | absent | `default` | `default` |
+| absent (strict mode) | any | `403 TENANT_REQUIRED` | `403 TENANT_REQUIRED` |
+
+An explicit `default` header is `403 TENANT_RESERVED` in every row. Local and federated
+(`TRUSTED_ISSUERS`) tokens are treated identically — in particular a registry-issued
+token with no `tenant` claim can no longer choose its tenant. The check runs after the
+reserved / mismatch / strict checks and before the federated `read_only` gate.
+`TENANT_HEADER_TRUST` does not apply to the `@Public()` HMAC routes (`/ingest/acdp`,
+`/runs/started|complete`) — see `INGEST_STRICT_TENANT` below. Bare API keys already ignore the header (they resolve to `default`); API-key behaviour is
+unchanged. `any_peer` logs a startup warning on a non-loopback `HOST`.
+**Rollout:** a lax deployment that partitions by JWT + header must set
+`TENANT_HEADER_TRUST=any_peer` (or, better, mint tenant-bound tokens / use
+`AUTH_REQUIRE_TENANT=true`). **Rollback hazard:** builds older than this knob ignore it and
+behave as `any_peer`.
 
 ### Strict mode — `AUTH_REQUIRE_TENANT=true`
 
@@ -107,7 +136,9 @@ data-leak vector. Either enable strict mode or remove the bindings.
 The ingest path has its own tenant controls because events arrive from registries,
 not authenticated principals:
 
-- `INGEST_STRICT_TENANT=true` — an unenrolled authority may not assert a
+- `INGEST_STRICT_TENANT=true` (recommended for any multi-tenant deployment; the registry itself
+  stamps `X-Tenant-Id` on tenant-scoped webhooks, and the registry now treats an undeclared
+  header as hostile) — an unenrolled authority may not assert a
   non-`default` tenant via `X-Tenant-Id`; only a server-side registry enrollment
   can bind events to a non-`default` tenant.
 - A registry enrollment (`POST /registries/enroll`) carries a `tenantId` that

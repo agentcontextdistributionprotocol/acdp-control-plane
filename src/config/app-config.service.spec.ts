@@ -777,4 +777,54 @@ describe('AppConfigService', () => {
       expect(() => cfg.onModuleInit()).not.toThrow();
     });
   });
+
+  describe('TENANT_HEADER_TRUST', () => {
+    beforeEach(() => {
+      process.env.NODE_ENV = 'development';
+      process.env.AUTH_API_KEYS = 'k';
+      process.env.WEBHOOK_SECRET = 'shh';
+      delete process.env.HOST;
+    });
+
+    it('defaults to none', () => {
+      delete process.env.TENANT_HEADER_TRUST;
+      expect(freshConfig().tenantHeaderTrust).toBe('none');
+    });
+
+    it.each([['none', 'none'], ['any_peer', 'any_peer'], [' ANY_PEER ', 'any_peer']])(
+      'accepts %p',
+      (raw, want) => {
+        process.env.TENANT_HEADER_TRUST = raw;
+        const cfg = freshConfig();
+        expect(() => cfg.onModuleInit()).not.toThrow();
+        expect(cfg.tenantHeaderTrust).toBe(want);
+      },
+    );
+
+    it.each(['trusted_proxies', 'true', 'any', ''])('rejects %p at startup', (raw) => {
+      process.env.TENANT_HEADER_TRUST = raw;
+      // '' is treated as the literal empty string, not unset: ?? keeps it.
+      expect(() => freshConfig().onModuleInit()).toThrow(/TENANT_HEADER_TRUST/);
+    });
+
+    it('warns for any_peer on a non-loopback HOST, not on loopback', () => {
+      process.env.TENANT_HEADER_TRUST = 'any_peer';
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      try {
+        process.env.HOST = '0.0.0.0';
+        freshConfig().onModuleInit();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ msg: expect.stringContaining('TENANT_HEADER_TRUST=any_peer') }),
+        );
+        warnSpy.mockClear();
+        process.env.HOST = '127.0.0.1';
+        freshConfig().onModuleInit();
+        expect(warnSpy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ msg: expect.stringContaining('TENANT_HEADER_TRUST=any_peer') }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
 });

@@ -75,6 +75,7 @@ See [AUTH.md](./AUTH.md).
 | `AUTH_API_KEYS` | CSV | `''` | Bearer API keys. Empty = auth bypassed (dev only). |
 | `AUTH_ADMIN_API_KEYS` | CSV | `''` | Subset allowed admin ops (revoke any jti, reload pinned keys, read revocation feed, enroll registry, routing stats). |
 | `AUTH_REQUIRE_TENANT` | bool | `false` | Strict-tenant default-deny. See [TENANCY.md](./TENANCY.md). |
+| `TENANT_HEADER_TRUST` | enum | `none` | `none` \| `any_peer`. Who may assert a tenant via `X-Tenant-Id` on a JWT with no `tenant` claim (registry `tenant_header_trust` parity). `none` → `403 TENANT_HEADER_UNTRUSTED`; `any_peer` honours it (warns at boot on a non-loopback `HOST`). Anything else fails startup. Older builds ignore it (behave as `any_peer`). |
 | `AUTH_PERSISTENCE` | `memory`\|`postgres` | `memory` | Backend for challenges/revocations/ledger. `postgres` required for multi-instance. |
 | `AUTH_SWEEP_INTERVAL_SECONDS` | number | `300` | Expired-state GC interval; `≤0` disables. |
 | `TOKEN_ISSUANCE_ENABLED` | bool | `false` | Enable `/auth/challenge` + `/auth/token` + JWT verify path. |

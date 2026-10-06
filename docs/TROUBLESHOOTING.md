@@ -105,6 +105,11 @@ Read the body's `errorCode` — it names the cause. Likely a tenancy rejection
 (see [TENANCY.md](./TENANCY.md)):
 - `TENANT_MISMATCH` — `X-Tenant-Id` disagrees with the JWT `tenant` claim or the
   API key's bound tenant.
+- `TENANT_HEADER_UNTRUSTED` — a JWT with no `tenant` claim sent `X-Tenant-Id` while
+  `TENANT_HEADER_TRUST=none` (default). Mint a tenant-bound token (a
+  `tenant` claim), stop sending the header, or (behind an authenticating gateway only) set
+  `TENANT_HEADER_TRUST=any_peer`. (`AUTH_REQUIRE_TENANT` is not a fix: it makes the same
+  request `TENANT_REQUIRED`.) Upgrading from a build that trusted the header? This is it.
 - `TENANT_RESERVED` — an explicit assertion of the reserved `default` tenant
   (header or claim).
 - `TENANT_REQUIRED` — strict mode (`AUTH_REQUIRE_TENANT=true`) and the request

@@ -44,7 +44,10 @@ request it:
 - Constant-time membership test against `AUTH_API_KEYS`.
 - `req.actorIsAdmin` = key ∈ `AUTH_ADMIN_API_KEYS` (constant-time).
 - Tenant: a key bound in `TENANT_API_KEYS` resolves to its tenant; a bare key →
-  `default`. A mismatching `X-Tenant-Id` is rejected (`403 TENANT_MISMATCH`).
+  `default`. A mismatching `X-Tenant-Id` is rejected (`403 TENANT_MISMATCH`). For a JWT, the header is
+  honoured only with `TENANT_HEADER_TRUST=any_peer`; by default a claim-less token sending it is
+  `403 TENANT_HEADER_UNTRUSTED` (this also stops a federated registry token from choosing a
+  tenant).
 - When `AUTH_API_KEYS` is empty and not in production, auth is bypassed (dev
   convenience); with `AUTH_REQUIRE_TENANT=true` an unresolvable tenant is `403 TENANT_REQUIRED`.
 
