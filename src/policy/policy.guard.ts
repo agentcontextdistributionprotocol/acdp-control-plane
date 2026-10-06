@@ -27,6 +27,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { AuthenticatedActorFields } from '../auth/actor';
 import { ErrorCode } from '../errors/error-codes';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { POLICY_ACTION_KEY } from './check-policy.decorator';
@@ -65,7 +66,14 @@ export class PolicyGuard implements CanActivate {
       return true;
     }
 
-    const req = context.switchToHttp().getRequest();
+    // The principal fields AuthGuard pinned (typed in auth/actor.ts) plus the
+    // route inputs the resource extractor reads.
+    const req: AuthenticatedActorFields & {
+      tenantId?: unknown;
+      params?: Record<string, unknown>;
+    } = context
+      .switchToHttp()
+      .getRequest();
     // subjectDid prefers the JWT-bound DID (actorDid) over the legacy
     // actorId — the latter is just an api-key prefix and can't match
     // any DID-keyed policy rule (audience checks, OPA `subject_did`).
