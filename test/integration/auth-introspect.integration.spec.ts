@@ -157,6 +157,7 @@ describe('Token introspection (integration)', () => {
       body: { token: 't'.repeat(8193) },
     });
     expect(res.status).toBe(400);
+    expect((res.body as { errorCode: string }).errorCode).toBe('INVALID_PAYLOAD');
   });
 
   it('rejects unauthenticated introspection — the endpoint must not be a public validity oracle', async () => {

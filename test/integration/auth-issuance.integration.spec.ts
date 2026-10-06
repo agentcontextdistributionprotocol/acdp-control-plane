@@ -137,7 +137,7 @@ describe('Auth issuance (integration)', () => {
       },
     });
     expect(res.status).toBe(400);
-    expect(JSON.stringify(res.body)).toContain('INVALID_PAYLOAD');
+    expect((res.body as { errorCode: string }).errorCode).toBe('INVALID_PAYLOAD');
   });
 
   it('does not burn the nonce when validation rejects an oversized signature (#225)', async () => {
@@ -156,6 +156,7 @@ describe('Auth issuance (integration)', () => {
       },
     });
     expect(bad.status).toBe(400);
+    expect((bad.body as { errorCode: string }).errorCode).toBe('INVALID_PAYLOAD');
     // The same nonce is still redeemable with a valid body.
     const ok = await pub.requestRaw('POST', '/auth/token', {
       body: {

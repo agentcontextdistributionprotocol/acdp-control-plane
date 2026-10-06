@@ -738,13 +738,13 @@ counted per `/64` network, not per address — `THROTTLE_IPV6_SUBNET_PREFIX`).
 
 ### `POST /auth/introspect` — RFC 7662 introspection
 
-Body: `{ "token": "<jwt>" }`. Active tokens (local **or** trusted-issuer) return
+Body: `{ "token": "<jwt>" }` (`token` ≤ 8192 chars, else `400 INVALID_PAYLOAD`). Active tokens (local **or** trusted-issuer) return
 canonical claims; anything that fails verification collapses to `{ "active": false }`
 (no oracle).
 
 ### `POST /auth/token/revoke` — RFC 7009 revocation
 
-Body: `{ "token": "<jwt>", "reason"?: "user_logout" | "admin_revoke" | "key_rotation" | "security_incident" | "unspecified" }`.
+Body (`token` ≤ 8192 chars, else `400 INVALID_PAYLOAD`): `{ "token": "<jwt>", "reason"?: "user_logout" | "admin_revoke" | "key_rotation" | "security_incident" | "unspecified" }`.
 Allowed for an **admin** key or the **token's own subject** (self-revoke); else
 `403 FORBIDDEN`. Always returns `200 { "revoked": <bool> }` (no oracle).
 

@@ -63,6 +63,7 @@ export class RevokeRequestDto {
   @ApiProperty({
     description: 'The JWT to revoke. Pass the raw token value, not the Bearer header.',
     example: 'eyJhbGciOi...',
+    maxLength: BEARER_TOKEN_MAX_LENGTH,
   })
   @IsString()
   @MinLength(1)

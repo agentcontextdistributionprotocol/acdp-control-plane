@@ -3855,3 +3855,6 @@ From `plans/followups-225.md` (issue #225). Reuse this map; don't re-scan.
 - ErrorCode pin: `error-codes.spec.ts:19` (SHIPPED) + `:73` (docs/API.md table `:55-75`).
 - Registry parity: BearerClaims has no scope claim (`acdp-registry-types/src/auth.rs:59-81`); registry stamps raw key_id (`acdp-registry-auth/src/service.rs:327`).
 - Side finding: revoke self-revoke trusts unverified decode (`revoke.controller.ts:131-160`) → jti deny-list of others' tokens.
+
+## #225 Phase 1 — auth DTO MaxLength (2026-10-06)
+- PASS after 1 GAPS round (Opus, simple). Files: src/auth/dto/auth.dto.ts(+spec), revoke/introspect controllers, integration specs, docs/API.md, docs/AUTH.md. Unit 1550, integration 267.

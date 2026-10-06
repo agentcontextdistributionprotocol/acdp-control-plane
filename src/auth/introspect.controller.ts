@@ -46,6 +46,7 @@ export class IntrospectRequestDto {
     description:
       'The bearer JWT to introspect. Pass the raw token value (not the `Authorization: Bearer` header).',
     example: 'eyJhbGciOi...',
+    maxLength: BEARER_TOKEN_MAX_LENGTH,
   })
   @IsString()
   @MinLength(1)
