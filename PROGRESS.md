@@ -3858,3 +3858,6 @@ From `plans/followups-225.md` (issue #225). Reuse this map; don't re-scan.
 
 ## #225 Phase 1 — auth DTO MaxLength (2026-10-06)
 - PASS after 1 GAPS round (Opus, simple). Files: src/auth/dto/auth.dto.ts(+spec), revoke/introspect controllers, integration specs, docs/API.md, docs/AUTH.md. Unit 1550, integration 267.
+||||||| parent of 71da4ce (docs+comments: close #225 phase 2 gaps)
+## #225 Phase 2 — one scope vocabulary (2026-10-06)
+- PASS (Opus, solo, 1 round + 4 minor gaps closed). src/auth/scopes.ts, auth.guard, cross-issuer-validator, docs. Unit 1549, integration 264.

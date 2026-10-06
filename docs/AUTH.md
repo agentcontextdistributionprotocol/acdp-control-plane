@@ -215,6 +215,9 @@ validity. Reload at runtime (no restart) via `POST /admin/pinned-keys/reload`
 # EdDSA peer:  <iss>|EdDSA|<jwks-url>|<audience>[|scope]
 ```
 
+- `scope` (optional) is a space-separated list; the token must carry **all** of them in
+  any of its `scope` / `scopes` / `scp` claims. Don't set it for ACDP registry peers —
+  the registry mints no scope claim, so every token would be rejected.
 - `audience` is **required** per entry — the token's `aud` must match the peer's
   binding (a replay defense; a token minted for peer A cannot be replayed at B).
 - EdDSA peers' keys are fetched from `<jwks-url>` by a minimal hardened JWKS

@@ -1725,5 +1725,5 @@
 - **Assumed:** a token's scopes are the union of the `scope`, `scopes` and `scp` claims (string = space-delimited, array = members); the guard (policy input) and the trusted-issuer `requiredScope` gate share `readScopes` (src/auth/scopes.ts).
 - **Chose:** union (order-preserving, deduped) rather than precedence. The old guard preferred `scopes` over `scope` and ignored `scp`; the old federation gate read only `scp`.
 - **Alternatives:** keep two vocabularies and document; precedence instead of union (silently drops scopes); only `scp` for federation.
-- **Blast radius if wrong:** policy `scopes` can now include scopes from an `scp` claim that were previously ignored by the guard (a token from a trusted issuer is signed, so this is the issuer's own assertion); trusted peers using `scope`/`scopes` now satisfy `requiredScope`. Revert = one commit.
+- **Blast radius if wrong:** policy `scopes` can now include scopes from an `scp` claim that were previously ignored by the guard (a token from a trusted issuer is signed, so this is the issuer's own assertion); trusted peers using `scope`/`scopes` now satisfy `requiredScope`. A token carrying both `scopes` and `scope` now yields the union (the old guard used only `scopes`). Revert = one commit.
 - **Status:** UNCONFIRMED

@@ -6,8 +6,8 @@
  *   1. Pull `action` from handler-level metadata. No tag → skip
  *      (handler is unguarded; controller-level auth gates still apply).
  *   2. Build a `PolicyRequest` from the request's `actorId`,
- *      `tenantId`, scopes (currently empty until JWT-scope plumbing
- *      lands), and the resource id extracted from path params /
+ *      `tenantId`, scopes (the union of the JWT's `scope`/`scopes`/`scp`
+ *      claims, pinned by AuthGuard; empty for API keys), and the resource id extracted from path params /
  *      body / query (per-handler shape).
  *   3. Decide. `allow` → continue. `deny` → 403 with the structured
  *      reason. `indeterminate` → deny + warn (coverage-gap signal).
@@ -80,7 +80,7 @@ export class PolicyGuard implements CanActivate {
       action,
       // V1: best-effort resource extraction from params (runId/ctxId/etc.).
       resourceId: extractResourceId(req),
-      // Scopes pinned by the AuthGuard from the JWT (`scope`/`scopes` claim).
+      // Scopes pinned by the AuthGuard from the JWT (`scope`/`scopes`/`scp` union).
       scopes: Array.isArray(req.actorScopes) ? req.actorScopes : [],
       tenantId: typeof req.tenantId === 'string' ? req.tenantId : DEFAULT_TENANT_ID,
     };
