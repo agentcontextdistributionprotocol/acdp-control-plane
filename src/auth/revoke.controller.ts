@@ -129,12 +129,15 @@ export class RevokeController {
   ): Promise<RevokeResponseDto> {
     // Try the full verify path first so we can record the canonical
     // claims (iss/exp from a valid token). If verification fails (bad
-    // sig, expired, wrong issuer, already revoked), fall back to a
-    // best-effort decode so we still capture the jti for audit. RFC
-    // 7009 says revocation MUST succeed even for unrecognized tokens.
+    // sig, expired, wrong issuer, already revoked, a peer's token), fall
+    // back to a best-effort decode so an ADMIN can still deny-list the jti.
+    // Those decoded claims are UNVERIFIED — anyone can forge them — so they
+    // must never authorize a non-admin (#229): see the gate below.
     let claims = null as Awaited<ReturnType<TokenIssuer['verifyJwt']>> | null;
+    let verified = false;
     try {
       claims = await this.issuer.verifyJwt(body.token);
+      verified = true;
     } catch {
       claims = null;
     }
@@ -153,9 +156,23 @@ export class RevokeController {
       claims = decoded;
     }
 
-    // Authorization gate: admin OR self-revoke (JWT-authenticated caller
-    // whose DID matches claims.sub). Anything else is 403.
     const isAdmin = req.actorIsAdmin === true;
+    // Unverified claims + non-admin: a forged token can carry any `sub`
+    // (including the caller's own) with a VICTIM's jti, so the self-revoke
+    // check below would pass and deny-list the victim's token. Deny-list
+    // nothing; answer with the RFC 7009 §2.2 no-op success so the response
+    // is no oracle for whether a jti exists or who owns it.
+    if (!verified && !isAdmin) {
+      this.logger.warn({
+        msg: 'revoke ignored: token did not verify and caller is not admin',
+        actorId: req.actorId ?? 'unknown',
+        actorType: req.actorType ?? '?',
+      });
+      return { revoked: false };
+    }
+
+    // Authorization gate (verified claims, or admin): admin OR self-revoke
+    // (JWT-authenticated caller whose DID matches claims.sub). Else 403.
     const isSelfRevoke =
       req.actorType === 'jwt' &&
       typeof req.actorDid === 'string' &&

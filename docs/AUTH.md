@@ -263,8 +263,10 @@ bearer `<admin_token>`), with:
   only when every entry in a batch applied, so partial failures replay.
 - **Idempotent apply** into the local revocation store.
 
-Local revocation is driven by `POST /auth/token/revoke` (admin or self-revoke,
-RFC 7009 — always `200`, no oracle).
+Local revocation is driven by `POST /auth/token/revoke` (admin, or self-revoke of a
+token that *verifies* under the CP's key; RFC 7009 — always `200`, no oracle). A token
+that does not verify (including a federated peer's) is deny-listed only for an admin;
+for anyone else it is a silent no-op, because its claims are forgeable (#229).
 
 ## Persistence & sweeping
 
