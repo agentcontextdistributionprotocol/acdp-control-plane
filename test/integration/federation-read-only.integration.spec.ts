@@ -55,6 +55,7 @@ describe('Per-issuer read_only (integration)', () => {
     const res = await ro.requestRaw('POST', '/webhooks', { body: hook });
     expect(res.status).toBe(403);
     expect((res.body as any).error.code).toBe('ISSUER_READ_ONLY');
+    expect((res.body as any).error.message).toEqual(expect.any(String));
     const listed = (await api.listWebhooks()) as unknown[];
     expect(listed).toHaveLength(0);
   });
@@ -62,6 +63,11 @@ describe('Per-issuer read_only (integration)', () => {
   it('D3 pin: the unflagged peer can still POST /webhooks (201)', async () => {
     const res = await rw.requestRaw('POST', '/webhooks', { body: hook });
     expect(res.status).toBe(201);
+  });
+
+  it('unflagged peer reaches a @CheckPolicy route (GET /runs/:id → policy ran, not read_only-denied)', async () => {
+    const res = await rw.requestRaw('GET', '/runs/does-not-exist');
+    expect(res.status).toBe(404);
   });
 
   it('local API key is unaffected', async () => {
@@ -101,5 +107,14 @@ describe('Per-issuer read_only (integration)', () => {
     const res = await c.requestRaw('POST', '/webhooks', { body: hook, headers: { 'x-tenant-id': 'tenant-b' } });
     expect(res.status).toBe(403);
     expect((res.body as any).error.code).toBe('TENANT_MISMATCH');
+  });
+
+  it('boot fails when a TRUSTED_ISSUERS iss equals JWT_AUTHORITY (would be shadowed)', async () => {
+    await expect(
+      createTestApp({
+        trustedIssuers: `cp.test|HS256|${RO_SECRET}|cp.test||read_only`,
+        tokenIssuance: { jwtSecret: LOCAL_SECRET, authority: 'cp.test' },
+      }),
+    ).rejects.toThrow(/equals JWT_AUTHORITY/);
   });
 });

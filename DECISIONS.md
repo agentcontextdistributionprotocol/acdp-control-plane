@@ -780,3 +780,12 @@ untouched and await the user.
 - **B. Env grammar:** `TRUSTED_ISSUERS` entry `iss|alg|material|audience[|scope[|flags]]`; `flags` is a closed-vocabulary, whitespace-split token set `{read_only}` (case-sensitive; unknown/duplicate tokens fail boot). Tightenings: reject >6 fields (extras were silently dropped), reject `read_only` in the scope slot (positional footgun — hint `|aud||read_only`), never echo the entry in parse errors (HS256 secret leak at trusted-issuers.ts:69/:113). Rollback hazard (older build silently ignores the field) is documented, not a design input. Rejected: key=value options, separate TRUSTED_ISSUERS_READ_ONLY var.
 - **POST /auth/introspect under read_only:** decided by Opus — EXEMPT (RFC 7662 mandates POST; it is read-shaped); `POST /auth/token/revoke` stays denied (a write). Covered by tests.
 
+
+## 2026-10-06 — #225 close-out (Phases 1–5) — decided by Opus
+- **Provenance (C):** `AuthGuard` tags `actorIssuer` / `actorFederated` from the validator's returned trust entry (`verifyWithProvenance`), never from claims; `PolicyRequest.issuer/federated` and the OPA input carry them; the policy cache key includes both. No allow/deny change; the static decider ignores them. No active Rego rule shipped (commented example only).
+- **Collision (D):** a `TRUSTED_ISSUERS` entry whose `iss` equals `JWT_AUTHORITY` now fails boot (the validator checks local first, so the entry — including `read_only` — would be silently shadowed).
+- **keyUrl stamping (E):** NOT done — no consumer; revisit only with a concrete need.
+- **Narrowed claim:** "OPA can express the same rule" for federated writes holds only for `@CheckPolicy` routes (7 handlers); `POST /webhooks` is not one, so the per-issuer `read_only` flag is the control for CP-local writes. docs/POLICY.md and docs/AUTH.md say so.
+- **Parser hardening (Phase 4 verifier):** no TRUSTED_ISSUERS parse error echoes any field value other than `iss` (secret can sit in any slot of a mis-written entry).
+- **Open (filed separately, not part of #225):** `POST /auth/token/revoke` authorizes on an unverified-decode `sub`; recommend its own security issue.
+

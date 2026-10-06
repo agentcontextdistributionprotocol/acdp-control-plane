@@ -100,7 +100,7 @@ function parseFlags(
   for (const token of (flagsRaw ?? '').split(/\s+/).filter(Boolean)) {
     if (!known.includes(token)) {
       throw new TrustedIssuerError(
-        `TRUSTED_ISSUERS entry for iss='${iss}': unknown flag '${token}' ` +
+        `TRUSTED_ISSUERS entry for iss='${iss}': unknown flag ` +
           `(allowed: ${TRUSTED_ISSUER_FLAGS.join(', ')}; case-sensitive)`,
       );
     }
@@ -118,7 +118,9 @@ function parseFlags(
 export function parseTrustedIssuers(raw: string): TrustedIssuer[] {
   const out: TrustedIssuer[] = [];
   for (const entry of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
-    // Errors never echo `entry`: an HS256 entry carries the shared secret.
+    // Errors never echo `entry` or any field value other than `iss`: an HS256
+    // entry carries the shared secret, and a mis-ordered entry can put it in
+    // any slot (a `|` inside the secret shifts a fragment into the flags slot).
     const parts = entry.split('|');
     if (parts.length < 4) {
       throw new TrustedIssuerError(
@@ -163,7 +165,7 @@ export function parseTrustedIssuers(raw: string): TrustedIssuer[] {
     } else if (alg === 'EdDSA') {
       if (!/^https?:\/\//.test(material)) {
         throw new TrustedIssuerError(
-          `TRUSTED_ISSUERS entry for iss='${iss}': EdDSA material must be a JWKS URL (got '${material}')`,
+          `TRUSTED_ISSUERS entry for iss='${iss}': EdDSA material must be an http(s) JWKS URL`,
         );
       }
       out.push({
@@ -176,7 +178,7 @@ export function parseTrustedIssuers(raw: string): TrustedIssuer[] {
       });
     } else {
       throw new TrustedIssuerError(
-        `TRUSTED_ISSUERS entry for iss='${iss}': unsupported alg '${alg}' (want HS256 or EdDSA)`,
+        `TRUSTED_ISSUERS entry for iss='${iss}': unsupported alg (want HS256 or EdDSA)`,
       );
     }
   }

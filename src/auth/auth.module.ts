@@ -32,6 +32,7 @@ import { SigningMaterialService } from './signing-material.service';
 import { TokenIssuer } from './token-issuer.service';
 import {
   parseTrustedIssuers,
+  TrustedIssuerError,
   TrustedIssuerRegistry,
 } from './trusted-issuers';
 
@@ -100,8 +101,20 @@ export class AuthModule {
     // through cleanly to the "iss matches self" path.
     const trustedRegistryProvider = {
       provide: TrustedIssuerRegistry,
-      useFactory: (config: AppConfigService) =>
-        new TrustedIssuerRegistry(parseTrustedIssuers(config.trustedIssuersRaw)),
+      useFactory: (config: AppConfigService) => {
+        const issuers = parseTrustedIssuers(config.trustedIssuersRaw);
+        // The validator checks the local issuer first, so a trusted entry with
+        // the same `iss` would be silently shadowed (its audience / read_only
+        // settings ignored). Fail boot rather than mislead the operator.
+        const clash = issuers.find((i) => i.iss === config.jwtAuthority);
+        if (clash) {
+          throw new TrustedIssuerError(
+            `TRUSTED_ISSUERS entry iss='${clash.iss}' equals JWT_AUTHORITY; ` +
+              `local tokens always win, so the entry would be ignored`,
+          );
+        }
+        return new TrustedIssuerRegistry(issuers);
+      },
       inject: [AppConfigService],
     };
 

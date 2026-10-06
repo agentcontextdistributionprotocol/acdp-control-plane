@@ -1727,3 +1727,11 @@
 - **Alternatives:** keep two vocabularies and document; precedence instead of union (silently drops scopes); only `scp` for federation.
 - **Blast radius if wrong:** policy `scopes` can now include scopes from an `scp` claim that were previously ignored by the guard (a token from a trusted issuer is signed, so this is the issuer's own assertion); trusted peers using `scope`/`scopes` now satisfy `requiredScope`. A token carrying both `scopes` and `scope` now yields the union (the old guard used only `scopes`). Revert = one commit.
 - **Status:** UNCONFIRMED
+
+## read_only is method-based (#225 Phase 4)
+- **Plan:** plans/followups-225.md
+- **Assumed:** no GET route in this service changes state, so GET/HEAD/OPTIONS are safe for a `read_only` issuer; `POST /auth/introspect` is read-shaped and exempt.
+- **Chose:** a method gate in `AuthGuard` (covers future write routes automatically) over a per-route allowlist.
+- **Alternatives:** route allowlist (misses new routes unless updated; safer default but higher maintenance); per-route decorator.
+- **Blast radius if wrong:** a future state-changing GET (or a new POST that is really a read) would bypass / be wrongly blocked; verifier audited every current `@Get` and found none mutating.
+- **Status:** UNCONFIRMED

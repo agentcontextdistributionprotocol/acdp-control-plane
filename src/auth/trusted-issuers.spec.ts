@@ -142,6 +142,9 @@ describe('parseTrustedIssuers', () => {
         `reg-a|HS256|${secret}|aud|read_only`, // flag in scope slot
         `reg-a|HS256|${secret}|aud||read_only|x`, // too many
         `|HS256|${secret}|aud`, // empty iss
+        `reg-a|EdDSA|${secret}|aud`, // HS256 entry with alg flipped
+        `reg-a|${secret}|x|aud`, // mis-ordered: secret in the alg slot
+        `reg-a|HS256|part|${secret}||x`, // a '|' inside the secret shifts it into flags
       ];
       for (const raw of bad) {
         let msg = '';
@@ -158,7 +161,7 @@ describe('parseTrustedIssuers', () => {
 
   it('rejects EdDSA entries whose material is not a URL', () => {
     expect(() => parseTrustedIssuers('reg-b|EdDSA|not-a-url|aud')).toThrow(
-      /must be a JWKS URL/,
+      /must be an http\(s\) JWKS URL/,
     );
   });
 });
