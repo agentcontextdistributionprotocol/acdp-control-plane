@@ -126,7 +126,7 @@ export class CrossIssuerValidator {
     // recorded here directly on revoke; a trusted peer's revocations are
     // imported by `RevocationPollerService` (which polls the peer's
     // `/auth/revocations` feed with issuer-confinement). So a single
-    // `isRevoked(jti)` check now honors both local and propagated revocations.
+    // `isRevoked(iss, jti)` check now honors both local and propagated revocations.
     if (this.revocations && claims.jti) {
       const revoked = await this.revocations.isRevoked(claims.iss, claims.jti);
       if (revoked) {

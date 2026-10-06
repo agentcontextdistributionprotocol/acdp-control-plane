@@ -14,6 +14,23 @@ describe('Migrations (integration)', () => {
     await expect(runMigrations(TEST_DB_URL)).resolves.not.toThrow();
   });
 
+  it('revoked_tokens is keyed by (iss, jti), so one jti may exist under two issuers (#232)', async () => {
+    await runMigrations(TEST_DB_URL);
+    const pool = new Pool({ connectionString: TEST_DB_URL });
+    try {
+      const { rows } = await pool.query<{ cols: string[] }>(
+        `SELECT array_agg(a.attname::text ORDER BY k.ord) AS cols
+           FROM pg_index i
+           JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
+           JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+          WHERE i.indrelid = 'revoked_tokens'::regclass AND i.indisprimary`,
+      );
+      expect(rows[0]!.cols).toEqual(['iss', 'jti']);
+    } finally {
+      await pool.end();
+    }
+  });
+
   it('produces the core tables the pipeline writes to', async () => {
     await runMigrations(TEST_DB_URL);
     const pool = new Pool({ connectionString: TEST_DB_URL });

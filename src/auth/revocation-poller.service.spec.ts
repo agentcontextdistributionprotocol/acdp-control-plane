@@ -230,4 +230,10 @@ describe('RevocationPollerService lifecycle', () => {
     poller.onModuleDestroy();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it('refuses to boot when a feed issuer equals JWT_AUTHORITY (#232)', async () => {
+    const cfg = { revocationFeedsRaw: `local.cp|${FEED_URL}|ADMIN`, isDevelopment: false, jwtAuthority: 'local.cp' } as unknown as AppConfigService;
+    const poller = new RevocationPollerService(cfg, new InMemoryRevocationRepository());
+    await expect(poller.onModuleInit()).rejects.toThrow(/equals JWT_AUTHORITY/);
+  });
 });

@@ -92,6 +92,17 @@ export class RevocationPollerService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit(): Promise<void> {
     this.feeds = parseRevocationFeeds(this.config.revocationFeedsRaw);
+    // A feed's entries are stored under the feed's issuer. One configured with
+    // THIS control plane's own authority would let a peer write rows under the
+    // local `iss` and so revoke local tokens (the (iss, jti) key only protects
+    // across DIFFERENT issuers, #232) — refuse to boot, as for TRUSTED_ISSUERS.
+    const clash = this.feeds.find((f) => f.issuer === this.config.jwtAuthority);
+    if (clash) {
+      throw new Error(
+        `REVOCATION_FEEDS issuer='${clash.issuer}' equals JWT_AUTHORITY; a peer feed must not ` +
+          `write revocations under the local issuer`,
+      );
+    }
     if (this.feeds.length === 0) {
       this.logger.log('no REVOCATION_FEEDS configured; cross-issuer poller idle');
       return;
