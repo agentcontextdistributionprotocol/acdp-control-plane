@@ -97,6 +97,7 @@ describe('RevokeController', () => {
       actorType: 'jwt',
       actorIsAdmin: false,
       actorDid: sub,
+      actorIssuer: ISS,
     } as any;
   }
 
@@ -158,6 +159,24 @@ describe('RevokeController', () => {
         controller.revoke({ token: tok }, selfReq('did:web:mallory')),
       ).rejects.toMatchObject({ errorCode: ErrorCode.FORBIDDEN, status: 403 });
     });
+  });
+
+  it('a federated caller with sub = the target subject cannot self-revoke a local token (issuer must match)', async () => {
+    const tok = tokenFor(freshClaims('jti-local'));
+    await expect(
+      controller.revoke(
+        { token: tok },
+        { ...selfReq('did:web:alice'), actorIssuer: 'some-peer', actorFederated: true },
+      ),
+    ).rejects.toMatchObject({ errorCode: ErrorCode.FORBIDDEN, status: 403 });
+    expect(await revocations.isRevoked('jti-local')).toBe(false);
+  });
+
+  it('self-revoking an already-revoked local token is a harmless no-op', async () => {
+    const tok = tokenFor(freshClaims('jti-twice'));
+    await controller.revoke({ token: tok }, selfReq('did:web:alice'));
+    const res = await controller.revoke({ token: tok }, selfReq('did:web:alice'));
+    expect(res.revoked).toBe(false);
   });
 
   it('returns revoked=false for an un-decodable garbage token', async () => {

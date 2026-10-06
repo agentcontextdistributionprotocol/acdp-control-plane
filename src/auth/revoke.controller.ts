@@ -11,7 +11,12 @@
  *           `AUTH_ADMIN_API_KEYS`), or
  *       (b) the caller authenticated via JWT AND the token's `sub`
  *           claim matches the caller's DID (`request.actorDid`).
- *     Everyone else gets 403. Mirrors the registry's
+ *     (b) additionally requires the caller's token to come from the SAME issuer
+ *     as the token being revoked, and the target token to have VERIFIED under
+ *     our key. A verified token of another subject is 403; a token that does
+ *     not verify (bad sig / expired / a federated peer's) is deny-listed for an
+ *     admin only and is a silent `{revoked:false}` for everyone else (#229).
+ *     Mirrors the registry's
  *     `acdp-registry-auth::service::revoke_token` semantics
  *     (`owner_of(jti) == caller_did`).
  *   - The endpoint returns 200 OK even for tokens that aren't valid
@@ -125,6 +130,7 @@ export class RevokeController {
       actorType?: 'api-key' | 'jwt';
       actorIsAdmin?: boolean;
       actorDid?: string;
+      actorIssuer?: string;
     },
   ): Promise<RevokeResponseDto> {
     // Try the full verify path first so we can record the canonical
@@ -177,7 +183,10 @@ export class RevokeController {
       req.actorType === 'jwt' &&
       typeof req.actorDid === 'string' &&
       req.actorDid.length > 0 &&
-      req.actorDid === claims.sub;
+      req.actorDid === claims.sub &&
+      // Same issuer as the verified (local) target: a federated peer minting
+      // sub=X must not be able to self-revoke the local token for X.
+      req.actorIssuer === claims.iss;
     if (!isAdmin && !isSelfRevoke) {
       this.logger.warn({
         msg: 'revoke 403',
