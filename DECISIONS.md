@@ -791,3 +791,9 @@ untouched and await the user.
 
 - **Scope vocabulary (plan Decision C):** one union of `scope`/`scopes`/`scp` (order-preserving, deduped) via `src/auth/scopes.ts`, used by the guard (policy input) and the trusted-issuer `requiredScope` gate. Decided by Opus; the assumption stays UNCONFIRMED in ASSUMPTIONS.md for the end-of-plan `/reconcile`.
 - **Auth DTO caps (plan Decision D):** `@MaxLength` 2048 on agent_id/key_id/nonce/signature, 64 on algorithm, 8192 on bearer `token` (revoke/introspect); shipped in PR #227.
+
+## 2026-10-06 — /reconcile (#225 assumptions) — reversible tier, decided by Opus
+- **Scope union (scope/scopes/scp):** CONFIRMED. Only trusted issuers can supply scopes (CP-minted tokens carry none); the union gives an issuer no power it lacked (it signs all claims); the default static decider consumes no scopes, only OPA does, and OPA also receives issuer/federated; precedence would silently drop claims.
+- **read_only as a method gate:** CONFIRMED. Audit of all 29 GET/SSE handlers found none mutating; the gate fails closed for new write routes; an allowlist/decorator would be higher-maintenance and fail open on omission. Optional follow-up: a tripwire spec pinning the set of GET handlers (error-codes.spec pattern) — not yet written.
+- **Side finding:** GET /webhooks leaks signing secrets (https://github.com/agentcontextdistributionprotocol/acdp-control-plane/issues/230); revoke unverified-decode (#229).
+- Summary: 2 confirmed, 0 changed, 0 deferred, 2 settled without the user, no code follow-up blocking ship.
