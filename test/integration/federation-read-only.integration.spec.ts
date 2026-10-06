@@ -68,6 +68,7 @@ describe('Per-issuer read_only (integration)', () => {
   it('unflagged peer reaches a @CheckPolicy route (GET /runs/:id → policy ran, not read_only-denied)', async () => {
     const res = await rw.requestRaw('GET', '/runs/does-not-exist');
     expect(res.status).toBe(404);
+    expect((res.body as any).error.code).toBe('RUN_NOT_FOUND');
   });
 
   it('local API key is unaffected', async () => {

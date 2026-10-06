@@ -209,7 +209,7 @@ validity. Reload at runtime (no restart) via `POST /admin/pinned-keys/reload`
 `CrossIssuerValidatorService` accepts JWTs from peers listed in
 `TRUSTED_ISSUERS`. Dispatch is by `iss`:
 
-- `iss == JWT_AUTHORITY` → verified locally.
+- `iss == JWT_AUTHORITY` → verified locally (a `TRUSTED_ISSUERS` entry with the same `iss` fails startup, since it could never apply).
 - `iss ∈ TRUSTED_ISSUERS` → verified with that issuer's material.
 - otherwise → rejected.
 

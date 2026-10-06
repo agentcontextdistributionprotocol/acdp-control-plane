@@ -789,3 +789,5 @@ untouched and await the user.
 - **Parser hardening (Phase 4 verifier):** no TRUSTED_ISSUERS parse error echoes any field value other than `iss` (secret can sit in any slot of a mis-written entry).
 - **Open (filed separately, not part of #225):** `POST /auth/token/revoke` authorizes on an unverified-decode `sub`; recommend its own security issue.
 
+- **Scope vocabulary (plan Decision C):** one union of `scope`/`scopes`/`scp` (order-preserving, deduped) via `src/auth/scopes.ts`, used by the guard (policy input) and the trusted-issuer `requiredScope` gate. Decided by Opus; the assumption stays UNCONFIRMED in ASSUMPTIONS.md for the end-of-plan `/reconcile`.
+- **Auth DTO caps (plan Decision D):** `@MaxLength` 2048 on agent_id/key_id/nonce/signature, 64 on algorithm, 8192 on bearer `token` (revoke/introspect); shipped in PR #227.
