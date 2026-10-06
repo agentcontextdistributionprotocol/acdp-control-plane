@@ -30,7 +30,8 @@ to make that impossible to reach by accident.
 
 1. **Signed / bound tenant** — the JWT `tenant` claim, or the tenant a
    `TENANT_API_KEYS` entry binds the key to. Authoritative.
-2. **`X-Tenant-Id` header** — only honored when there is no signed/bound tenant,
+2. **`X-Tenant-Id` header** — (JWTs only; API keys never take the tenant from it: a bound key
+   with a different header is `TENANT_MISMATCH`, a bare key ignores it) only honored when there is no signed/bound tenant,
    only outside strict mode, **and only when `TENANT_HEADER_TRUST=any_peer`** (see
    below). With the default `none`, a JWT with no `tenant` claim that sends the header
    is rejected (`403 TENANT_HEADER_UNTRUSTED`).
@@ -64,7 +65,8 @@ An explicit `default` header is `403 TENANT_RESERVED` in every row. Local and fe
 (`TRUSTED_ISSUERS`) tokens are treated identically — in particular a registry-issued
 token with no `tenant` claim can no longer choose its tenant. The check runs after the
 reserved / mismatch / strict checks and before the federated `read_only` gate.
-Bare API keys already ignore the header (they resolve to `default`); API-key behaviour is
+`TENANT_HEADER_TRUST` does not apply to the `@Public()` HMAC routes (`/ingest/acdp`,
+`/runs/started|complete`) — see `INGEST_STRICT_TENANT` below. Bare API keys already ignore the header (they resolve to `default`); API-key behaviour is
 unchanged. `any_peer` logs a startup warning on a non-loopback `HOST`.
 **Rollout:** a lax deployment that partitions by JWT + header must set
 `TENANT_HEADER_TRUST=any_peer` (or, better, mint tenant-bound tokens / use

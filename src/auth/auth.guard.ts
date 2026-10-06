@@ -106,7 +106,8 @@ export class AuthGuard implements CanActivate {
       // Tenant binding order of precedence (claim > header):
       //   1. `tenant` claim in the JWT (authoritative — minted by the
       //      issuer, signed, can't be forged by the bearer).
-      //   2. `X-Tenant-Id` header (legacy; trust-on-input).
+      //   2. `X-Tenant-Id` header — ONLY with TENANT_HEADER_TRUST=any_peer
+      //      (default none: a claim-less token sending it is rejected below).
       //   3. DEFAULT_TENANT_ID.
       // If both 1 and 2 are present and disagree, reject — the
       // header is asserting a tenant the issuer didn't actually

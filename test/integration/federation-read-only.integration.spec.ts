@@ -128,4 +128,21 @@ describe('Per-issuer read_only (integration)', () => {
       }),
     ).rejects.toThrow(/equals JWT_AUTHORITY/);
   });
+
+  it('any_peer (opt-in) honours the header for a claim-less token, and boot accepts it', async () => {
+    process.env.TENANT_HEADER_TRUST = 'any_peer';
+    let ctx2: TestAppContext | undefined;
+    try {
+      ctx2 = await createTestApp({
+        trustedIssuers: TRUSTED,
+        tokenIssuance: { jwtSecret: LOCAL_SECRET, authority: 'cp.test' },
+      });
+      const c = new TestClient(ctx2.url, peerToken('peer-rw', RW_SECRET));
+      const res = await c.requestRaw('GET', '/runs', { headers: { 'x-tenant-id': 'tenant-b' } });
+      expect(res.status).toBe(200);
+    } finally {
+      delete process.env.TENANT_HEADER_TRUST;
+      await ctx2?.app.close();
+    }
+  });
 });

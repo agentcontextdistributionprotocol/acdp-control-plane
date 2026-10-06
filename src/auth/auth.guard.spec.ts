@@ -519,6 +519,12 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
       expect(await run({ header: 'tenant-x' })).toMatchObject({ ok: false, code: ErrorCode.TENANT_REQUIRED });
     });
 
+    it('any_peer + strict mode: claim-less token → TENANT_REQUIRED (strict still wins)', async () => {
+      (config as Record<string, unknown>).tenantHeaderTrust = 'any_peer';
+      (config as Record<string, unknown>).requireTenant = true;
+      expect(await run({ header: 'tenant-x' })).toMatchObject({ ok: false, code: ErrorCode.TENANT_REQUIRED });
+    });
+
     it('any_peer: claim-less token + header → header wins', async () => {
       (config as Record<string, unknown>).tenantHeaderTrust = 'any_peer';
       expect(await run({ header: 'tenant-x', federated: true })).toEqual({ ok: true, tenantId: 'tenant-x' });
