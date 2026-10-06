@@ -122,6 +122,55 @@ describe('Auth issuance (integration)', () => {
     expect(ok.status).toBe(200);
   });
 
+  it('rejects an oversized key_id with 400 INVALID_PAYLOAD (#225)', async () => {
+    const ch = await pub.requestJson<ChallengeResp>('POST', '/auth/challenge', {
+      body: { agent_id: DID },
+    });
+    const res = await pub.requestRaw('POST', '/auth/token', {
+      body: {
+        agent_id: DID,
+        key_id: 'k'.repeat(2049),
+        nonce: ch.nonce,
+        expires_at: ch.expires_at,
+        algorithm: 'ed25519',
+        signature: 'AAAA',
+      },
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as { errorCode: string }).errorCode).toBe('INVALID_PAYLOAD');
+  });
+
+  it('does not burn the nonce when validation rejects an oversized signature (#225)', async () => {
+    const ch = await pub.requestJson<ChallengeResp>('POST', '/auth/challenge', {
+      body: { agent_id: DID },
+    });
+    const good = sign(null, Buffer.from(ch.signing_input), privateKey).toString('base64');
+    const bad = await pub.requestRaw('POST', '/auth/token', {
+      body: {
+        agent_id: DID,
+        key_id: `${DID}#key-1`,
+        nonce: ch.nonce,
+        expires_at: ch.expires_at,
+        algorithm: 'ed25519',
+        signature: 'A'.repeat(2049),
+      },
+    });
+    expect(bad.status).toBe(400);
+    expect((bad.body as { errorCode: string }).errorCode).toBe('INVALID_PAYLOAD');
+    // The same nonce is still redeemable with a valid body.
+    const ok = await pub.requestRaw('POST', '/auth/token', {
+      body: {
+        agent_id: DID,
+        key_id: `${DID}#key-1`,
+        nonce: ch.nonce,
+        expires_at: ch.expires_at,
+        algorithm: 'ed25519',
+        signature: good,
+      },
+    });
+    expect(ok.status).toBeLessThan(300);
+  });
+
   it('rejects a token request carrying a forged signature (401)', async () => {
     const ch = await pub.requestJson<ChallengeResp>('POST', '/auth/challenge', {
       body: { agent_id: DID },

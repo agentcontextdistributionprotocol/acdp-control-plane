@@ -152,6 +152,14 @@ describe('Token introspection (integration)', () => {
     expect((ok.body as IntrospectResp).active).toBe(true);
   });
 
+  it('rejects an oversized token body with 400 (validation), not {active:false} (#225)', async () => {
+    const res = await client.requestRaw('POST', '/auth/introspect', {
+      body: { token: 't'.repeat(8193) },
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as { errorCode: string }).errorCode).toBe('INVALID_PAYLOAD');
+  });
+
   it('rejects unauthenticated introspection — the endpoint must not be a public validity oracle', async () => {
     const tok = await mintToken();
     const res = await pub.requestRaw('POST', '/auth/introspect', {

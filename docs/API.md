@@ -730,19 +730,21 @@ Body:
 ```
 Returns `{ "token": "<jwt>", "token_type": "Bearer", "expires_at": <unix> }`.
 `401` on unknown/expired nonce, agent mismatch, missing pinned key, or bad
-signature; `400` on unsupported algorithm. `/auth/challenge` and `/auth/token`
+signature; `400` on unsupported algorithm or an over-long field (`agent_id`, `key_id`,
+`nonce`, `signature` ≤ 2048 chars, `algorithm` ≤ 64; `INVALID_PAYLOAD`, rejected before the
+nonce is consumed). `/auth/challenge` and `/auth/token`
 carry a tighter per-IP throttle than the global limit (an IPv6 caller is
 counted per `/64` network, not per address — `THROTTLE_IPV6_SUBNET_PREFIX`).
 
 ### `POST /auth/introspect` — RFC 7662 introspection
 
-Body: `{ "token": "<jwt>" }`. Active tokens (local **or** trusted-issuer) return
+Body: `{ "token": "<jwt>" }` (`token` ≤ 8192 chars, else `400 INVALID_PAYLOAD`). Active tokens (local **or** trusted-issuer) return
 canonical claims; anything that fails verification collapses to `{ "active": false }`
 (no oracle).
 
 ### `POST /auth/token/revoke` — RFC 7009 revocation
 
-Body: `{ "token": "<jwt>", "reason"?: "user_logout" | "admin_revoke" | "key_rotation" | "security_incident" | "unspecified" }`.
+Body (`token` ≤ 8192 chars, else `400 INVALID_PAYLOAD`): `{ "token": "<jwt>", "reason"?: "user_logout" | "admin_revoke" | "key_rotation" | "security_incident" | "unspecified" }`.
 Allowed for an **admin** key or the **token's own subject** (self-revoke); else
 `403 FORBIDDEN`. Always returns `200 { "revoked": <bool> }` (no oracle).
 

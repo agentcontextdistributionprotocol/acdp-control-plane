@@ -1,14 +1,23 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsInt, IsString, MinLength, Min } from 'class-validator';
+import { IsInt, IsString, MaxLength, MinLength, Min } from 'class-validator';
+
+/** Upper bound for every free-form auth string (DIDs, key ids, nonces, signatures). */
+export const AUTH_FIELD_MAX_LENGTH = 2048;
+/** Upper bound for the `algorithm` identifier (`ed25519`, `ecdsa-p256`). */
+export const AUTH_ALGORITHM_MAX_LENGTH = 64;
+/** Upper bound for a raw bearer JWT submitted to revoke/introspect. */
+export const BEARER_TOKEN_MAX_LENGTH = 8192;
 
 export class ChallengeRequestDto {
   @ApiProperty({
     description:
       'Agent DID requesting the challenge. Typically `did:web:<authority>:agents:<id>`.',
     example: 'did:web:cp.example.com:agents:alice',
+  maxLength: AUTH_FIELD_MAX_LENGTH,
   })
   @IsString()
   @MinLength(1)
+  @MaxLength(AUTH_FIELD_MAX_LENGTH)
   agent_id!: string;
 }
 
@@ -45,25 +54,31 @@ export class TokenRequestDto {
   @ApiProperty({
     description: 'Agent DID — must equal the `agent_id` from the challenge.',
     example: 'did:web:cp.example.com:agents:alice',
+  maxLength: AUTH_FIELD_MAX_LENGTH,
   })
   @IsString()
   @MinLength(1)
+  @MaxLength(AUTH_FIELD_MAX_LENGTH)
   agent_id!: string;
 
   @ApiProperty({
     description: 'Identifier of the verification method (key) used to produce the signature.',
     example: 'key-1',
+  maxLength: AUTH_FIELD_MAX_LENGTH,
   })
   @IsString()
   @MinLength(1)
+  @MaxLength(AUTH_FIELD_MAX_LENGTH)
   key_id!: string;
 
   @ApiProperty({
     description: 'Nonce returned by `POST /auth/challenge`. Single-use.',
     example: 'b7e8d3a1c5f9...',
+  maxLength: AUTH_FIELD_MAX_LENGTH,
   })
   @IsString()
   @MinLength(1)
+  @MaxLength(AUTH_FIELD_MAX_LENGTH)
   nonce!: string;
 
   @ApiProperty({
@@ -81,16 +96,20 @@ export class TokenRequestDto {
       'pinned/resolved key for the agent (downgrade defense).',
     example: 'ed25519',
     enum: ['ed25519', 'ecdsa-p256'],
+    maxLength: AUTH_ALGORITHM_MAX_LENGTH,
   })
   @IsString()
+  @MaxLength(AUTH_ALGORITHM_MAX_LENGTH)
   algorithm!: string;
 
   @ApiProperty({
     description: 'Base64-encoded signature over `signing_input` from the challenge response.',
     example: '7p9KZ...==',
+  maxLength: AUTH_FIELD_MAX_LENGTH,
   })
   @IsString()
   @MinLength(1)
+  @MaxLength(AUTH_FIELD_MAX_LENGTH)
   signature!: string;
 }
 
