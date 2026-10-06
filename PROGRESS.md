@@ -3866,3 +3866,5 @@ From `plans/followups-225.md` (issue #225). Reuse this map; don't re-scan.
 - Phase 4 PASS after 1 GAPS round (minor: parser echo, peer-rw policy test, envelope, iss==authority boot guard — all closed). Phase 5 done: DECISIONS/ASSUMPTIONS reconciled.
 pushed feat/federated-issuer-hardening-225; PR #228 opened: https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/228
 merged #228
+- P1 (#230) PASS solo-verified (Opus), 0 rounds. P2 (#229) implemented: revoke authorizes only on verified claims; forged-token unit+integration tests, mutation-checked.
+- P2 PASS (Opus solo, 0 rounds). Folded notes; filed #232 (deny-list keyed by jti alone). PR-A ready.

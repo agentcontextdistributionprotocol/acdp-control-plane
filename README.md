@@ -79,7 +79,7 @@ Full env reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | Capability | Endpoint(s) | Env var | Notes |
 |---|---|---|---|
 | Token issuance (IdP) | `POST /auth/challenge`, `POST /auth/token` | `TOKEN_ISSUANCE_ENABLED=true`, `JWT_SECRET` (≥32 bytes) or `JWT_PRIVATE_KEY_PEM`, `JWT_SIGNING_ALG=HS256\|EdDSA`, `JWT_AUTHORITY`, `JWT_AUDIENCE`, `JWT_TTL_SECONDS`, `CHALLENGE_TTL_SECONDS` | Challenge → sign with Ed25519 or ECDSA-P256 → HS256 or EdDSA JWT |
-| Token revocation (RFC 7009) | `POST /auth/token/revoke` | — | Admin or self-revoke; RFC §2.2 no-oracle behavior |
+| Token revocation (RFC 7009) | `POST /auth/token/revoke` | — | Admin, or self-revoke of a token that verifies under the CP's key; RFC §2.2 no-oracle behavior |
 | Token introspection (RFC 7662) | `POST /auth/introspect` | — | Dispatches on `iss` so peer-issued tokens are also accepted |
 | Cross-issuer federation | (validation) + `GET /.well-known/jwks.json` | `TRUSTED_ISSUERS=iss\|HS256\|secret\|audience[\|scope[\|flags]],... ` or `iss\|EdDSA\|jwks-url\|audience[\|scope[\|flags]]` | HS256 (shared secret) **and** EdDSA (remote JWKS) peers; `audience` required per entry; optional `read_only` flag (6th field) limits a peer's tokens to GET/HEAD/OPTIONS |
 | Bidirectional revocation | serves `GET /auth/revocations`; consumes peers | `REVOCATION_FEEDS=issuer\|url\|admin_token[\|poll_seconds],...` | Issuer-confined, durable per-issuer cursor |

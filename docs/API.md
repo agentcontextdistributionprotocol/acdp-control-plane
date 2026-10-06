@@ -648,6 +648,8 @@ names mirror `AppConfigService`'s own flag names 1:1
 | `PATCH`| `/webhooks/:id` | Update any of `{ url, events, secret, active }`. |
 | `DELETE` | `/webhooks/:id` | Remove. Returns `204`. |
 
+The `secret` is **write-only**: it is accepted on create/update and used to sign deliveries, but never appears in any response (create, list, update) — #230. Rotate it with `PATCH`.
+
 When the control plane ingests an event, every active webhook whose `events`
 list is empty (= all events) or contains the event type is dispatched. The body
 is HMAC-SHA256 signed with the subscription's `secret` (`X-ACDP-Signature:
@@ -748,8 +750,14 @@ canonical claims; anything that fails verification collapses to `{ "active": fal
 ### `POST /auth/token/revoke` — RFC 7009 revocation
 
 Body (`token` ≤ 8192 chars, else `400 INVALID_PAYLOAD`): `{ "token": "<jwt>", "reason"?: "user_logout" | "admin_revoke" | "key_rotation" | "security_incident" | "unspecified" }`.
-Allowed for an **admin** key or the **token's own subject** (self-revoke); else
-`403 FORBIDDEN`. Always returns `200 { "revoked": <bool> }` (no oracle).
+Allowed for an **admin** key or the **token's own subject** (self-revoke) when the
+token **verifies** under this CP's key; a verified token of another subject is
+`403 FORBIDDEN`. A token that does *not* verify (bad signature, expired, already
+revoked, or issued by a federated peer) can be deny-listed by an **admin** only;
+for anyone else it is silently ignored — `200 { "revoked": false }`, nothing
+deny-listed (#229: its claims are unauthenticated, so they cannot prove ownership).
+A peer's token therefore cannot be self-revoked here; ask the issuing registry
+(or an admin). Always `200 { "revoked": <bool> }` otherwise (no oracle).
 
 ### `GET /auth/revocations` — cross-issuer revocation feed (admin-only)
 

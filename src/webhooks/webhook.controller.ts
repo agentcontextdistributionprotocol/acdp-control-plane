@@ -16,6 +16,20 @@ import { CreateWebhookDto, UpdateWebhookDto } from '../dto/webhook.dto';
 import { tenantOf, TenantedRequest } from '../tenant/request-tenant';
 import { WebhookService } from './webhook.service';
 
+/**
+ * The subscription's HMAC signing secret is write-only: it is supplied at
+ * create/update and used for delivery, but never returned (#230) — any
+ * principal in the tenant, including a read-only federated token, could
+ * otherwise read it and forge CP-signed deliveries.
+ */
+export function toPublicWebhook<T extends { secret?: unknown }>(row: T): Omit<T, 'secret'>;
+export function toPublicWebhook<T extends { secret?: unknown }>(row: T | null): Omit<T, 'secret'> | null;
+export function toPublicWebhook<T extends { secret?: unknown }>(row: T | null): Omit<T, 'secret'> | null {
+  if (row === null) return null;
+  const { secret: _secret, ...rest } = row;
+  return rest;
+}
+
 @ApiTags('webhooks')
 @Controller('webhooks')
 export class WebhookController {
@@ -35,20 +49,22 @@ export class WebhookController {
     body: CreateWebhookDto,
     @Req() req: TenantedRequest,
   ) {
-    return this.webhookService.register(
-      {
-        url: body.url,
-        events: body.events ?? [],
-        secret: body.secret,
-      },
-      tenantOf(req),
+    return toPublicWebhook(
+      await this.webhookService.register(
+        {
+          url: body.url,
+          events: body.events ?? [],
+          secret: body.secret,
+        },
+        tenantOf(req),
+      ),
     );
   }
 
   @Get()
   @ApiOperation({ summary: 'List all outbound webhook subscriptions.' })
   async listWebhooks(@Req() req: TenantedRequest) {
-    return this.webhookService.list(tenantOf(req));
+    return (await this.webhookService.list(tenantOf(req))).map((w) => toPublicWebhook(w));
   }
 
   @Patch(':id')
@@ -66,7 +82,7 @@ export class WebhookController {
     body: UpdateWebhookDto,
     @Req() req: TenantedRequest,
   ) {
-    return this.webhookService.update(id, body, tenantOf(req));
+    return toPublicWebhook(await this.webhookService.update(id, body, tenantOf(req)));
   }
 
   @Delete(':id')

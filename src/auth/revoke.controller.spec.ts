@@ -97,6 +97,7 @@ describe('RevokeController', () => {
       actorType: 'jwt',
       actorIsAdmin: false,
       actorDid: sub,
+      actorIssuer: ISS,
     } as any;
   }
 
@@ -127,6 +128,55 @@ describe('RevokeController', () => {
     const res = await controller.revoke({ token: wrongSecretToken }, req());
     expect(res.revoked).toBe(true); // newly added to deny list
     expect(await revocations.isRevoked('jti-bad-sig')).toBe(true);
+  });
+
+  describe('forged / unverifiable tokens (#229)', () => {
+    /** A token for a victim's jti signed with the wrong key, with `sub` set to the attacker. */
+    const forgedFor = (jti: string, sub: string) =>
+      jwt.sign({ ...freshClaims(jti), sub }, 'b'.repeat(64), { algorithm: 'HS256', noTimestamp: true });
+
+    it('non-admin JWT caller cannot deny-list a victim jti with a forged token carrying sub=self', async () => {
+      const victim = tokenFor(freshClaims('jti-victim'));
+      const res = await controller.revoke(
+        { token: forgedFor('jti-victim', 'did:web:mallory') },
+        selfReq('did:web:mallory'),
+      );
+      expect(res.revoked).toBe(false); // RFC 7009 no-op, no 403/200 oracle
+      expect(await revocations.isRevoked('jti-victim')).toBe(false);
+      // The victim's real token still verifies.
+      await expect(issuer.verifyJwt(victim)).resolves.toMatchObject({ jti: 'jti-victim' });
+    });
+
+    it('non-admin api-key caller gets the same silent no-op', async () => {
+      const res = await controller.revoke({ token: forgedFor('jti-x', 'did:web:a') }, nonAdminReq());
+      expect(res.revoked).toBe(false);
+      expect(await revocations.isRevoked('jti-x')).toBe(false);
+    });
+
+    it('a verified token of another subject is still 403 (not silently ignored)', async () => {
+      const tok = tokenFor(freshClaims('jti-real'));
+      await expect(
+        controller.revoke({ token: tok }, selfReq('did:web:mallory')),
+      ).rejects.toMatchObject({ errorCode: ErrorCode.FORBIDDEN, status: 403 });
+    });
+  });
+
+  it('a federated caller with sub = the target subject cannot self-revoke a local token (issuer must match)', async () => {
+    const tok = tokenFor(freshClaims('jti-local'));
+    await expect(
+      controller.revoke(
+        { token: tok },
+        { ...selfReq('did:web:alice'), actorIssuer: 'some-peer', actorFederated: true },
+      ),
+    ).rejects.toMatchObject({ errorCode: ErrorCode.FORBIDDEN, status: 403 });
+    expect(await revocations.isRevoked('jti-local')).toBe(false);
+  });
+
+  it('self-revoking an already-revoked local token is a harmless no-op', async () => {
+    const tok = tokenFor(freshClaims('jti-twice'));
+    await controller.revoke({ token: tok }, selfReq('did:web:alice'));
+    const res = await controller.revoke({ token: tok }, selfReq('did:web:alice'));
+    expect(res.revoked).toBe(false);
   });
 
   it('returns revoked=false for an un-decodable garbage token', async () => {

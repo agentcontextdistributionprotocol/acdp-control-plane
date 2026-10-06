@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { SsrfPolicy } from '../auth/did-web/ssrf-guard';
 import { WebhookService } from './webhook.service';
 
@@ -101,6 +102,12 @@ describe('WebhookService', () => {
     // Wait a microtask for the fire-and-forget delivery to run
     await new Promise((r) => setImmediate(r));
 
+    // The signature is the exact HMAC of the sent body under the STORED secret
+    // (#230 projects the secret out of API responses; delivery must still use it).
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers['X-ACDP-Signature']).toBe(
+      `sha256=${createHmac('sha256', 'shh').update(init.body).digest('hex')}`,
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       'https://x.example/h',
       expect.objectContaining({

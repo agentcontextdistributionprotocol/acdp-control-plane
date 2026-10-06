@@ -11,7 +11,12 @@
  *           `AUTH_ADMIN_API_KEYS`), or
  *       (b) the caller authenticated via JWT AND the token's `sub`
  *           claim matches the caller's DID (`request.actorDid`).
- *     Everyone else gets 403. Mirrors the registry's
+ *     (b) additionally requires the caller's token to come from the SAME issuer
+ *     as the token being revoked, and the target token to have VERIFIED under
+ *     our key. A verified token of another subject is 403; a token that does
+ *     not verify (bad sig / expired / a federated peer's) is deny-listed for an
+ *     admin only and is a silent `{revoked:false}` for everyone else (#229).
+ *     Mirrors the registry's
  *     `acdp-registry-auth::service::revoke_token` semantics
  *     (`owner_of(jti) == caller_did`).
  *   - The endpoint returns 200 OK even for tokens that aren't valid
@@ -125,16 +130,20 @@ export class RevokeController {
       actorType?: 'api-key' | 'jwt';
       actorIsAdmin?: boolean;
       actorDid?: string;
+      actorIssuer?: string;
     },
   ): Promise<RevokeResponseDto> {
     // Try the full verify path first so we can record the canonical
     // claims (iss/exp from a valid token). If verification fails (bad
-    // sig, expired, wrong issuer, already revoked), fall back to a
-    // best-effort decode so we still capture the jti for audit. RFC
-    // 7009 says revocation MUST succeed even for unrecognized tokens.
+    // sig, expired, wrong issuer, already revoked, a peer's token), fall
+    // back to a best-effort decode so an ADMIN can still deny-list the jti.
+    // Those decoded claims are UNVERIFIED — anyone can forge them — so they
+    // must never authorize a non-admin (#229): see the gate below.
     let claims = null as Awaited<ReturnType<TokenIssuer['verifyJwt']>> | null;
+    let verified = false;
     try {
       claims = await this.issuer.verifyJwt(body.token);
+      verified = true;
     } catch {
       claims = null;
     }
@@ -153,14 +162,31 @@ export class RevokeController {
       claims = decoded;
     }
 
-    // Authorization gate: admin OR self-revoke (JWT-authenticated caller
-    // whose DID matches claims.sub). Anything else is 403.
     const isAdmin = req.actorIsAdmin === true;
+    // Unverified claims + non-admin: a forged token can carry any `sub`
+    // (including the caller's own) with a VICTIM's jti, so the self-revoke
+    // check below would pass and deny-list the victim's token. Deny-list
+    // nothing; answer with the RFC 7009 §2.2 no-op success so the response
+    // is no oracle for whether a jti exists or who owns it.
+    if (!verified && !isAdmin) {
+      this.logger.warn({
+        msg: 'revoke ignored: token did not verify and caller is not admin',
+        actorId: req.actorId ?? 'unknown',
+        actorType: req.actorType ?? '?',
+      });
+      return { revoked: false };
+    }
+
+    // Authorization gate (verified claims, or admin): admin OR self-revoke
+    // (JWT-authenticated caller whose DID matches claims.sub). Else 403.
     const isSelfRevoke =
       req.actorType === 'jwt' &&
       typeof req.actorDid === 'string' &&
       req.actorDid.length > 0 &&
-      req.actorDid === claims.sub;
+      req.actorDid === claims.sub &&
+      // Same issuer as the verified (local) target: a federated peer minting
+      // sub=X must not be able to self-revoke the local token for X.
+      req.actorIssuer === claims.iss;
     if (!isAdmin && !isSelfRevoke) {
       this.logger.warn({
         msg: 'revoke 403',
