@@ -141,6 +141,22 @@ describe('CrossIssuerValidator', () => {
     expect((await v.verify(ok)).scp).toContain('publish');
   });
 
+  it('requiredScope reads scope / scopes / array-scp too, and rejects a token with none (#225)', async () => {
+    const v = makeValidator({
+      peers: [{ iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET, requiredScope: 'publish' }] as any,
+    });
+    for (const claim of [
+      { scp: 'publish' },
+      { scope: 'publish' },
+      { scopes: ['publish'] },
+      { scp: ['publish'] },
+    ]) {
+      await expect(v.verify(mint(PEER_ISS, PEER_SECRET, claim))).resolves.toBeDefined();
+    }
+    // No scope claim at all (what an ACDP registry mints) → 401.
+    await expect(v.verify(mint(PEER_ISS, PEER_SECRET))).rejects.toThrow(/missing required scope/);
+  });
+
   it('rejects garbage tokens without leaking which step failed', async () => {
     const v = makeValidator();
     await expect(v.verify('not-a-jwt')).rejects.toThrow(UnauthorizedException);
@@ -220,6 +236,25 @@ describe('CrossIssuerValidator', () => {
         peers: [{ iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET }] as any,
       });
       await expect(v.verify(token)).rejects.toThrow(/exp claim is required/);
+    });
+  });
+
+  describe('verifyWithProvenance (#225)', () => {
+    it('reports trusted=null for the local issuer and the entry for a trusted peer; verify() is unchanged', async () => {
+      const peers = [{ iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET }] as any;
+      const v = makeValidator({ peers });
+      const local = await v.verifyWithProvenance(mint(LOCAL_ISS, LOCAL_SECRET));
+      expect(local.trusted).toBeNull();
+      expect(local.claims.iss).toBe(LOCAL_ISS);
+      const peer = await v.verifyWithProvenance(mint(PEER_ISS, PEER_SECRET));
+      expect(peer.trusted).toMatchObject({ iss: PEER_ISS, alg: 'HS256' });
+      expect((await v.verify(mint(PEER_ISS, PEER_SECRET))).iss).toBe(PEER_ISS);
+    });
+
+    it('still rejects an untrusted issuer', async () => {
+      await expect(
+        makeValidator().verifyWithProvenance(mint('stranger', PEER_SECRET)),
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 

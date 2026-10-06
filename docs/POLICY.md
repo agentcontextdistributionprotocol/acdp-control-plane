@@ -32,8 +32,10 @@ and asks a pluggable `PolicyDecider`.
   resourceId: string;            // ctx_id / run_id / agent_did ('' for list ops)
   resourceVisibility?: 'public' | 'restricted' | 'private';
   resourceAudience?: string[];   // DIDs explicitly granted access
-  scopes: string[];              // from the JWT scope/scopes claim
+  scopes: string[];              // union of the JWT scope / scopes / scp claims
   tenantId?: string;
+  issuer?: string;               // verified JWT iss ('' for API-key callers)
+  federated?: boolean;           // true = token from a TRUSTED_ISSUERS entry
 }
 ```
 
@@ -72,7 +74,7 @@ each other.
 | `opa` | `POLICY_BACKEND=opa` | Delegates to an OPA sidecar over HTTP. |
 
 Both are wrapped by a **caching decider** (LRU + TTL, default 5 s / 10 000
-entries). The cache key includes sorted scopes + audience. Only `allow`/`deny`
+entries). The cache key includes sorted scopes + audience, plus the issuer and the federated flag (so a cached `allow` for a local token is never served to a federated one). Only `allow`/`deny`
 are cached — `indeterminate` is never cached, so coverage gaps reappear on every
 request rather than sticking.
 
@@ -98,9 +100,27 @@ request rather than sticking.
   "resource_visibility": "public" | "restricted" | "private" | null,
   "resource_audience": ["did:web:…"],
   "scopes": ["publish"],
-  "tenant_id": "tenant-a"
+  "tenant_id": "tenant-a",
+  "issuer": "cp.example.com",
+  "federated": false
 }
 ```
+
+`issuer` is the verified JWT `iss` (`""` for API-key callers); `federated` is `true`
+when the token came from a `TRUSTED_ISSUERS` entry. A site policy can use them, e.g.
+(commented example — the shipped corpus mirrors the static rules and adds no rule):
+
+```rego
+# deny capability.declare for federated principals
+# decision := {"allow": false, "deny_code": "policy", "deny_reason": "federated principal"} if {
+#   input.action == "capability.declare"
+#   input.federated
+# }
+```
+
+> **Scope of this control.** `PolicyGuard` runs only on `@CheckPolicy` handlers (7 today).
+> `POST /webhooks` is **not** one of them, so a policy rule cannot restrict it; use the
+> per-issuer `read_only` flag (see AUTH.md) for CP-local writes by federated tokens.
 
 Expected response: `{ "result": { "allow": true } }` or
 `{ "result": { "allow": false, "deny_code": "…", "deny_reason": "…" } }` or

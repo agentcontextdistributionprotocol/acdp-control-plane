@@ -25,6 +25,10 @@ import {
 } from './policy-decider';
 
 /**
+ * Note: this decider ignores `PolicyRequest.issuer` / `federated`; federated
+ * principals are only distinguished by an OPA policy or the per-issuer
+ * `read_only` flag enforced in AuthGuard.
+ *
  * Per-action required scopes. Producers MUST present every scope
  * listed for the action; missing → deny. Empty list = no scope gate.
  */

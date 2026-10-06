@@ -75,6 +75,17 @@ key for the agent (and no resolvable did:web), or the signature didn't verify.
 
 - The peer's `iss` must be in `TRUSTED_ISSUERS`, with the correct algorithm and a
   required `audience`.
+- **403 `ISSUER_READ_ONLY`** on a write: the peer's `TRUSTED_ISSUERS` entry carries the
+  `read_only` flag, so its tokens may only use GET/HEAD/OPTIONS (`POST /auth/introspect`
+  excepted). Use a CP-issued token for writes, or remove the flag.
+- **Boot fails with `unknown flag` / `flag name appears in the scope field` / `maximum is`**:
+  the 6th field is a closed set (`read_only`, case-sensitive); with no scope write
+  `iss|alg|material|aud||read_only` (two pipes).
+- **Boot fails with `equals JWT_AUTHORITY`**: a `TRUSTED_ISSUERS` entry has the same `iss` as this
+  control plane's own `JWT_AUTHORITY`. Local tokens are always verified first, so the entry could never
+  apply (its audience and `read_only` would be silently ignored). Remove it, or fix the `iss`.
+- **Rollback hazard:** a build older than the `read_only` flag silently ignores the 6th field,
+  so rolling back re-enables writes for that peer. Check before rolling back.
 - For EdDSA peers, the `jwks-url` must be HTTPS and reachable; the client caches
   failures for 30 s, so fix the URL and wait out the cache.
 

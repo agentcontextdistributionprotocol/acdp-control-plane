@@ -14,14 +14,15 @@
  * calls out:
  *   - `nbf` (not-before) when present — clock-skew defense across
  *     issuers.
- *   - `scp` (space-separated scope string) when the trusted issuer
- *     declares required scopes.
+ *   - scopes (`scope` / `scopes` / `scp`, see ./scopes.ts) when the trusted
+ *     issuer declares required scopes.
  *   - `aud` (audience) when the trusted issuer declares it.
  *
  * Logs every trusted-issuer acceptance at INFO with structured fields
  * so operators can audit federation traffic separately from local
  * issuance.
  */
+import { parseScopeString, readScopes } from './scopes';
 import {
   Inject,
   Injectable,
@@ -47,8 +48,10 @@ export interface FederatedClaims extends AcdpBearerClaims {
   nbf?: number;
   /** Audience — single string OR array. Optional. */
   aud?: string | string[];
-  /** Space-separated scope string (e.g. `"publish read:restricted"`). */
-  scp?: string;
+  /** Space-separated scope string (or array, per some IdPs). */
+  scp?: string | string[];
+  scope?: string | string[];
+  scopes?: string[];
 }
 
 @Injectable()
@@ -81,6 +84,19 @@ export class CrossIssuerValidator {
    * failure reasons surfaces to the caller).
    */
   async verify(token: string): Promise<FederatedClaims> {
+    return (await this.verifyWithProvenance(token)).claims;
+  }
+
+  /**
+   * Same as `verify`, plus which trust entry vouched for the token:
+   * `trusted === null` means this control plane's own issuer; otherwise the
+   * matching `TRUSTED_ISSUERS` entry (a federated principal). `AuthGuard`
+   * records this on the request so policy / the `read_only` gate can tell a
+   * federated token from a locally-issued one.
+   */
+  async verifyWithProvenance(
+    token: string,
+  ): Promise<{ claims: FederatedClaims; trusted: TrustedIssuer | null }> {
     // Decode unverified to peek the iss; we then verify against the
     // matched issuer's material. The double-decode is unavoidable
     // because `jwt.verify`'s issuer option compares against a single
@@ -95,6 +111,7 @@ export class CrossIssuerValidator {
     }
 
     let claims: FederatedClaims;
+    let trustedEntry: TrustedIssuer | null = null;
     if (iss === this.config.jwtAuthority) {
       claims = this.verifyLocal(token);
     } else {
@@ -103,6 +120,7 @@ export class CrossIssuerValidator {
         throw new UnauthorizedException(`JWT iss='${iss}' is not trusted`);
       }
       claims = await this.verifyTrusted(token, trusted);
+      trustedEntry = trusted;
     }
     // Revocation: consult the local list for EVERY issuer. Our own tokens are
     // recorded here directly on revoke; a trusted peer's revocations are
@@ -117,7 +135,7 @@ export class CrossIssuerValidator {
         );
       }
     }
-    return claims;
+    return { claims, trusted: trustedEntry };
   }
 
   /**
@@ -195,8 +213,8 @@ export class CrossIssuerValidator {
       }
     }
     if (trusted.requiredScope) {
-      const have = parseScope(decoded.scp);
-      const need = parseScope(trusted.requiredScope);
+      const have = readScopes(decoded);
+      const need = parseScopeString(trusted.requiredScope);
       const missing = need.filter((s) => !have.includes(s));
       if (missing.length > 0) {
         throw new UnauthorizedException(
@@ -212,6 +230,7 @@ export class CrossIssuerValidator {
       jti: decoded.jti,
       audienceRequired: trusted.audience ?? null,
       scopeRequired: trusted.requiredScope ?? null,
+      readOnly: trusted.readOnly,
     });
     return decoded;
   }
@@ -242,9 +261,4 @@ function matchesAudience(aud: FederatedClaims['aud'], required: string): boolean
   if (typeof aud === 'string') return aud === required;
   if (Array.isArray(aud)) return aud.includes(required);
   return false;
-}
-
-function parseScope(scp: string | undefined): string[] {
-  if (!scp) return [];
-  return scp.split(/\s+/).filter(Boolean);
 }

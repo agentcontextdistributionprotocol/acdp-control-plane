@@ -84,6 +84,29 @@ describe('OpaPolicyDecider', () => {
       expect(input.action).toBe('context.retrieve');
       expect(input.resource_visibility).toBe('public');
       expect(input.tenant_id).toBe('tenant-a');
+      // Provenance defaults when the request carries none.
+      expect(input.issuer).toBe('');
+      expect(input.federated).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it('forwards issuer and federated in the OPA input (#225)', async () => {
+    let observedBody: Record<string, unknown> | null = null;
+    const restore = withMockFetch(async (_url, init) => {
+      observedBody = JSON.parse((init?.body as string) ?? '{}');
+      return new Response(JSON.stringify({ result: { allow: true } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    try {
+      const d = new OpaPolicyDecider({ baseUrl: 'http://opa:8181', packagePath: 'acdp/policy/v1' });
+      await d.decide({ ...req(), issuer: 'registry-a.peer', federated: true });
+      const input = (observedBody as any).input;
+      expect(input.issuer).toBe('registry-a.peer');
+      expect(input.federated).toBe(true);
     } finally {
       restore();
     }

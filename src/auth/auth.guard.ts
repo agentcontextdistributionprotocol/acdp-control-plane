@@ -1,3 +1,4 @@
+import { readScopes } from './scopes';
 import {
   CanActivate,
   ExecutionContext,
@@ -79,8 +80,9 @@ export class AuthGuard implements CanActivate {
         );
       }
       let claims;
+      let trusted;
       try {
-        claims = await this.jwtValidator.verify(token);
+        ({ claims, trusted } = await this.jwtValidator.verifyWithProvenance(token));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         this.logger.warn({ msg: 'JWT auth rejected', error: msg });
@@ -93,9 +95,14 @@ export class AuthGuard implements CanActivate {
       request.actorDid = claims.sub;
       request.actorType = 'jwt';
       request.actorIsAdmin = false; // admin is api-key-gated today
-      // Expose JWT scopes for the PolicyGuard. Accepts an OAuth-style
-      // space-delimited `scope` string or a `scopes` array.
-      request.actorScopes = extractScopes(claims);
+      // Provenance: which issuer vouched for this token. A trusted-issuer
+      // (federated) principal is distinguishable from a locally-issued one.
+      request.actorIssuer = claims.iss;
+      request.actorFederated = trusted !== null;
+      // Expose JWT scopes for the PolicyGuard: the union of `scope`, `scopes`
+      // and `scp` (see ./scopes.ts) — the same vocabulary the trusted-issuer
+      // `requiredScope` gate reads.
+      request.actorScopes = readScopes(claims);
       // Tenant binding order of precedence (claim > header):
       //   1. `tenant` claim in the JWT (authoritative — minted by the
       //      issuer, signed, can't be forged by the bearer).
@@ -143,6 +150,25 @@ export class AuthGuard implements CanActivate {
         );
       }
       request.tenantId = claimTenant ?? headerTenant ?? DEFAULT_TENANT_ID;
+      // Per-issuer `read_only` (opt-in, #225): tokens from a TRUSTED_ISSUERS
+      // entry flagged `read_only` may only use safe methods. Placed AFTER the
+      // tenant checks so tenant 403s keep precedence. Method-based, not
+      // route-based, so any future write route is covered automatically —
+      // but a future state-changing GET would bypass it: never add one.
+      if (trusted?.readOnly && !isSafeForReadOnlyIssuer(request)) {
+        this.logger.warn({
+          msg: 'read-only issuer: non-safe method denied',
+          iss: claims.iss,
+          sub: claims.sub,
+          method: request.method,
+          path: request.path,
+        });
+        throw new AppException(
+          ErrorCode.ISSUER_READ_ONLY,
+          'tokens from this issuer are read-only',
+          HttpStatus.FORBIDDEN,
+        );
+      }
       return true;
     }
 
@@ -168,6 +194,7 @@ export class AuthGuard implements CanActivate {
 
     request.actorId = token.slice(0, 8) + '...';
     request.actorType = 'api-key';
+    request.actorFederated = false; // actorIssuer stays unset: no JWT issuer
     request.actorIsAdmin = constantTimeIncludes(this.config.authAdminApiKeys, token);
     const keyTenant = this.tenantFor(token);
     // Parity with the JWT path: a header asserting a tenant other than the
@@ -228,22 +255,19 @@ function looksLikeJwt(token: string): boolean {
   return token.split('.').length === 3;
 }
 
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 /**
- * Extract scopes from JWT claims. Supports the OAuth-style space-delimited
- * `scope` string and a `scopes` array claim. Returns [] when neither is set.
+ * Whether a request from a `read_only` issuer may proceed: GET/HEAD/OPTIONS,
+ * plus `POST /auth/introspect` (RFC 7662 mandates POST; it is read-shaped and
+ * never mutates). Path match is normalised (case, trailing slashes) the way
+ * Express routes it.
  */
-function extractScopes(claims: unknown): string[] {
-  const c = claims as { scope?: unknown; scopes?: unknown };
-  if (Array.isArray(c.scopes)) {
-    return c.scopes.filter((s): s is string => typeof s === 'string');
-  }
-  if (typeof c.scope === 'string') {
-    return c.scope.split(/\s+/).filter(Boolean);
-  }
-  if (Array.isArray(c.scope)) {
-    return c.scope.filter((s): s is string => typeof s === 'string');
-  }
-  return [];
+function isSafeForReadOnlyIssuer(request: { method?: string; path?: string }): boolean {
+  const method = (request.method ?? '').toUpperCase();
+  if (SAFE_METHODS.has(method)) return true;
+  const path = (request.path ?? '').toLowerCase().replace(/\/+$/, '');
+  return method === 'POST' && path === '/auth/introspect';
 }
 
 /**

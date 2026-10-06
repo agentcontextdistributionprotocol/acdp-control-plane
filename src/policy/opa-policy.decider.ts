@@ -14,7 +14,9 @@
  *     "resource_visibility": "public" | "restricted" | "private" | null,
  *     "resource_audience": ["did:web:...", ...],
  *     "scopes": ["publish", "..."],
- *     "tenant_id": "tenant-a"
+ *     "tenant_id": "tenant-a",
+ *     "issuer": "cp.example.com" | "" (api-key callers),
+ *     "federated": true | false (true = token from a TRUSTED_ISSUERS entry)
  *   }
  *
  * Response shape (Rego's `data.<package>.<rule>` output):
@@ -152,6 +154,8 @@ function toOpaInput(req: PolicyRequest): Record<string, unknown> {
     resource_audience: req.resourceAudience ?? [],
     scopes: req.scopes,
     tenant_id: req.tenantId ?? '',
+    issuer: req.issuer ?? '',
+    federated: req.federated === true,
   };
 }
 

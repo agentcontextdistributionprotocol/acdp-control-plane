@@ -45,6 +45,7 @@ const SHIPPED: readonly string[] = [
   // #182 Phase 3 — credentials, ingest gating, policy, quota.
   "INVALID_WEBHOOK_SIGNATURE",
   "REGISTRY_DISABLED",
+  "ISSUER_READ_ONLY",
   "REGISTRY_NOT_ENROLLED",
   "POLICY_DENIED",
   "QUOTA_EXCEEDED",

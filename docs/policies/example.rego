@@ -27,6 +27,8 @@ package acdp.policy.v1
 #   input.resource_audience    array[string]
 #   input.scopes               array[string]
 #   input.tenant_id            string
+#   input.issuer               string   verified JWT iss ('' for api-key callers)
+#   input.federated            boolean  true = token from a TRUSTED_ISSUERS entry
 #
 # ── Output contract (consumed by interpretOpa()) ───────────────────
 #

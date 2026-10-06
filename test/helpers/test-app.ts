@@ -87,6 +87,12 @@ export interface TestAppOptions {
    * string is passed through verbatim (to prove a garbage value fails boot).
    */
   readiness?: { timeoutMs?: number | string; cacheMs?: number | string };
+  /**
+   * Raw `TRUSTED_ISSUERS` value (see src/auth/trusted-issuers.ts). Needs
+   * `tokenIssuance` (the trusted-issuer registry only mounts with the validator).
+   * Cleared when absent so it never leaks across suites.
+   */
+  trustedIssuers?: string;
   tokenIssuance?: {
     jwtSecret: string;
     authority?: string;
@@ -196,6 +202,8 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
   } else {
     delete process.env.TENANT_QUOTAS;
   }
+  if (opts.trustedIssuers) process.env.TRUSTED_ISSUERS = opts.trustedIssuers;
+  else delete process.env.TRUSTED_ISSUERS;
   // IdP / token-issuance wiring. Set (or clear, so it doesn't leak across
   // suites) the env the auth.module reads at boot to mount the issuance routes.
   if (opts.tokenIssuance) {

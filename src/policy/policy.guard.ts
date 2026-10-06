@@ -6,8 +6,8 @@
  *   1. Pull `action` from handler-level metadata. No tag → skip
  *      (handler is unguarded; controller-level auth gates still apply).
  *   2. Build a `PolicyRequest` from the request's `actorId`,
- *      `tenantId`, scopes (currently empty until JWT-scope plumbing
- *      lands), and the resource id extracted from path params /
+ *      `tenantId`, scopes (the union of the JWT's `scope`/`scopes`/`scp`
+ *      claims, pinned by AuthGuard; empty for API keys), and the resource id extracted from path params /
  *      body / query (per-handler shape).
  *   3. Decide. `allow` → continue. `deny` → 403 with the structured
  *      reason. `indeterminate` → deny + warn (coverage-gap signal).
@@ -27,6 +27,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { AuthenticatedActorFields } from '../auth/actor';
 import { ErrorCode } from '../errors/error-codes';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { POLICY_ACTION_KEY } from './check-policy.decorator';
@@ -65,7 +66,14 @@ export class PolicyGuard implements CanActivate {
       return true;
     }
 
-    const req = context.switchToHttp().getRequest();
+    // The principal fields AuthGuard pinned (typed in auth/actor.ts) plus the
+    // route inputs the resource extractor reads.
+    const req: AuthenticatedActorFields & {
+      tenantId?: unknown;
+      params?: Record<string, unknown>;
+    } = context
+      .switchToHttp()
+      .getRequest();
     // subjectDid prefers the JWT-bound DID (actorDid) over the legacy
     // actorId — the latter is just an api-key prefix and can't match
     // any DID-keyed policy rule (audience checks, OPA `subject_did`).
@@ -80,8 +88,10 @@ export class PolicyGuard implements CanActivate {
       action,
       // V1: best-effort resource extraction from params (runId/ctxId/etc.).
       resourceId: extractResourceId(req),
-      // Scopes pinned by the AuthGuard from the JWT (`scope`/`scopes` claim).
+      // Scopes pinned by the AuthGuard from the JWT (`scope`/`scopes`/`scp` union).
       scopes: Array.isArray(req.actorScopes) ? req.actorScopes : [],
+      issuer: typeof req.actorIssuer === 'string' ? req.actorIssuer : '',
+      federated: req.actorFederated === true,
       tenantId: typeof req.tenantId === 'string' ? req.tenantId : DEFAULT_TENANT_ID,
     };
 

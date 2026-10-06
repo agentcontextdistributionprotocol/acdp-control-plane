@@ -52,7 +52,7 @@ request it:
 
 Delegates to `CrossIssuerValidatorService.verify(token)`, which dispatches on the
 `iss` claim (local issuer vs trusted peer — see [Federation](#federation)). On
-success it sets `actorDid = sub`, `actorScopes` (OAuth `scope`/`scopes` claim),
+success it sets `actorDid = sub`, `actorScopes` (the union of the `scope`, `scopes` and `scp` claims — one vocabulary shared with the trusted-issuer `requiredScope` gate),
 and resolves the tenant from the signed `tenant` claim. JWTs cannot be admin
 today (admin is API-key-gated).
 
@@ -163,7 +163,7 @@ to advertise `bearer_jwt` in, and it deliberately does not. Its `/auth/challenge
 | `exp` present | Always minted; **required on verify** for local and trusted-issuer tokens (`jwt-codec.ts` `requireExp`, default on) | OK |
 | `aud` = issuing service; mismatch rejected | Local tokens: `aud` = `JWT_AUDIENCE` (default authority), required on verify. Trusted peers: `aud` must match the configured per-issuer `audience` (conventionally the **peer's own** authority; see Federation) | Local OK; see note |
 | TLS only | Not enforced in-process — TLS terminates in front of the CP (helmet sets HSTS, `bootstrap.ts`; JWKS fetches are https-only). Never expose the CP over plain HTTP | Deployment requirement |
-| Reads only; never substitutes a producer signature | A bearer never substitutes for a producer signature (capability declarations carry their own, ingest is HMAC). But `AuthGuard` accepts a bearer on every non-`@Public()` route, so it also authorizes CP-**local** writes (e.g. `POST /webhooks`, `POST /auth/revoke`, `POST /capabilities`); those are CP resources, not ACDP context publishes | OK for producer signatures; CP-local writes are accepted |
+| Reads only; never substitutes a producer signature | A bearer never substitutes for a producer signature (capability declarations carry their own, ingest is HMAC). But `AuthGuard` accepts a bearer on every non-`@Public()` route, so it also authorizes CP-**local** writes (e.g. `POST /webhooks`, `POST /auth/token/revoke`, `POST /capabilities`); those are CP resources, not ACDP context publishes | OK for producer signatures; CP-local writes are accepted unless the issuer is flagged `read_only` (opt-in) |
 | Listed in `read_authentication_methods` | N/A — the CP is not a registry | Not advertised |
 
 **Deliberate deviation (federation).** A registry's `bearer_jwt` is bound to that registry
@@ -177,11 +177,16 @@ exposes and what does *not* mitigate it:
   (continuous event exfiltration to an attacker URL).
 - **Not mitigations for registry peers:** the per-issuer `audience` only selects the peer's
   own authority (it stops cross-registry replay, not X→CP replay); `requiredScope` checks
-  `scp`, which the registry never mints, so setting it rejects every registry token; and
+  `scope`/`scopes`/`scp`, none of which the registry ever mints, so setting it rejects every registry token; and
   registry-side revocations never reach the CP (the registry serves no revocation feed), so
   the replay window is the token TTL (default 3600 s).
-- **Planned:** a per-issuer `read_only` flag (default off) and `iss` in `PolicyRequest`
-  (acdp-control-plane#225); multi-audience `aud: [registry, cp]` minting
+- **Available mitigations (opt-in):** `iss` and a `federated` flag reach `PolicyRequest` and
+  the OPA input (a site policy can treat federated principals differently on `@CheckPolicy`
+  routes — `POST /webhooks` is not one); and the per-issuer **`read_only`** flag (default off,
+  6th `TRUSTED_ISSUERS` field) makes `AuthGuard` deny every non-GET/HEAD/OPTIONS request from
+  that issuer's tokens with 403 `ISSUER_READ_ONLY` (only `POST /auth/introspect` is exempt),
+  which closes the `POST /webhooks` exfiltration path. It is method-based, so a future
+  state-changing `GET` would bypass it. **Planned:** multi-audience `aud: [registry, cp]` minting
   (acdp-registry-rs#420, after which the per-issuer `audience` can name the CP) and a
   registry revocation feed (acdp-registry-rs#421).
 
@@ -204,17 +209,25 @@ validity. Reload at runtime (no restart) via `POST /admin/pinned-keys/reload`
 `CrossIssuerValidatorService` accepts JWTs from peers listed in
 `TRUSTED_ISSUERS`. Dispatch is by `iss`:
 
-- `iss == JWT_AUTHORITY` → verified locally.
+- `iss == JWT_AUTHORITY` → verified locally (a `TRUSTED_ISSUERS` entry with the same `iss` fails startup, since it could never apply).
 - `iss ∈ TRUSTED_ISSUERS` → verified with that issuer's material.
 - otherwise → rejected.
 
 **Wire format** (comma-separated entries):
 
 ```
-# HS256 peer:  <iss>|HS256|<shared-secret>|<audience>[|scope]
-# EdDSA peer:  <iss>|EdDSA|<jwks-url>|<audience>[|scope]
+# HS256 peer:  <iss>|HS256|<shared-secret>|<audience>[|scope[|flags]]
+# EdDSA peer:  <iss>|EdDSA|<jwks-url>|<audience>[|scope[|flags]]
+# read-only HS256 peer (empty scope):  <iss>|HS256|<secret>|<aud>||read_only
 ```
 
+`flags` is a whitespace-separated closed set; today only `read_only`. More than six fields,
+an unknown or duplicate flag, or a flag name in the scope slot fails startup (errors name the
+`iss`, never the secret).
+
+- `scope` (optional) is a space-separated list; the token must carry **all** of them in
+  any of its `scope` / `scopes` / `scp` claims. Don't set it for ACDP registry peers —
+  the registry mints no scope claim, so every token would be rejected.
 - `audience` is **required** per entry — the token's `aud` must match the peer's
   binding (a replay defense; a token minted for peer A cannot be replayed at B).
 - EdDSA peers' keys are fetched from `<jwks-url>` by a minimal hardened JWKS

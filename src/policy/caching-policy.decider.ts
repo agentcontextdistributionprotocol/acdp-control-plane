@@ -104,5 +104,9 @@ function cacheKey(req: PolicyRequest): string {
     audience,
     scopes,
     req.tenantId ?? '',
+    // A cached `allow` for a local token must never be served to a federated
+    // token with the same DID/tenant/action (an OPA rule may distinguish them).
+    req.issuer ?? '',
+    req.federated ? '1' : '0',
   ].join(';');
 }

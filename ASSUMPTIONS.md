@@ -1719,3 +1719,19 @@
 - **Alternatives:** require `aud` to name the CP for peers (breaks federation); advertise via a new acdp.json (CP would look like a registry); runtime TLS enforcement (new knob, req.protocol only trustworthy with TRUST_PROXY).
 - **Blast radius if wrong:** D6 — a peer that mints tokens without `exp` gets 401 (one-line opt-out via `requireExp:false` per call site). D3 — one-way for federated deployments; no code change here.
 - **Status:** D2/D4/D5/D6 CONFIRMED (2026-10-05, decided by Opus on Fable's analysis); D3 CONFIRMED by the user (2026-10-05) with a hardening follow-up, acdp-control-plane#225 (see DECISIONS.md)
+
+## One scope vocabulary: union of scope / scopes / scp (#225 Phase 2)
+- **Plan:** plans/followups-225.md
+- **Assumed:** a token's scopes are the union of the `scope`, `scopes` and `scp` claims (string = space-delimited, array = members); the guard (policy input) and the trusted-issuer `requiredScope` gate share `readScopes` (src/auth/scopes.ts).
+- **Chose:** union (order-preserving, deduped) rather than precedence. The old guard preferred `scopes` over `scope` and ignored `scp`; the old federation gate read only `scp`.
+- **Alternatives:** keep two vocabularies and document; precedence instead of union (silently drops scopes); only `scp` for federation.
+- **Blast radius if wrong:** policy `scopes` can now include scopes from an `scp` claim that were previously ignored by the guard (a token from a trusted issuer is signed, so this is the issuer's own assertion); trusted peers using `scope`/`scopes` now satisfy `requiredScope`. A token carrying both `scopes` and `scope` now yields the union (the old guard used only `scopes`). Revert = one commit.
+- **Status:** UNCONFIRMED
+
+## read_only is method-based (#225 Phase 4)
+- **Plan:** plans/followups-225.md
+- **Assumed:** no GET route in this service changes state, so GET/HEAD/OPTIONS are safe for a `read_only` issuer; `POST /auth/introspect` is read-shaped and exempt.
+- **Chose:** a method gate in `AuthGuard` (covers future write routes automatically) over a per-route allowlist.
+- **Alternatives:** route allowlist (misses new routes unless updated; safer default but higher maintenance); per-route decorator.
+- **Blast radius if wrong:** a future state-changing GET (or a new POST that is really a read) would bypass / be wrongly blocked; verifier audited every current `@Get` and found none mutating.
+- **Status:** UNCONFIRMED

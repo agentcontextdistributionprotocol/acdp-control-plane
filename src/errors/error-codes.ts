@@ -123,6 +123,13 @@ export enum ErrorCode {
   INVALID_WEBHOOK_SIGNATURE = "INVALID_WEBHOOK_SIGNATURE",
   /** 403 — the ingesting registry is enrolled but disabled. */
   REGISTRY_DISABLED = "REGISTRY_DISABLED",
+  /**
+   * 403 — the bearer token came from a `TRUSTED_ISSUERS` entry flagged
+   * `read_only` and the request method is not GET/HEAD/OPTIONS. The remedy is
+   * distinct from ADMIN_REQUIRED/POLICY_DENIED: use a control-plane-issued
+   * token, or have the operator lift `read_only` for that issuer.
+   */
+  ISSUER_READ_ONLY = "ISSUER_READ_ONLY",
   /** 403 — INGEST_REQUIRE_ENROLLMENT and the registry is not enrolled. */
   REGISTRY_NOT_ENROLLED = "REGISTRY_NOT_ENROLLED",
   /**

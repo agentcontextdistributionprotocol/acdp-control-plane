@@ -36,6 +36,20 @@ describe('CachingPolicyDecider', () => {
     expect(c.misses).toBe(1);
   });
 
+  it('keys on issuer and on the federated flag (a local allow is never served to a federated token)', async () => {
+    const inner = new CountingDecider(PolicyDecisions.allow());
+    const c = new CachingPolicyDecider(inner);
+    await c.decide(req({ issuer: 'cp.local', federated: false }));
+    await c.decide(req({ issuer: 'cp.local', federated: false })); // hit
+    expect(inner.calls).toBe(1);
+    await c.decide(req({ issuer: 'peer', federated: false })); // issuer differs only
+    expect(inner.calls).toBe(2);
+    await c.decide(req({ issuer: 'cp.local', federated: true })); // federated differs only
+    expect(inner.calls).toBe(3);
+    await c.decide(req({ issuer: 'peer', federated: false })); // hit again
+    expect(inner.calls).toBe(3);
+  });
+
   it('caches deny decisions too', async () => {
     const inner = new CountingDecider(PolicyDecisions.deny('audience', 'r'));
     const c = new CachingPolicyDecider(inner);
