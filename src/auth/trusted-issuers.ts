@@ -7,8 +7,15 @@
  *
  * Config wire format: `TRUSTED_ISSUERS` is a comma-separated list of
  *
- *   HS256:   <iss>|HS256|<shared-secret>|<audience>[|scope]
- *   EdDSA:   <iss>|EdDSA|<jwks-url>|<audience>[|scope]
+ *   HS256:   <iss>|HS256|<shared-secret>|<audience>[|scope[|flags]]
+ *   EdDSA:   <iss>|EdDSA|<jwks-url>|<audience>[|scope[|flags]]
+ *
+ * `flags` is an optional whitespace-separated set from a closed vocabulary
+ * (today only `read_only`: tokens from this issuer may use only GET/HEAD/OPTIONS,
+ * enforced by AuthGuard — see TRUSTED_ISSUER_FLAGS). Leave `scope` empty to set
+ * a flag without a scope: `iss|HS256|<secret>|<aud>||read_only`. More than six
+ * fields, or an unknown/duplicate flag, fails startup. NB: a build older than
+ * this field silently ignores the 6th field (a rollback drops `read_only`).
  *
  * `audience` is REQUIRED. `acdp-registry-rs` binds every token's `aud` to its
  * own authority as a federation replay defense (#16); accepting a peer's
@@ -58,27 +65,80 @@ export interface TrustedIssuer {
    * their tokens.
    */
   requiredScope?: string;
+  /**
+   * Opt-in `read_only` flag (default `false`): tokens from this issuer are
+   * denied every method except GET/HEAD/OPTIONS (`ISSUER_READ_ONLY`).
+   */
+  readOnly: boolean;
 }
 
+/** Closed vocabulary of the 6th (`flags`) field. */
+export const TRUSTED_ISSUER_FLAGS = ['read_only'] as const;
+export type TrustedIssuerFlag = (typeof TRUSTED_ISSUER_FLAGS)[number];
+
 export class TrustedIssuerError extends Error {}
+
+/**
+ * Parse the 6th (`flags`) field; returns `readOnly`. Rejects unknown and
+ * duplicate flags, and `read_only` mistakenly placed in the scope slot (the
+ * positional footgun: `iss|alg|mat|aud|read_only` would otherwise be taken as
+ * a required scope and 401 every token from that issuer).
+ */
+function parseFlags(
+  iss: string,
+  requiredScope: string | undefined,
+  flagsRaw: string | undefined,
+): boolean {
+  const known = TRUSTED_ISSUER_FLAGS as readonly string[];
+  if (requiredScope && requiredScope.split(/\s+/).some((t) => known.includes(t))) {
+    throw new TrustedIssuerError(
+      `TRUSTED_ISSUERS entry for iss='${iss}': a flag name appears in the scope field; ` +
+        `flags go in the 6th field (iss|alg|material|audience||read_only — empty scope)`,
+    );
+  }
+  const seen = new Set<string>();
+  for (const token of (flagsRaw ?? '').split(/\s+/).filter(Boolean)) {
+    if (!known.includes(token)) {
+      throw new TrustedIssuerError(
+        `TRUSTED_ISSUERS entry for iss='${iss}': unknown flag '${token}' ` +
+          `(allowed: ${TRUSTED_ISSUER_FLAGS.join(', ')}; case-sensitive)`,
+      );
+    }
+    if (seen.has(token)) {
+      throw new TrustedIssuerError(
+        `TRUSTED_ISSUERS entry for iss='${iss}': duplicate flag '${token}'`,
+      );
+    }
+    seen.add(token);
+  }
+  return seen.has('read_only');
+}
 
 /** Parse the `TRUSTED_ISSUERS` env value into a typed list. */
 export function parseTrustedIssuers(raw: string): TrustedIssuer[] {
   const out: TrustedIssuer[] = [];
   for (const entry of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
+    // Errors never echo `entry`: an HS256 entry carries the shared secret.
     const parts = entry.split('|');
     if (parts.length < 4) {
       throw new TrustedIssuerError(
-        `TRUSTED_ISSUERS entry '${entry}' has ${parts.length} fields; ` +
+        `TRUSTED_ISSUERS entry for iss='${parts[0] ?? ''}' has ${parts.length} fields; ` +
           `minimum is iss|alg|material|audience`,
       );
     }
-    const [iss, alg, material, audience, requiredScope] = parts;
-    if (!iss || !alg || !material) {
+    if (parts.length > 6) {
       throw new TrustedIssuerError(
-        `TRUSTED_ISSUERS entry '${entry}' has an empty required field`,
+        `TRUSTED_ISSUERS entry for iss='${parts[0] ?? ''}' has ${parts.length} fields; ` +
+          `maximum is iss|alg|material|audience|scope|flags`,
       );
     }
+    const [iss, alg, material, audience, requiredScope, flagsRaw] = parts;
+    if (!iss || !alg || !material) {
+      throw new TrustedIssuerError(
+        `TRUSTED_ISSUERS entry for iss='${iss ?? ''}' has an empty required field`,
+      );
+    }
+    const readOnly = parseFlags(iss, requiredScope, flagsRaw);
     if (!audience) {
       throw new TrustedIssuerError(
         `TRUSTED_ISSUERS entry for iss='${iss}': audience is required ` +
@@ -98,6 +158,7 @@ export function parseTrustedIssuers(raw: string): TrustedIssuer[] {
         secret: material,
         audience,
         requiredScope: requiredScope || undefined,
+        readOnly,
       });
     } else if (alg === 'EdDSA') {
       if (!/^https?:\/\//.test(material)) {
@@ -111,10 +172,11 @@ export function parseTrustedIssuers(raw: string): TrustedIssuer[] {
         jwksUrl: material,
         audience,
         requiredScope: requiredScope || undefined,
+        readOnly,
       });
     } else {
       throw new TrustedIssuerError(
-        `TRUSTED_ISSUERS entry '${entry}': unsupported alg '${alg}' (want HS256 or EdDSA)`,
+        `TRUSTED_ISSUERS entry for iss='${iss}': unsupported alg '${alg}' (want HS256 or EdDSA)`,
       );
     }
   }

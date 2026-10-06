@@ -1,4 +1,5 @@
 import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { AppException } from '../errors/app-exception';
 import { ErrorCode } from '../errors/error-codes';
 import { Reflector } from '@nestjs/core';
 import jwt from 'jsonwebtoken';
@@ -240,6 +241,77 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
     await guard.canActivate(ctx(fed));
     expect(fed.actorIssuer).toBe('registry-a.peer');
     expect(fed.actorFederated).toBe(true);
+  });
+
+  describe('per-issuer read_only (#225)', () => {
+    const claims = {
+      iss: 'registry-a.peer',
+      sub: 'did:web:alice',
+      jti: 'j',
+      exp: 9_999_999_999,
+      iat: 0,
+      acdp: { registry: 'x', key_id: 'k' },
+    };
+    const run = async (
+      method: string,
+      over: { readOnly?: boolean; path?: string; extra?: Record<string, any>; claims?: object } = {},
+    ) => {
+      trustedEntry = { iss: claims.iss, alg: 'HS256', audience: claims.iss, readOnly: over.readOnly ?? true };
+      validator.verify.mockResolvedValue({ ...claims, ...over.claims });
+      const req: Record<string, any> = {
+        headers: { authorization: `Bearer ${fakeJwt({ sub: 'x' })}`, ...(over.extra ?? {}) },
+        method,
+        path: over.path ?? '/webhooks',
+      };
+      return guard.canActivate(ctx(req));
+    };
+    const expectReadOnlyDenied = async (p: Promise<boolean>) => {
+      const e: any = await p.then(
+        () => null,
+        (err) => err,
+      );
+      expect(e).toBeInstanceOf(AppException);
+      expect(e.getStatus()).toBe(403);
+      expect(e.errorCode).toBe(ErrorCode.ISSUER_READ_ONLY);
+    };
+
+    it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('denies %s with ISSUER_READ_ONLY (403)', async (m) => {
+      await expectReadOnlyDenied(run(m));
+    });
+
+    it.each(['GET', 'HEAD', 'OPTIONS', 'get'])('allows safe method %s', async (m) => {
+      await expect(run(m)).resolves.toBe(true);
+    });
+
+    it('default-off: readOnly=false issuer may POST', async () => {
+      await expect(run('POST', { readOnly: false })).resolves.toBe(true);
+    });
+
+    it('exempts POST /auth/introspect (read-shaped) but not POST /auth/token/revoke', async () => {
+      await expect(run('POST', { path: '/auth/introspect' })).resolves.toBe(true);
+      await expect(run('POST', { path: '/Auth/Introspect/' })).resolves.toBe(true);
+      await expectReadOnlyDenied(run('POST', { path: '/auth/token/revoke' }));
+      await expectReadOnlyDenied(run('POST', { path: '/auth/introspect/x' }));
+    });
+
+    it('never affects a local token (trusted === null)', async () => {
+      trustedEntry = null;
+      validator.verify.mockResolvedValue(claims);
+      const req = { headers: { authorization: `Bearer ${fakeJwt({ sub: 'x' })}` }, method: 'POST', path: '/webhooks' };
+      await expect(guard.canActivate(ctx(req))).resolves.toBe(true);
+    });
+
+    it('tenant checks keep precedence: bad X-Tenant-Id on POST → TENANT_MISMATCH, not ISSUER_READ_ONLY', async () => {
+      const e: any = await run('POST', {
+        claims: { tenant: 'tenant-a' },
+        extra: { 'x-tenant-id': 'tenant-b' },
+      }).then(
+        () => null,
+        (err) => err,
+      );
+      expect(e).toBeInstanceOf(AppException);
+      expect(e.errorCode).toBe(ErrorCode.TENANT_MISMATCH);
+    });
   });
 
   it('rejects an invalid JWT (no fallthrough to api-key matching)', async () => {

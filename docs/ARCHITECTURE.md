@@ -200,7 +200,9 @@ explicitly relaxed for dev).
   JWTs** issued via `/auth/challenge` + `/auth/token` (Ed25519/ECDSA-P256
   challenge-response). The guard accepts either.
 - JWTs from **trusted external issuers** (`TRUSTED_ISSUERS`, each with a required
-  `audience`) are accepted via `CrossIssuerValidatorService` (remote JWKS).
+  `audience`) are accepted via `CrossIssuerValidatorService` (remote JWKS). An entry may
+  carry the opt-in `read_only` flag: `AuthGuard` then limits its tokens to
+  GET/HEAD/OPTIONS (`ISSUER_READ_ONLY`), and `iss`/`federated` reach `PolicyRequest`.
 - **Revocation is bidirectional**: the CP serves `/auth/revocations` and consumes
   peer feeds (`REVOCATION_FEEDS`) with issuer confinement + durable per-issuer
   cursors, so a single `isRevoked(jti)` check honors local *and* propagated

@@ -230,6 +230,7 @@ export class CrossIssuerValidator {
       jti: decoded.jti,
       audienceRequired: trusted.audience ?? null,
       scopeRequired: trusted.requiredScope ?? null,
+      readOnly: trusted.readOnly,
     });
     return decoded;
   }

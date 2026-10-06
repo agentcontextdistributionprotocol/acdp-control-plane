@@ -150,6 +150,25 @@ export class AuthGuard implements CanActivate {
         );
       }
       request.tenantId = claimTenant ?? headerTenant ?? DEFAULT_TENANT_ID;
+      // Per-issuer `read_only` (opt-in, #225): tokens from a TRUSTED_ISSUERS
+      // entry flagged `read_only` may only use safe methods. Placed AFTER the
+      // tenant checks so tenant 403s keep precedence. Method-based, not
+      // route-based, so any future write route is covered automatically —
+      // but a future state-changing GET would bypass it: never add one.
+      if (trusted?.readOnly && !isSafeForReadOnlyIssuer(request)) {
+        this.logger.warn({
+          msg: 'read-only issuer: non-safe method denied',
+          iss: claims.iss,
+          sub: claims.sub,
+          method: request.method,
+          path: request.path,
+        });
+        throw new AppException(
+          ErrorCode.ISSUER_READ_ONLY,
+          'tokens from this issuer are read-only',
+          HttpStatus.FORBIDDEN,
+        );
+      }
       return true;
     }
 
@@ -234,6 +253,21 @@ export class AuthGuard implements CanActivate {
  */
 function looksLikeJwt(token: string): boolean {
   return token.split('.').length === 3;
+}
+
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Whether a request from a `read_only` issuer may proceed: GET/HEAD/OPTIONS,
+ * plus `POST /auth/introspect` (RFC 7662 mandates POST; it is read-shaped and
+ * never mutates). Path match is normalised (case, trailing slashes) the way
+ * Express routes it.
+ */
+function isSafeForReadOnlyIssuer(request: { method?: string; path?: string }): boolean {
+  const method = (request.method ?? '').toUpperCase();
+  if (SAFE_METHODS.has(method)) return true;
+  const path = (request.path ?? '').toLowerCase().replace(/\/+$/, '');
+  return method === 'POST' && path === '/auth/introspect';
 }
 
 /**

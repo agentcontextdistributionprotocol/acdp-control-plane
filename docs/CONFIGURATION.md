@@ -87,7 +87,7 @@ See [AUTH.md](./AUTH.md).
 | `JWT_TTL_SECONDS` | number | `3600` | Issued-token TTL. **≥60** when issuance. |
 | `CHALLENGE_TTL_SECONDS` | number | `300` | Challenge-nonce TTL. **≥30** when issuance. |
 | `CONTROL_PLANE_PINNED_KEYS` | CSV | `''` | `did=base64[:alg][:from..until]`. Verification + emergency revocation. |
-| `TRUSTED_ISSUERS` | CSV | `''` | Federated peers. `iss\|alg\|material\|audience[\|scope]`. `audience` required. `scope` (optional) is checked against the token's `scope`/`scopes`/`scp` claims; do not set it for ACDP registry peers (they mint no scope claim). |
+| `TRUSTED_ISSUERS` | CSV | `''` | Federated peers. `iss\|alg\|material\|audience[\|scope[\|flags]]`. `audience` required. `flags` (6th field, whitespace-separated, closed set; today only `read_only`) — to set a flag without a scope leave the scope empty: `iss\|HS256\|<secret>\|<aud>\|\|read_only`. `read_only` limits that issuer's tokens to GET/HEAD/OPTIONS (403 `ISSUER_READ_ONLY` otherwise; `POST /auth/introspect` exempt). Unknown/duplicate flags, a flag name in the scope slot, or >6 fields fail startup. **Rollback hazard:** a build older than this field silently ignores the 6th field, so rolling back drops `read_only`. `scope` (optional) is checked against the token's `scope`/`scopes`/`scp` claims; do not set it for ACDP registry peers (they mint no scope claim). |
 | `REVOCATION_FEEDS` | CSV | `''` | Peer feeds to poll. `issuer\|url\|admin_token[\|poll_seconds]`. |
 
 ## Tenancy

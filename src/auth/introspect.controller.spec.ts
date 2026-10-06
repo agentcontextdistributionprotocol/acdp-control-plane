@@ -139,7 +139,7 @@ describe('IntrospectController', () => {
     const PEER_SECRET = 'P'.repeat(64);
     const cfg = fakeConfig();
     const peerRegistry = new TrustedIssuerRegistry([
-      { iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET, audience: PEER_ISS },
+      { iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET, audience: PEER_ISS, readOnly: false },
     ]);
     const mod = await Test.createTestingModule({
       controllers: [IntrospectController],
@@ -207,7 +207,7 @@ describe('IntrospectController', () => {
     const PEER_SECRET = 'P'.repeat(64);
     const cfg = fakeConfig();
     const peerRegistry = new TrustedIssuerRegistry([
-      { iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET, audience: PEER_ISS },
+      { iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET, audience: PEER_ISS, readOnly: false },
     ]);
     const revocations = new InMemoryRevocationRepository();
     // Simulate a revocation imported from the peer's feed (iss = the peer).

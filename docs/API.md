@@ -13,6 +13,8 @@ Every non-`@Public()` route requires a credential in the `Authorization` header:
   (dev only, non-production), auth is bypassed.
 - **Bearer JWT** — a token issued by `/auth/token` or by a trusted external
   issuer (`TRUSTED_ISSUERS`). The guard auto-detects JWT vs opaque key by shape.
+  A trusted issuer flagged `read_only` is limited to GET/HEAD/OPTIONS (403
+  `ISSUER_READ_ONLY`; `POST /auth/introspect` exempt).
 
 Admin-only routes additionally require the key to be in `AUTH_ADMIN_API_KEYS`.
 See [AUTH.md](./AUTH.md).
@@ -68,6 +70,7 @@ wherever one exists. `INTERNAL_ERROR` is reserved for genuine server faults
 | `QUOTA_EXCEEDED` | 429 | specific | Per-tenant per-action `TENANT_QUOTAS` limit; see `Retry-After`. |
 | `REGISTRY_NOT_ENROLLED` | 403 | specific | Ingest from an unenrolled authority under `INGEST_REQUIRE_ENROLLMENT`. |
 | `REGISTRY_DISABLED` | 403 | specific | Ingest from an enrolled but disabled registry. |
+| `ISSUER_READ_ONLY` | 403 | specific | The bearer token is from a `TRUSTED_ISSUERS` entry flagged `read_only` and the method is not GET/HEAD/OPTIONS (`POST /auth/introspect` is exempt). Use a CP-issued token, or have the operator lift the flag. |
 | `INVALID_WEBHOOK_SIGNATURE` | 401 | specific | HMAC `X-ACDP-Signature` failed on `/ingest/acdp` or `/runs/*` notify. |
 | `INVALID_SIGNATURE` | 401 | specific | Ed25519/ECDSA-P256 signature over a challenge or capability assertion failed. |
 | `VALIDATION_ERROR` | 400 | specific | Malformed witness query parameter (`schema_violation`). |

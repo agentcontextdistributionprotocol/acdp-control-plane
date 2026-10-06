@@ -3861,3 +3861,5 @@ From `plans/followups-225.md` (issue #225). Reuse this map; don't re-scan.
 ||||||| parent of 71da4ce (docs+comments: close #225 phase 2 gaps)
 ## #225 Phase 2 — one scope vocabulary (2026-10-06)
 - PASS (Opus, solo, 1 round + 4 minor gaps closed). src/auth/scopes.ts, auth.guard, cross-issuer-validator, docs. Unit 1549, integration 264.
+- Phase 3 PASS after 1 GAPS round (actor.ts typing unused → used in PolicyGuard). Opus, solo.
+- Phase 4 implemented: read_only flag, ISSUER_READ_ONLY, parser tightening (no secret echo), integration spec federation-read-only (7 cases; mutation-checked). Unit 1576, integration 271. Verifier pending.
