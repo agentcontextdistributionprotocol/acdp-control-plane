@@ -82,6 +82,8 @@ export class PolicyGuard implements CanActivate {
       resourceId: extractResourceId(req),
       // Scopes pinned by the AuthGuard from the JWT (`scope`/`scopes`/`scp` union).
       scopes: Array.isArray(req.actorScopes) ? req.actorScopes : [],
+      issuer: typeof req.actorIssuer === 'string' ? req.actorIssuer : '',
+      federated: req.actorFederated === true,
       tenantId: typeof req.tenantId === 'string' ? req.tenantId : DEFAULT_TENANT_ID,
     };
 

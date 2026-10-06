@@ -180,7 +180,9 @@ exposes and what does *not* mitigate it:
   `scope`/`scopes`/`scp`, none of which the registry ever mints, so setting it rejects every registry token; and
   registry-side revocations never reach the CP (the registry serves no revocation feed), so
   the replay window is the token TTL (default 3600 s).
-- **Planned:** a per-issuer `read_only` flag (default off) and `iss` in `PolicyRequest`
+- **Available / planned:** `iss` and a `federated` flag now reach `PolicyRequest` and the OPA
+  input (a site policy can treat federated principals differently on `@CheckPolicy` routes);
+  a per-issuer `read_only` flag (default off) for CP-local writes such as `POST /webhooks`
   (acdp-control-plane#225); multi-audience `aud: [registry, cp]` minting
   (acdp-registry-rs#420, after which the per-issuer `audience` can name the CP) and a
   registry revocation feed (acdp-registry-rs#421).

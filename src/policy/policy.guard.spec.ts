@@ -157,6 +157,23 @@ describe('PolicyGuard', () => {
     expect(observed.resourceId).toBe('r-123');
   });
 
+  it('passes issuer/federated provenance to the decider; api-key callers get \'\'/false (#225)', async () => {
+    const seen: any[] = [];
+    const sink: PolicyDecider = {
+      async decide(req): Promise<PolicyDecision> {
+        seen.push(req);
+        return PolicyDecisions.allow();
+      },
+    };
+    const g = new PolicyGuard(newReflector('run.read'), sink);
+    await g.canActivate(
+      ctx({ actorDid: 'did:web:a', actorIssuer: 'registry-a.peer', actorFederated: true, params: {} }),
+    );
+    await g.canActivate(ctx({ actorId: 'api-key-prefix', actorFederated: false, params: {} }));
+    expect(seen[0]).toMatchObject({ issuer: 'registry-a.peer', federated: true });
+    expect(seen[1]).toMatchObject({ issuer: '', federated: false });
+  });
+
   it('joins array params (ctxId from path-to-regexp v6 wildcard)', async () => {
     let observed: any = null;
     const sink: PolicyDecider = {

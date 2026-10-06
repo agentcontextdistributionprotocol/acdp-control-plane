@@ -239,6 +239,25 @@ describe('CrossIssuerValidator', () => {
     });
   });
 
+  describe('verifyWithProvenance (#225)', () => {
+    it('reports trusted=null for the local issuer and the entry for a trusted peer; verify() is unchanged', async () => {
+      const peers = [{ iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET }] as any;
+      const v = makeValidator({ peers });
+      const local = await v.verifyWithProvenance(mint(LOCAL_ISS, LOCAL_SECRET));
+      expect(local.trusted).toBeNull();
+      expect(local.claims.iss).toBe(LOCAL_ISS);
+      const peer = await v.verifyWithProvenance(mint(PEER_ISS, PEER_SECRET));
+      expect(peer.trusted).toMatchObject({ iss: PEER_ISS, alg: 'HS256' });
+      expect((await v.verify(mint(PEER_ISS, PEER_SECRET))).iss).toBe(PEER_ISS);
+    });
+
+    it('still rejects an untrusted issuer', async () => {
+      await expect(
+        makeValidator().verifyWithProvenance(mint('stranger', PEER_SECRET)),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
   describe('EdDSA trusted peer (JWKS), verified via the acdp SDK', () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const pubPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();

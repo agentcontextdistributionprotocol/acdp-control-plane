@@ -48,6 +48,14 @@ export interface PolicyRequest {
   resourceAudience?: ReadonlyArray<string>;
   /** Scopes carried in the subject's JWT: the union of the `scope` / `scopes` / `scp` claims (see auth/scopes.ts). Empty array if absent. */
   scopes: ReadonlyArray<string>;
+  /** Verified JWT `iss` of the subject; empty for API-key callers. */
+  issuer?: string;
+  /**
+   * `true` iff the subject authenticated with a token from a `TRUSTED_ISSUERS`
+   * entry (a federated principal). Lets a policy treat federated tokens
+   * differently from locally-issued ones.
+   */
+  federated?: boolean;
   /** Tenant boundary (#6). Empty string means single-tenant deployment. */
   tenantId?: string;
 }

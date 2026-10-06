@@ -80,8 +80,9 @@ export class AuthGuard implements CanActivate {
         );
       }
       let claims;
+      let trusted;
       try {
-        claims = await this.jwtValidator.verify(token);
+        ({ claims, trusted } = await this.jwtValidator.verifyWithProvenance(token));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         this.logger.warn({ msg: 'JWT auth rejected', error: msg });
@@ -94,6 +95,10 @@ export class AuthGuard implements CanActivate {
       request.actorDid = claims.sub;
       request.actorType = 'jwt';
       request.actorIsAdmin = false; // admin is api-key-gated today
+      // Provenance: which issuer vouched for this token. A trusted-issuer
+      // (federated) principal is distinguishable from a locally-issued one.
+      request.actorIssuer = claims.iss;
+      request.actorFederated = trusted !== null;
       // Expose JWT scopes for the PolicyGuard: the union of `scope`, `scopes`
       // and `scp` (see ./scopes.ts) — the same vocabulary the trusted-issuer
       // `requiredScope` gate reads.
@@ -170,6 +175,7 @@ export class AuthGuard implements CanActivate {
 
     request.actorId = token.slice(0, 8) + '...';
     request.actorType = 'api-key';
+    request.actorFederated = false; // actorIssuer stays unset: no JWT issuer
     request.actorIsAdmin = constantTimeIncludes(this.config.authAdminApiKeys, token);
     const keyTenant = this.tenantFor(token);
     // Parity with the JWT path: a header asserting a tenant other than the

@@ -70,6 +70,9 @@ describe('AuthGuard', () => {
     expect(request.actorId).toBe('valid-to...');
     expect(request.actorType).toBe('api-key');
     expect(request.actorIsAdmin).toBe(false);
+    // API keys carry no JWT issuer and are never federated (#225).
+    expect(request.actorFederated).toBe(false);
+    expect(request.actorIssuer).toBeUndefined();
   });
 
   it('flags admin-listed api keys as actorIsAdmin', async () => {
@@ -134,7 +137,10 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
   let reflector: { getAllAndOverride: jest.Mock };
   let config: { authApiKeys: string[]; authAdminApiKeys: string[] };
   let request: Record<string, any>;
-  let validator: Pick<CrossIssuerValidator, 'verify'>;
+  // `verify` is the per-test claims mock; `verifyWithProvenance` (what the guard
+  // calls) wraps it and reports `trustedEntry` as the vouching trust entry.
+  let validator: { verify: jest.Mock; verifyWithProvenance: jest.Mock };
+  let trustedEntry: unknown;
   let guard: AuthGuard;
 
   function ctx(req: Record<string, any>): ExecutionContext {
@@ -158,11 +164,18 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
     reflector = { getAllAndOverride: jest.fn().mockReturnValue(false) };
     config = { authApiKeys: [], authAdminApiKeys: [] };
     request = { headers: {} };
-    validator = { verify: jest.fn() };
+    trustedEntry = null;
+    validator = {
+      verify: jest.fn(),
+      verifyWithProvenance: jest.fn(async (t: string) => ({
+        claims: await validator.verify(t),
+        trusted: trustedEntry,
+      })),
+    };
     guard = new AuthGuard(
       reflector as unknown as Reflector,
       config as AppConfigService,
-      validator as CrossIssuerValidator,
+      validator as unknown as CrossIssuerValidator,
     );
   });
 
@@ -209,6 +222,24 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
     (validator.verify as jest.Mock).mockResolvedValueOnce({ ...claims, scp: 'only-scp' });
     await guard.canActivate(ctx(req3));
     expect(req3.actorScopes).toEqual(['only-scp']);
+  });
+
+  it('tags provenance: local token → issuer=iss, federated=false; trusted → federated=true (#225)', async () => {
+    const base = { sub: 'did:web:alice', jti: 'j', exp: 9_999_999_999, iat: 0, acdp: { registry: 'x', key_id: 'k' } };
+    const tok = `Bearer ${fakeJwt({ sub: 'x' })}`;
+
+    const local: Record<string, any> = { headers: { authorization: tok } };
+    validator.verify.mockResolvedValueOnce({ ...base, iss: 'cp.local' });
+    await guard.canActivate(ctx(local));
+    expect(local.actorIssuer).toBe('cp.local');
+    expect(local.actorFederated).toBe(false);
+
+    trustedEntry = { iss: 'registry-a.peer', alg: 'HS256', audience: 'registry-a.peer' };
+    const fed: Record<string, any> = { headers: { authorization: tok } };
+    validator.verify.mockResolvedValueOnce({ ...base, iss: 'registry-a.peer' });
+    await guard.canActivate(ctx(fed));
+    expect(fed.actorIssuer).toBe('registry-a.peer');
+    expect(fed.actorFederated).toBe(true);
   });
 
   it('rejects an invalid JWT (no fallthrough to api-key matching)', async () => {
