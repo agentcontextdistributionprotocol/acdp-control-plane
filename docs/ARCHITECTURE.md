@@ -205,7 +205,7 @@ explicitly relaxed for dev).
   GET/HEAD/OPTIONS (`ISSUER_READ_ONLY`), and `iss`/`federated` reach `PolicyRequest`.
 - **Revocation is bidirectional**: the CP serves `/auth/revocations` and consumes
   peer feeds (`REVOCATION_FEEDS`) with issuer confinement + durable per-issuer
-  cursors, so a single `isRevoked(jti)` check honors local *and* propagated
+  cursors, so a single `isRevoked(iss, jti)` check honors local *and* propagated
   revocations.
 
 Full detail in [AUTH.md](./AUTH.md).

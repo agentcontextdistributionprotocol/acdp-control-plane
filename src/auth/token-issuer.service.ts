@@ -316,7 +316,7 @@ export class TokenIssuer {
     // the revocation repository, we skip the check (and accept the
     // V1 behavior of "tokens are valid until they expire").
     if (this.revocations) {
-      const revoked = await this.revocations.isRevoked(decoded.jti);
+      const revoked = await this.revocations.isRevoked(decoded.iss, decoded.jti);
       if (revoked) {
         throw new UnauthorizedException(`token jti=${decoded.jti} has been revoked`);
       }

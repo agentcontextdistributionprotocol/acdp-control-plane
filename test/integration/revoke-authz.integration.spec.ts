@@ -11,12 +11,13 @@ import { TestClient } from '../helpers/test-client';
  */
 const LOCAL_SECRET = 'local-revoke-integration-secret-0123456789';
 const PEER_SECRET = 'P'.repeat(40);
+const PEER2_SECRET = 'Q'.repeat(40);
 const ADMIN_KEY = 'admin-key-revoke';
 
-function peerToken(sub: string, jti: string, secret = PEER_SECRET): string {
-  return jwt.sign({ sub, aud: 'peer.example', jti }, secret, {
+function peerToken(sub: string, jti: string, secret = PEER_SECRET, iss = 'peer'): string {
+  return jwt.sign({ sub, aud: `${iss}.example`, jti }, secret, {
     algorithm: 'HS256',
-    issuer: 'peer',
+    issuer: iss,
     expiresIn: 300,
   });
 }
@@ -31,7 +32,7 @@ describe('Revoke authorization (integration, #229)', () => {
     ctx = await createTestApp({
       apiKey: 'plain-key',
       adminApiKey: ADMIN_KEY,
-      trustedIssuers: `peer|HS256|${PEER_SECRET}|peer.example`,
+      trustedIssuers: `peer|HS256|${PEER_SECRET}|peer.example,peer2|HS256|${PEER2_SECRET}|peer2.example`,
       tokenIssuance: { jwtSecret: LOCAL_SECRET, authority: 'cp.test' },
     });
     admin = new TestClient(ctx.url, ADMIN_KEY);
@@ -78,5 +79,16 @@ describe('Revoke authorization (integration, #229)', () => {
     expect(res.status).toBe(200);
     expect((res.body as any).revoked).toBe(true);
     expect(await active(tok)).toBe(false);
+  });
+
+  it('the deny-list is keyed by (iss, jti): revoking peer A\'s jti does not revoke peer B\'s token with the same jti (#232)', async () => {
+    const a = peerToken('did:web:a', 'collide-jti', PEER_SECRET, 'peer');
+    const b = peerToken('did:web:b', 'collide-jti', PEER2_SECRET, 'peer2');
+    expect(await active(a)).toBe(true);
+    expect(await active(b)).toBe(true);
+    const res = await admin.requestRaw('POST', '/auth/token/revoke', { body: { token: a } });
+    expect((res.body as any).revoked).toBe(true);
+    expect(await active(a)).toBe(false);
+    expect(await active(b)).toBe(true); // same jti, other issuer: untouched
   });
 });

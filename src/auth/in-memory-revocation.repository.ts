@@ -4,39 +4,46 @@ import {
   RevocationRepository,
 } from './revocation-repository';
 
+/** `(iss, jti)` composite key — NUL cannot appear in either. */
+function keyOf(iss: string, jti: string): string {
+  return `${iss}\u0000${jti}`;
+}
+
 @Injectable()
 export class InMemoryRevocationRepository implements RevocationRepository {
   private readonly store = new Map<string, RevocationRecord>();
   private readonly cursors = new Map<string, number>();
 
   async revoke(record: RevocationRecord): Promise<boolean> {
-    if (this.store.has(record.jti)) return false;
-    this.store.set(record.jti, { ...record, revokedAt: record.revokedAt ?? new Date() });
+    const key = keyOf(record.iss, record.jti);
+    if (this.store.has(key)) return false;
+    this.store.set(key, { ...record, revokedAt: record.revokedAt ?? new Date() });
     return true;
   }
 
-  async isRevoked(jti: string): Promise<boolean> {
-    const rec = this.store.get(jti);
+  async isRevoked(iss: string, jti: string): Promise<boolean> {
+    const key = keyOf(iss, jti);
+    const rec = this.store.get(key);
     if (!rec) return false;
     if (rec.exp < nowSeconds()) {
       // Lazy eviction — JWT verification will reject expired tokens
       // anyway; the entry no longer needs to occupy the deny-list.
-      this.store.delete(jti);
+      this.store.delete(key);
       return false;
     }
     return true;
   }
 
-  async get(jti: string): Promise<RevocationRecord | null> {
-    return this.store.get(jti) ?? null;
+  async get(iss: string, jti: string): Promise<RevocationRecord | null> {
+    return this.store.get(keyOf(iss, jti)) ?? null;
   }
 
   async evictExpired(): Promise<number> {
     const now = nowSeconds();
     let evicted = 0;
-    for (const [jti, rec] of this.store) {
+    for (const [key, rec] of this.store) {
       if (rec.exp < now) {
-        this.store.delete(jti);
+        this.store.delete(key);
         evicted++;
       }
     }

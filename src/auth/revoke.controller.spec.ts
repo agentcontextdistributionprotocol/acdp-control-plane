@@ -105,8 +105,8 @@ describe('RevokeController', () => {
     const tok = tokenFor(freshClaims('jti-good'));
     const res = await controller.revoke({ token: tok, reason: 'admin_revoke' }, req());
     expect(res.revoked).toBe(true);
-    expect(await revocations.isRevoked('jti-good')).toBe(true);
-    const rec = await revocations.get('jti-good');
+    expect(await revocations.isRevoked(ISS, 'jti-good')).toBe(true);
+    const rec = await revocations.get(ISS, 'jti-good');
     expect(rec?.reason).toBe('admin_revoke');
     expect(rec?.revokedBy).toBe('admin-1');
   });
@@ -127,7 +127,7 @@ describe('RevokeController', () => {
     });
     const res = await controller.revoke({ token: wrongSecretToken }, req());
     expect(res.revoked).toBe(true); // newly added to deny list
-    expect(await revocations.isRevoked('jti-bad-sig')).toBe(true);
+    expect(await revocations.isRevoked(ISS, 'jti-bad-sig')).toBe(true);
   });
 
   describe('forged / unverifiable tokens (#229)', () => {
@@ -142,7 +142,7 @@ describe('RevokeController', () => {
         selfReq('did:web:mallory'),
       );
       expect(res.revoked).toBe(false); // RFC 7009 no-op, no 403/200 oracle
-      expect(await revocations.isRevoked('jti-victim')).toBe(false);
+      expect(await revocations.isRevoked(ISS, 'jti-victim')).toBe(false);
       // The victim's real token still verifies.
       await expect(issuer.verifyJwt(victim)).resolves.toMatchObject({ jti: 'jti-victim' });
     });
@@ -150,7 +150,7 @@ describe('RevokeController', () => {
     it('non-admin api-key caller gets the same silent no-op', async () => {
       const res = await controller.revoke({ token: forgedFor('jti-x', 'did:web:a') }, nonAdminReq());
       expect(res.revoked).toBe(false);
-      expect(await revocations.isRevoked('jti-x')).toBe(false);
+      expect(await revocations.isRevoked(ISS, 'jti-x')).toBe(false);
     });
 
     it('a verified token of another subject is still 403 (not silently ignored)', async () => {
@@ -169,7 +169,7 @@ describe('RevokeController', () => {
         { ...selfReq('did:web:alice'), actorIssuer: 'some-peer', actorFederated: true },
       ),
     ).rejects.toMatchObject({ errorCode: ErrorCode.FORBIDDEN, status: 403 });
-    expect(await revocations.isRevoked('jti-local')).toBe(false);
+    expect(await revocations.isRevoked(ISS, 'jti-local')).toBe(false);
   });
 
   it('self-revoking an already-revoked local token is a harmless no-op', async () => {
@@ -204,7 +204,7 @@ describe('RevokeController', () => {
     await expect(
       controller.revoke({ token: tok, reason: 'admin_revoke' }, nonAdminReq()),
     ).rejects.toMatchObject({ errorCode: ErrorCode.FORBIDDEN, status: 403 });
-    expect(await revocations.isRevoked('jti-gated')).toBe(false);
+    expect(await revocations.isRevoked(ISS, 'jti-gated')).toBe(false);
   });
 
   it('allows JWT self-revoke when actorDid matches claims.sub', async () => {
@@ -224,7 +224,7 @@ describe('RevokeController', () => {
         selfReq('did:web:eve'),
       ),
     ).rejects.toThrow(/not authorized/);
-    expect(await revocations.isRevoked('jti-not-mine')).toBe(false);
+    expect(await revocations.isRevoked(ISS, 'jti-not-mine')).toBe(false);
   });
 
   it('still returns 200 + revoked=false for un-decodable token even from a non-admin (no oracle)', async () => {
@@ -252,6 +252,6 @@ describe('RevocationRepository sanity (in-memory)', () => {
       revokedBy: 't',
       reason: 'admin_revoke',
     });
-    expect(await repo.isRevoked('x')).toBe(true);
+    expect(await repo.isRevoked(ISS, 'x')).toBe(true);
   });
 });

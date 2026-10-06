@@ -201,7 +201,7 @@ describe('IntrospectController', () => {
   it('DOES reject a trusted-peer token whose jti is in the local revocation list', async () => {
     // Cross-issuer revocation propagation (plan §9, now implemented): the
     // RevocationPollerService imports each peer's revocations into the local
-    // store, so a single isRevoked(jti) check honors propagated revocations.
+    // store, so a single isRevoked(iss, jti) check honors propagated revocations.
     // The introspect path therefore reports a revoked peer token as inactive.
     const PEER_ISS = 'registry-a.peer';
     const PEER_SECRET = 'P'.repeat(64);

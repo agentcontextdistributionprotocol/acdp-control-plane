@@ -804,3 +804,8 @@ untouched and await the user.
 - **Not done (deliberate):** bare API keys still ignore the header (no `any_peer` honouring for keys — no consumer, avoids new surface); `trusted_proxies` not offered (name reserved; `TRUST_PROXY` is a different mechanism); `/ingest/acdp` stays on `INGEST_STRICT_TENANT` (HMAC-authenticated sender = the registry; different trust model) — docs now recommend it for multi-tenant deployments.
 - **Breaking for lax deployments** that partition by JWT + header: set `any_peer` or mint tenant-bound tokens. Rollback hazard: older builds behave as `any_peer`.
 - **Playground note (not our repo):** its `POST /capabilities` sends a bare admin key + `X-Tenant-Id` — unaffected (bare keys ignore the header), but it is silently landing in `default`; worth a playground issue.
+
+## 2026-10-06 — #232 revocation deny-list keyed by (iss, jti) — decided by Opus
+- **Chose:** composite primary key `(iss, jti)` (migration 0025; `iss` was already NOT NULL so no backfill), `RevocationRepository.isRevoked(iss, jti)` / `get(iss, jti)`, `ON CONFLICT (iss, jti)`. Callers pass the verified token's `iss` (local verifyJwt, CrossIssuerValidator, revoke controller, poller entry iss — already confined to the feed issuer).
+- **Why:** a jti is only unique within an issuer; jti-only keying let one issuer's entry (feed or admin revoke of a peer token) deny-list another issuer's token. Mirrors the registry's per-issuer scoping.
+- **Rollback hazard:** older builds' `ON CONFLICT (jti)` errors against the new key (documented in TROUBLESHOOTING). Pre-release/small deployments; one-way for the schema but reversible by restoring the PK if no cross-issuer duplicates exist.

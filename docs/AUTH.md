@@ -242,8 +242,11 @@ both local and peer tokens.
 
 ## Revocation (bidirectional)
 
-A token is invalid before `exp` if its `jti` is revoked. The verify hot-path
-calls a single `isRevoked(jti)` that honors **both** locally-revoked and
+A `REVOCATION_FEEDS` issuer equal to `JWT_AUTHORITY` fails startup (a peer feed must not write rows
+under the local issuer). A token is invalid before `exp` if its `(iss, jti)` is revoked — a `jti` is only unique within
+its issuer, so the deny-list is keyed on the pair and one issuer's entry can never revoke another
+issuer's token (#232; migration 0025). The verify hot-path
+calls a single `isRevoked(iss, jti)` that honors **both** locally-revoked and
 peer-propagated revocations. This is the same bidirectional model the registry
 runs — see [AUTHENTICATION.md → "Cross-issuer revocation federation"](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md);
 the feed format and issuer-confinement rule are shared.

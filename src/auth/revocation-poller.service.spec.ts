@@ -69,7 +69,7 @@ describe('RevocationPollerService.pollFeed', () => {
     expect(res.dropped).toBe(0);
     expect(res.allSucceeded).toBe(true);
     expect(res.cursor).toBe(1000);
-    expect(await repo.isRevoked('j1')).toBe(true);
+    expect(await repo.isRevoked(ISSUER, 'j1')).toBe(true);
     expect(await repo.getRevocationCursor(ISSUER)).toBe(1000);
   });
 
@@ -105,8 +105,8 @@ describe('RevocationPollerService.pollFeed', () => {
     expect(res.applied).toBe(1);
     expect(res.dropped).toBe(1);
     expect(res.allSucceeded).toBe(true); // a drop is not a failure
-    expect(await repo.isRevoked('good')).toBe(true);
-    expect(await repo.isRevoked('evil')).toBe(false);
+    expect(await repo.isRevoked(ISSUER, 'good')).toBe(true);
+    expect(await repo.isRevoked('attacker.example', 'evil')).toBe(false);
     expect(res.cursor).toBe(2); // cursor still advances past a dropped entry
   });
 
@@ -120,7 +120,7 @@ describe('RevocationPollerService.pollFeed', () => {
     const { poller, repo } = makePoller(undefined, fetchImpl);
 
     await poller.pollFeed(feed());
-    expect(await repo.isRevoked('j')).toBe(true);
+    expect(await repo.isRevoked(ISSUER, 'j')).toBe(true);
   });
 
   it('dead-letters an entry with a malformed exp (skip, cursor still advances)', async () => {
@@ -137,7 +137,7 @@ describe('RevocationPollerService.pollFeed', () => {
     expect(res.dropped).toBe(1);
     expect(res.allSucceeded).toBe(true);
     expect(res.cursor).toBe(9);
-    expect(await repo.isRevoked('bad')).toBe(false);
+    expect(await repo.isRevoked(ISSUER, 'bad')).toBe(false);
   });
 
   it('holds the cursor when a revoke fails (partial failure replays the page)', async () => {
@@ -229,5 +229,11 @@ describe('RevocationPollerService lifecycle', () => {
     await new Promise((r) => setImmediate(r));
     poller.onModuleDestroy();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses to boot when a feed issuer equals JWT_AUTHORITY (#232)', async () => {
+    const cfg = { revocationFeedsRaw: `local.cp|${FEED_URL}|ADMIN`, isDevelopment: false, jwtAuthority: 'local.cp' } as unknown as AppConfigService;
+    const poller = new RevocationPollerService(cfg, new InMemoryRevocationRepository());
+    await expect(poller.onModuleInit()).rejects.toThrow(/equals JWT_AUTHORITY/);
   });
 });
