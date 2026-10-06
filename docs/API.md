@@ -645,6 +645,11 @@ names mirror `AppConfigService`'s own flag names 1:1
 |--------|------|-------------|
 | `POST` | `/webhooks` | Create. Body: `{ url, events?, secret }`. |
 | `GET`  | `/webhooks` | List. |
+
+The `secret` is **write-only**: it is accepted on create/update and used to sign deliveries, but never appears in any response (create, list, update) — #230. Rotate it with `PATCH`.
+
+| Method | Path | Description |
+|--------|------|-------------|
 | `PATCH`| `/webhooks/:id` | Update any of `{ url, events, secret, active }`. |
 | `DELETE` | `/webhooks/:id` | Remove. Returns `204`. |
 

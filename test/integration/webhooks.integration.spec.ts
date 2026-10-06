@@ -37,6 +37,24 @@ describe('Webhook subscriptions (integration)', () => {
     expect(after.length).toBe(0);
   });
 
+  it('never returns the signing secret (create, list, patch) (#230)', async () => {
+    const created = (await ctx.client.createWebhook({
+      url: 'https://example.com/hook',
+      secret: 'super-secret-value',
+    })) as Record<string, unknown>;
+    expect(created).not.toHaveProperty('secret');
+    const listed = (await ctx.client.listWebhooks()) as Array<Record<string, unknown>>;
+    expect(listed.length).toBe(1);
+    for (const w of listed) expect(w).not.toHaveProperty('secret');
+    expect(JSON.stringify(listed)).not.toContain('super-secret-value');
+    const patched = await ctx.client.requestRaw('PATCH', `/webhooks/${created.id}`, {
+      body: { secret: 'rotated-secret-value', active: false },
+    });
+    expect(patched.status).toBe(200);
+    expect(patched.body as object).not.toHaveProperty('secret');
+    expect(JSON.stringify(patched.body)).not.toContain('rotated-secret-value');
+  });
+
   it('rejects creation with an invalid URL (400)', async () => {
     const res = await ctx.client.requestRaw('POST', '/webhooks', {
       body: { url: 'not-a-url', secret: 'x' },
