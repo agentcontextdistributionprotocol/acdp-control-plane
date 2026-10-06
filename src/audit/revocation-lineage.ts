@@ -201,7 +201,7 @@ export interface LineageWalkParams {
   expectCtxId: string;
 }
 
-/** Per-`Status` member-verdict tally, returned on every outcome of a walk — see Approach step 1 in `plans/revocation-lineage-member-metric.md`. */
+/** Per-`Status` member-verdict tally, returned on every outcome of a walk — see Approach step 1 in `plans/archive/revocation-lineage-member-metric.md`. */
 export type LineageMemberVerdictCounts = Record<LineageMemberVerdict['status'], number>;
 
 export type LineageWalkOutcome =
@@ -334,7 +334,7 @@ export async function walkRevocationLineage(
     // runtime-load-bearing (no noUncheckedIndexedAccess, no type-aware lint
     // rule defends it) against an out-of-union status poisoning a dynamic key
     // with NaN — see Approach step 2 in
-    // plans/revocation-lineage-member-metric.md.
+    // plans/archive/revocation-lineage-member-metric.md.
     memberVerdictCounts[verdict.status] = (memberVerdictCounts[verdict.status] ?? 0) + 1;
     // Exhaustive by construction (mirrors classifyLineageFailure's own
     // established pattern above) — a status value reaching neither an

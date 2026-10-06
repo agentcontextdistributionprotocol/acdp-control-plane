@@ -71,7 +71,7 @@ export function isSseRequest(req: Pick<Request, 'method' | 'originalUrl'>): bool
  *
  * Nest's own `return503OnClosing` is deliberately NOT used: its bare `text/html`
  * 503 bypasses all of the above and 503s SSE reconnects too
- * (`plans/graceful-drain-192.md`).
+ * (`plans/archive/graceful-drain-192.md`).
  */
 @Injectable()
 export class DrainGateMiddleware implements NestMiddleware {

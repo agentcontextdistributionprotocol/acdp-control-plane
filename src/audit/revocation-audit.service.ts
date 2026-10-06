@@ -63,8 +63,8 @@
  * criteria (6/7) with the plan's stated evidence-recording principle.
  *
  * **Failure discipline** (revised from the plan's first draft — see
- * `plans/rfc-0014-0015-upgrade.md`, Phase 12 divergence note #7; extended to
- * a third bucket by issue #170 / `plans/revocation-lineage-p256-status.md`):
+ * `plans/archive/rfc-0014-0015-upgrade.md`, Phase 12 divergence note #7; extended to
+ * a third bucket by issue #170 / `plans/archive/revocation-lineage-p256-status.md`):
  * a body that fails verification PERMANENTLY (bad signature, hash mismatch,
  * §4/§5 rejection, a ctx_id substitution) counts `status="invalid"`. A body
  * that could not even be FETCHED or DID-resolved (registry down, DID host
@@ -507,7 +507,7 @@ export class RevocationAuditService implements OnModuleInit, OnModuleDestroy {
     // Counted regardless of outcome — an aborted walk (Rule 3) still leaves
     // memberVerdictCounts holding every member evaluated before the abort,
     // and an observed tally must never be lost to a later failure (see
-    // Approach step 3, plans/revocation-lineage-member-metric.md). Placed
+    // Approach step 3, plans/archive/revocation-lineage-member-metric.md). Placed
     // ahead of the persistence loop below too, for the same reason:
     // revocationRepo.record can reject and this drain loop has no try/catch.
     for (const [status, count] of Object.entries(result.memberVerdictCounts) as [Status, number][]) {

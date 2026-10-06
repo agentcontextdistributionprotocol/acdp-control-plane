@@ -26,7 +26,7 @@ interface Pair {
  *                   lost; a connect stuck on one only ends at the pool's
  *                   `connectionTimeoutMillis`.
  *
- * Ported from the scratch proxy measured in `plans/readyz-db-down-fix.md`.
+ * Ported from the scratch proxy measured in `plans/archive/readyz-db-down-fix.md`.
  */
 export class PgFaultProxy {
   private server: net.Server | null = null;

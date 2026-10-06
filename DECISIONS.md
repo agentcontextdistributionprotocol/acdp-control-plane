@@ -1,7 +1,7 @@
 # Decisions
 
 ## 2026-08-28 — Removing the unused `@nestjs/config` dependency (Phase 4, CP-5)
-- **Plan:** `plans/wave1-cp-1-4-5-6-7.md`
+- **Plan:** `plans/archive/wave1-cp-1-4-5-6-7.md`
 - **Original assumption:** removing `@nestjs/config@^4.0.0` (declared but zero
   imports anywhere in `src/`) and replacing the broken env-loading with a bare
   `dotenv/config` preload as the first line of `src/main.ts` was safe and the
@@ -24,7 +24,7 @@
 - **Status:** CONFIRMED.
 
 ## 2026-08-30 — CP-5 key rotation status (issue #127)
-- **Plan:** `plans/wave1-cp-8-9.md`
+- **Plan:** `plans/archive/wave1-cp-8-9.md`
 - **Question:** issue #127 (filed by an independent two-pass spec-repo audit) flagged
   that Wave 1's CP-5 fix removed the leaked `OPENAI_API_KEY` from `.env`/repo history,
   but removal isn't rotation — no repo-side evidence could confirm the key was actually
@@ -33,12 +33,12 @@
 - **Asked directly during `/drive` preflight** (not a Fable/Opus recommendation lane —
   this isn't a code judgment call, it's a factual status only the user can confirm).
 - **Verdict:** User confirmed the key has been rotated/revoked at the provider.
-- **Status:** CONFIRMED. No code change required; CP-5 is closed. `plans/wave1-cp-8-9.md`
+- **Status:** CONFIRMED. No code change required; CP-5 is closed. `plans/archive/wave1-cp-8-9.md`
   covers only CP-8 and CP-9.
 
 ---
 
-## 2026-09-11 — Reconciliation of `plans/dep-migrations-137.md` (issue #137)
+## 2026-09-11 — Reconciliation of `plans/archive/dep-migrations-137.md` (issue #137)
 
 Four `UNCONFIRMED` entries, reconciled after the feature merged as `227901d`. Ranked by
 blast radius: the `truncateAll` entry first (it issues `TRUNCATE ... CASCADE` over
@@ -158,7 +158,7 @@ because it sets an internal API shape that later code will copy.
 ---
 
 ## 2026-09-23 — Lineage cursor TTL promoted to a config knob (Phase 13 assumption)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Original assumption:** the §7 lineage-walk cursor freshness window is a re-walk
   *cadence* knob, not correctness-affecting, so a hardcoded
   `LINEAGE_CURSOR_TTL_MS = 1h` in `src/audit/revocation-audit.service.ts` was fine;
@@ -203,7 +203,7 @@ because it sets an internal API shape that later code will copy.
 ---
 
 ## 2026-09-23 — `KEY_REVOCATION_ATTESTED_SCOPE` does not gate persistence (Phase 12 assumption)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Original assumption:** persistence of a `registry_attested` revocation is gated
   only by `crossCheckRegistryBinding`'s outcome, never by
   `KEY_REVOCATION_ATTESTED_SCOPE` — that knob applies only at Phase 14's
@@ -224,7 +224,7 @@ because it sets an internal API shape that later code will copy.
 ---
 
 ## 2026-09-23 — Manual `signature.key_id`-vs-`agent_id` DID-binding check (Phase 12 assumption)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Original assumption:** RFC-ACDP-0014's Phase 12 spec text is silent on
   cross-checking the resolved signer's DID against the revocation body's own
   `agent_id`; the check was added anyway, mirroring the Rust reference
@@ -245,7 +245,7 @@ because it sets an internal API shape that later code will copy.
 ---
 
 ## 2026-09-23 — Revocation-sweep candidate ordering: oldest-first → newest-first (Phase 12 assumption)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Original assumption:** a single shared `KEY_REVOCATION_LOOKBACK_HOURS` (720h)
   candidate window, applied uniformly regardless of whether a prior failure was
   permanent or transient, is strictly safer than a narrower per-class window.
@@ -274,7 +274,7 @@ because it sets an internal API shape that later code will copy.
 ---
 
 ## 2026-09-23 — ecdsa-p256 revocation signers: facts corrected, fix deferred (Phase 12 assumption)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Original assumption:** a did:web P-256 signer fails closed as `unavailable`
   (capability gap), a did:key P-256 signer is rejected as `invalid` at the
   multibase-decode step, and this inconsistency's cheap fix (make both branches
@@ -317,7 +317,7 @@ because it sets an internal API shape that later code will copy.
 ---
 
 ## 2026-09-23 — Separate §7 classification metric, not a reuse of Phase 12's (Phase 14 assumption)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Original assumption:** `acdp_receipt_audit_key_revocation_total{status}` (Phase
   14) is a deliberately new counter, distinct from Phase 12's
   `acdp_key_revocation_checks_total{status,trust_class}`, because the two
@@ -336,7 +336,7 @@ because it sets an internal API shape that later code will copy.
 ---
 
 ## 2026-09-23 — Trust-class tie-break on a shared compromise boundary (Phase 14 assumption)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Original assumption:** when two revocation rows over the same fingerprint tie
   on `compromised_since`, the reported `key_revocation_trust_class` prefers
   `producer_signed` over `registry_attested`. See `ASSUMPTIONS.md` for the full
@@ -354,7 +354,7 @@ because it sets an internal API shape that later code will copy.
 ---
 
 ## 2026-09-23 — Candidate selection on registry-claimed `key_fingerprint` (Phase 15 assumption)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Original assumption:** `findRevocationAmendmentCandidates` joins on
   `context_events.key_fingerprint` (registry-claimed, not independently
   resolved) — accepted as a permanent limitation rather than fixed, since
@@ -382,7 +382,7 @@ because it sets an internal API shape that later code will copy.
 ---
 
 ## 2026-09-23 — Reusing RECEIPT_AUDIT_BATCH_SIZE as the Phase 15 fan-out cap (Phase 15 assumption)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Original assumption:** `ReceiptAuditService.reauditForFingerprint` reuses
   `RECEIPT_AUDIT_BATCH_SIZE` rather than a dedicated
   `KEY_REVOCATION_REAUDIT_BATCH_SIZE`, reasoning a dedicated knob would be
@@ -409,12 +409,12 @@ because it sets an internal API shape that later code will copy.
 - **Status:** CONFIRMED.
 
 ## 2026-09-25 — Revocation lineage walk: third `'unsupported'` status shipped (issue #170)
-- **Plan:** `plans/revocation-lineage-p256-status.md`
+- **Plan:** `plans/archive/revocation-lineage-p256-status.md`
 - **Prior assumption:** the 2026-09-23 entry above deferred the actual fix — a third
   `Status`/`LineageMemberVerdict` value distinguishing "capability gap" from both
   "verification failure" (`invalid`) and "transient/couldn't check" (`unavailable`) — to
   its own phase with its own verification gate, rather than patching it same-day.
-- **What shipped:** `/plan` produced `plans/revocation-lineage-p256-status.md` for issue
+- **What shipped:** `/plan` produced `plans/archive/revocation-lineage-p256-status.md` for issue
   #170 (one phase), reviewed by a fresh Opus agent (`REVISE` → 7 findings, all applied —
   see that plan's own "Plan review" section), then implemented via `/implement` and
   verified `PASS` (5 non-blocking findings, all closed) by a second fresh Opus agent.
@@ -448,7 +448,7 @@ because it sets an internal API shape that later code will copy.
   disposable Postgres; full local gate green), and independently verified.
 
 ## 2026-09-25 — Lineage-walk member verdicts stay uncounted: rationale corrected, follow-up tracked (Phase 1 assumption, issue #170)
-- **Plan:** `plans/revocation-lineage-p256-status.md`
+- **Plan:** `plans/archive/revocation-lineage-p256-status.md`
 - **Original assumption:** leave `walkRevocationLineage`'s per-member verdicts
   permanently uncounted by any metric — issue #170's own metric ask scopes only to
   the webhook-candidate path (now fully covered), and `revocation-lineage.ts`'s file
@@ -494,7 +494,7 @@ because it sets an internal API shape that later code will copy.
 
 ## 2026-09-25 — Lineage-walk member verdicts now counted: issue #173 implemented and verified
 
-- **Plan:** `plans/revocation-lineage-member-metric.md`.
+- **Plan:** `plans/archive/revocation-lineage-member-metric.md`.
 - **Original assumption entry:** "Lineage-walk member verdicts stay uncounted by
   any metric" (above, corrected 2026-09-25) — tracked as follow-up issue #173,
   `Status: NEEDS-CHANGE`, "Resolves when issue #173 ships."

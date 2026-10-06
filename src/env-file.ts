@@ -5,7 +5,7 @@ import { parseEnv } from 'node:util';
  * Loads a `.env` file into `target` (#193; replaces the `dotenv` package).
  *
  * Why `util.parseEnv` behind this helper rather than a bare
- * `process.loadEnvFile()` (measured, see plans/dotenv-to-loadenvfile-193.md):
+ * `process.loadEnvFile()` (measured, see plans/archive/dotenv-to-loadenvfile-193.md):
  *   - a UTF-8 BOM corrupts the first key under `parseEnv`, so it is stripped here;
  *   - `loadEnvFile` reports an UNREADABLE file as ENOENT, so a guard on
  *     existence would crash with "no such file" for a file that exists;

@@ -494,7 +494,7 @@ only on full success.
   Nest's `forceCloseConnections` and `return503OnClosing` adapter options stay
   off: the first drops in-flight requests and still exits 0, and the second's
   bare `text/html` 503 bypasses the error envelope, CORS and `Retry-After`, and
-  503s SSE reconnects too (see `plans/graceful-drain-192.md`).
+  503s SSE reconnects too (see `plans/archive/graceful-drain-192.md`).
 
   Each shutdown ends with one structured `shutdown drain complete` line
   (`drainMs`, `drainDelayMs`, `sseStreamsTerminated`, `drainRejections`,
