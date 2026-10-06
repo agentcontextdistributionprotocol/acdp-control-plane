@@ -3868,3 +3868,4 @@ pushed feat/federated-issuer-hardening-225; PR #228 opened: https://github.com/a
 merged #228
 - P1 (#230) PASS solo-verified (Opus), 0 rounds. P2 (#229) implemented: revoke authorizes only on verified claims; forged-token unit+integration tests, mutation-checked.
 - P2 PASS (Opus solo, 0 rounds). Folded notes; filed #232 (deny-list keyed by jti alone). PR-A ready.
+- P3/P4 implemented (tenant header trust parity + docs). Verifier pending.

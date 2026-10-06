@@ -325,7 +325,8 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
     );
   });
 
-  it('honors X-Tenant-Id header for JWT-authenticated requests', async () => {
+  it('TENANT_HEADER_TRUST=any_peer: honors X-Tenant-Id for a JWT with no tenant claim', async () => {
+    (config as Record<string, unknown>).tenantHeaderTrust = 'any_peer';
     const tok = fakeJwt({ iss: 'cp.local', sub: 'did:web:bob', jti: 'j2', exp: 9_999_999_999 });
     (validator.verify as jest.Mock).mockResolvedValue({
       iss: 'cp.local',
@@ -441,10 +442,8 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
     expect(request.tenantId).toBe('tenant-a');
   });
 
-  it('absent tenant claim → header still wins (backward compat with V0 tokens)', async () => {
-    // V0 tokens minted before the migration don't carry `tenant`.
-    // The header path remains the fallback so existing deployments
-    // don't break.
+  it('absent tenant claim + any_peer → header wins (opt-in legacy behaviour)', async () => {
+    (config as Record<string, unknown>).tenantHeaderTrust = 'any_peer';
     const tok = fakeJwt({ sub: 'did:web:eve' });
     (validator.verify as jest.Mock).mockResolvedValue({
       iss: 'cp.local',
@@ -459,5 +458,70 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
     request.headers['x-tenant-id'] = 'tenant-legacy';
     await expect(guard.canActivate(ctx(request))).resolves.toBe(true);
     expect(request.tenantId).toBe('tenant-legacy');
+  });
+
+  describe('TENANT_HEADER_TRUST (default none) — header on a claim-less JWT', () => {
+    const claimsOf = (extra: Record<string, unknown> = {}) => ({
+      iss: 'cp.local',
+      sub: 'did:web:eve',
+      jti: 'jh',
+      exp: 9_999_999_999,
+      iat: 0,
+      acdp: { registry: 'cp.local', key_id: 'did:web:eve#k1' },
+      ...extra,
+    });
+    const run = async (opts: { claim?: string; header?: string; federated?: boolean }) => {
+      trustedEntry = opts.federated ? { iss: 'cp.local', alg: 'HS256', audience: 'a', readOnly: false } : null;
+      validator.verify.mockResolvedValue(claimsOf(opts.claim ? { tenant: opts.claim } : {}));
+      const req: Record<string, any> = {
+        headers: {
+          authorization: `Bearer ${fakeJwt({ sub: 'x' })}`,
+          ...(opts.header ? { 'x-tenant-id': opts.header } : {}),
+        },
+      };
+      const out = await guard.canActivate(ctx(req)).then(
+        () => ({ ok: true as const, tenantId: req.tenantId }),
+        (e) => ({ ok: false as const, code: e.errorCode, status: e.getStatus?.() }),
+      );
+      return out;
+    };
+
+    it.each([false, true])('none: claim-less token + header → 403 TENANT_HEADER_UNTRUSTED (federated=%s)', async (fed) => {
+      expect(await run({ header: 'tenant-x', federated: fed })).toEqual({
+        ok: false,
+        code: ErrorCode.TENANT_HEADER_UNTRUSTED,
+        status: 403,
+      });
+    });
+
+    it('none: no header → default tenant (unchanged)', async () => {
+      expect(await run({})).toEqual({ ok: true, tenantId: 'default' });
+    });
+
+    it('none: claim, header absent or equal → claim wins (corroboration is fine)', async () => {
+      expect(await run({ claim: 'tenant-a' })).toEqual({ ok: true, tenantId: 'tenant-a' });
+      expect(await run({ claim: 'tenant-a', header: 'tenant-a' })).toEqual({ ok: true, tenantId: 'tenant-a' });
+    });
+
+    it('none: claim + different header → TENANT_MISMATCH (precedence over untrusted)', async () => {
+      expect(await run({ claim: 'tenant-a', header: 'tenant-b' })).toMatchObject({
+        ok: false,
+        code: ErrorCode.TENANT_MISMATCH,
+      });
+    });
+
+    it('none: header asserting reserved `default` → TENANT_RESERVED (precedence)', async () => {
+      expect(await run({ header: 'default' })).toMatchObject({ ok: false, code: ErrorCode.TENANT_RESERVED });
+    });
+
+    it('strict mode keeps TENANT_REQUIRED for a claim-less token (unchanged, before the trust check)', async () => {
+      (config as Record<string, unknown>).requireTenant = true;
+      expect(await run({ header: 'tenant-x' })).toMatchObject({ ok: false, code: ErrorCode.TENANT_REQUIRED });
+    });
+
+    it('any_peer: claim-less token + header → header wins', async () => {
+      (config as Record<string, unknown>).tenantHeaderTrust = 'any_peer';
+      expect(await run({ header: 'tenant-x', federated: true })).toEqual({ ok: true, tenantId: 'tenant-x' });
+    });
   });
 });

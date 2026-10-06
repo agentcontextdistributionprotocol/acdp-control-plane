@@ -797,3 +797,10 @@ untouched and await the user.
 - **read_only as a method gate:** CONFIRMED. Audit of all 29 GET/SSE handlers found none mutating; the gate fails closed for new write routes; an allowlist/decorator would be higher-maintenance and fail open on omission. Optional follow-up: a tripwire spec pinning the set of GET handlers (error-codes.spec pattern) — not yet written.
 - **Side finding:** GET /webhooks leaks signing secrets (https://github.com/agentcontextdistributionprotocol/acdp-control-plane/issues/230); revoke unverified-decode (#229).
 - Summary: 2 confirmed, 0 changed, 0 deferred, 2 settled without the user, no code follow-up blocking ship.
+
+## 2026-10-06 — Tenant header trust parity (registry 0.4.0) — Fable analysis, Opus settled
+- **`TENANT_HEADER_TRUST=none|any_peer`, default `none`**, scoped to the AuthGuard JWT branch; new `ErrorCode.TENANT_HEADER_UNTRUSTED` (403; one code per operator remedy, #182). The vocabulary and default mirror the registry's maintainer decision (registry DECISIONS #374/#402), so this is not a new one-way door.
+- **Reject, not ignore:** ignoring the header would silently serve `default` (the registry's reasoning).
+- **Not done (deliberate):** bare API keys still ignore the header (no `any_peer` honouring for keys — no consumer, avoids new surface); `trusted_proxies` not offered (name reserved; `TRUST_PROXY` is a different mechanism); `/ingest/acdp` stays on `INGEST_STRICT_TENANT` (HMAC-authenticated sender = the registry; different trust model) — docs now recommend it for multi-tenant deployments.
+- **Breaking for lax deployments** that partition by JWT + header: set `any_peer` or mint tenant-bound tokens. Rollback hazard: older builds behave as `any_peer`.
+- **Playground note (not our repo):** its `POST /capabilities` sends a bare admin key + `X-Tenant-Id` — unaffected (bare keys ignore the header), but it is silently landing in `default`; worth a playground issue.

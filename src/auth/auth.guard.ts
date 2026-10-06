@@ -149,6 +149,25 @@ export class AuthGuard implements CanActivate {
           HttpStatus.FORBIDDEN,
         );
       }
+      // Header trust (parity with the registry's `tenant_header_trust`): a token
+      // with NO tenant claim may not pick a tenant via the spoofable header
+      // unless the operator declared a trusting boundary (`any_peer`). Reject
+      // rather than ignore — ignoring would silently serve `default`. Runs after
+      // the reserved/mismatch/strict checks, so those keep precedence.
+      if (!claimTenant && headerTenant && this.config.tenantHeaderTrust !== 'any_peer') {
+        this.logger.warn({
+          msg: 'untrusted X-Tenant-Id on a token with no tenant claim',
+          sub: claims.sub,
+          iss: claims.iss,
+          federated: trusted !== null,
+        });
+        throw new AppException(
+          ErrorCode.TENANT_HEADER_UNTRUSTED,
+          'X-Tenant-Id is not trusted for a token with no tenant claim (TENANT_HEADER_TRUST=none); ' +
+            'use a tenant-bound token',
+          HttpStatus.FORBIDDEN,
+        );
+      }
       request.tenantId = claimTenant ?? headerTenant ?? DEFAULT_TENANT_ID;
       // Per-issuer `read_only` (opt-in, #225): tokens from a TRUSTED_ISSUERS
       // entry flagged `read_only` may only use safe methods. Placed AFTER the

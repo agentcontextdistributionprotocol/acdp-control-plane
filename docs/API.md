@@ -24,7 +24,8 @@ See [AUTH.md](./AUTH.md).
 All tenant-owned reads/writes are scoped to the caller's resolved tenant. An
 `X-Tenant-Id` header may be sent but is **rejected** if it disagrees with the
 JWT `tenant` claim or an API key's bound tenant, or if it asserts the reserved
-`default` tenant. With `AUTH_REQUIRE_TENANT=true`, a request that resolves only
+`default` tenant. A JWT with **no** `tenant` claim that sends the header is rejected
+(`403 TENANT_HEADER_UNTRUSTED`) unless `TENANT_HEADER_TRUST=any_peer`. With `AUTH_REQUIRE_TENANT=true`, a request that resolves only
 to `default` is denied. See [TENANCY.md](./TENANCY.md).
 
 ### Error responses
@@ -70,6 +71,7 @@ wherever one exists. `INTERNAL_ERROR` is reserved for genuine server faults
 | `QUOTA_EXCEEDED` | 429 | specific | Per-tenant per-action `TENANT_QUOTAS` limit; see `Retry-After`. |
 | `REGISTRY_NOT_ENROLLED` | 403 | specific | Ingest from an unenrolled authority under `INGEST_REQUIRE_ENROLLMENT`. |
 | `REGISTRY_DISABLED` | 403 | specific | Ingest from an enrolled but disabled registry. |
+| `TENANT_HEADER_UNTRUSTED` | 403 | specific | A JWT with no `tenant` claim sent `X-Tenant-Id` and `TENANT_HEADER_TRUST=none` (default). Use a tenant-bound token, or set `TENANT_HEADER_TRUST=any_peer` behind an authenticating gateway. |
 | `ISSUER_READ_ONLY` | 403 | specific | The bearer token is from a `TRUSTED_ISSUERS` entry flagged `read_only` and the method is not GET/HEAD/OPTIONS (`POST /auth/introspect` is exempt). Use a CP-issued token, or have the operator lift the flag. |
 | `INVALID_WEBHOOK_SIGNATURE` | 401 | specific | HMAC `X-ACDP-Signature` failed on `/ingest/acdp` or `/runs/*` notify. |
 | `INVALID_SIGNATURE` | 401 | specific | Ed25519/ECDSA-P256 signature over a challenge or capability assertion failed. |

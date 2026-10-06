@@ -112,6 +112,14 @@ export enum ErrorCode {
   TENANT_MISMATCH = "TENANT_MISMATCH",
   /** 403 — AUTH_REQUIRE_TENANT strict mode and no bound tenant; bind the key or claim. */
   TENANT_REQUIRED = "TENANT_REQUIRED",
+  /**
+   * 403 — a JWT with no `tenant` claim sent `X-Tenant-Id` while
+   * `TENANT_HEADER_TRUST=none` (the default). The header is only trusted when
+   * the operator declares a gateway boundary (`any_peer`) — otherwise use a
+   * tenant-bound token. Distinct from TENANT_MISMATCH (a claim exists and
+   * disagrees) and TENANT_REQUIRED (strict mode: bind the token).
+   */
+  TENANT_HEADER_UNTRUSTED = "TENANT_HEADER_UNTRUSTED",
 
   // Credentials, ingest gating, policy and quota (#182 Phase 3).
   /**

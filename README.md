@@ -94,6 +94,7 @@ Full env reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 |---|---|---|
 | Tenant-scoped API keys | `TENANT_API_KEYS=tenant-a:key1,tenant-b:key2,bareKey` | `bareKey` (no `tenant:` prefix) binds to `default` |
 | Tenant-bound agents (JWT claim) | `TENANT_AGENTS=tenant-a:did:web:…` | Stamps the `tenant` claim on issued JWTs |
+| Tenant header trust | `TENANT_HEADER_TRUST=none\|any_peer` (default `none`) | A JWT with no `tenant` claim may not pick a tenant via `X-Tenant-Id` (403 `TENANT_HEADER_UNTRUSTED`); registry `tenant_header_trust` parity |
 | Strict-tenant default-deny | `AUTH_REQUIRE_TENANT=true` | Rejects anything resolving only to `default`; spoofed `X-Tenant-Id` and explicit `default` are rejected |
 | Repository-level isolation | — | Every read filters `WHERE tenant_id = ?`; writes stamp `tenantId` (composite conflict keys) |
 

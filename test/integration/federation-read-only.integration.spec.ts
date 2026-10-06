@@ -102,6 +102,16 @@ describe('Per-issuer read_only (integration)', () => {
     expect((res.body as any).active).toBe(true);
   });
 
+  it('TENANT_HEADER_TRUST=none (default): an X-Tenant-Id on a claim-less federated token is 403 TENANT_HEADER_UNTRUSTED, before ISSUER_READ_ONLY', async () => {
+    for (const c of [ro, rw]) {
+      const res = await c.requestRaw('POST', '/webhooks', { body: hook, headers: { 'x-tenant-id': 'tenant-b' } });
+      expect(res.status).toBe(403);
+      expect((res.body as any).error.code).toBe('TENANT_HEADER_UNTRUSTED');
+    }
+    const get = await rw.requestRaw('GET', '/runs', { headers: { 'x-tenant-id': 'tenant-b' } });
+    expect(get.status).toBe(403);
+  });
+
   it('a bad X-Tenant-Id is TENANT_MISMATCH-class precedence, not masked by read_only (claim vs header)', async () => {
     const tok = peerToken('peer-ro', RO_SECRET, { tenant: 'tenant-a' });
     const c = new TestClient(ctx.url, tok);
