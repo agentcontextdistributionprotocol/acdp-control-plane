@@ -3871,3 +3871,4 @@ merged #228
 - P3/P4 implemented (tenant header trust parity + docs). Verifier pending.
 - P3/P4 PASS (Opus solo, 0 rounds; minor docs/test gaps folded). PR-B shipping.
 - #232 implemented: (iss,jti) deny-list key, migration 0025. Verifier pending.
+- #232 verifier: GAPS (feed-issuer guard, PK migration test, doc drift) closed, re-verify PASS. Shipping.
