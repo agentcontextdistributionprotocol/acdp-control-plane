@@ -1,7 +1,7 @@
 # Assumptions
 
 ## Removing the unused `@nestjs/config` dependency (Phase 4, CP-5)
-- **Plan:** `plans/wave1-cp-1-4-5-6-7.md`
+- **Plan:** `plans/archive/wave1-cp-1-4-5-6-7.md`
 - **Assumed:** `@nestjs/config@^4.0.0` was genuinely dead code — a previously
   abandoned attempt at the same env-loading fix this phase implements — and safe
   to remove entirely rather than leave in place or actually wire up.
@@ -31,7 +31,7 @@
 - **Status:** CONFIRMED (2026-08-28) — see `DECISIONS.md`.
 
 ## Discovering truncate targets from `pg_tables` instead of a hardcoded list (Phase 0, issue #137)
-- **Plan:** `plans/dep-migrations-137.md`
+- **Plan:** `plans/archive/dep-migrations-137.md`
 - **Assumed:** every table in the `public` schema except `_migrations` is test
   fixture data that must be cleared between integration specs, so discovering the
   list at runtime is safe and is strictly better than maintaining a literal one.
@@ -84,7 +84,7 @@
   of the guard) is closed by the spec above.
 
 ## Working around host port 5433 rather than stopping another project's container (Phase 0, issue #137)
-- **Plan:** `plans/dep-migrations-137.md`
+- **Plan:** `plans/archive/dep-migrations-137.md`
 - **Assumed:** the container holding host port 5433 belongs to an unrelated
   project (`aitp-*`) on a second Docker daemon, and stopping it is the user's call
   — not a side effect of running this plan.
@@ -116,7 +116,7 @@
   *successful* connect followed by `database "..." does not exist`. Documented now.
 
 ## Deleting `supertest` + `@types/supertest` instead of bumping them (Phase 4, issue #137)
-- **Plan:** `plans/dep-migrations-137.md`
+- **Plan:** `plans/archive/dep-migrations-137.md`
 - **Assumed:** `supertest@^7.0.0` and `@types/supertest@^6.0.2` are dead weight, not a
   deliberate staging step toward replacing the hand-rolled test client.
 - **Chose:** deleted both rather than performing the planned `@types/supertest` 6→7
@@ -147,7 +147,7 @@
   supertest gives nothing for.
 
 ## Not raising CI to Node 26 in Phase 4 (issue #137)
-- **Plan:** `plans/dep-migrations-137.md`
+- **Plan:** `plans/archive/dep-migrations-137.md`
 - **Assumed:** the Node-version divergence this bump widens is worth flagging but not
   worth fixing inside a types PR.
 - **Chose:** left `.github/workflows/{ci,release}.yml` on `node-version: '22'` and did
@@ -176,7 +176,7 @@
   This deferral was raised in phases 4, 6, 8 and 9 before being settled.
 
 ## TypeScript 6: the "two-compiler split" does not exist — assumption WITHDRAWN
-- **Plan:** `plans/dep-migrations-137.md` (Phase 8)
+- **Plan:** `plans/archive/dep-migrations-137.md` (Phase 8)
 - **Assumed (WRONG, twice):** that `npm run build` emits with `@nestjs/cli@11.0.24`'s
   nested `typescript@5.9.3` while CI typechecks with the top-level `6.0.3`, leaving the
   repo with a genuine two-compiler split to be retired in Phase 9.
@@ -230,7 +230,7 @@
   experiment), not merely unconfirmed.
 
 ## Not declaring an `engines` field, despite Phase 9 introducing a real Node floor
-- **Plan:** `plans/dep-migrations-137.md` (Phase 9)
+- **Plan:** `plans/archive/dep-migrations-137.md` (Phase 9)
 - **Assumed:** it is better to surface the new Node-version constraint and let the repo
   owner set policy than to declare `engines` unilaterally inside a build-tooling phase.
 - **What Phase 9 actually introduced.** `@nestjs/schematics@12.0.1` and
@@ -278,7 +278,7 @@
   hard floor enforced at install time.
 
 ## Removing `ts-loader` and `tsconfig-paths` rather than keeping them for a possible webpack build (§4, issue #137)
-- **Plan:** `plans/dep-migrations-137.md`
+- **Plan:** `plans/archive/dep-migrations-137.md`
 - **Assumed:** nothing in this repo builds through webpack, now or in the near future, so
   the two devDependencies that exist only to serve that path are dead weight rather than
   a capability held in reserve.
@@ -328,7 +328,7 @@
   supposedly held in reserve is going away upstream regardless.
 
 ## `KEY_REVOCATION_ATTESTED_SCOPE` does not gate persistence, only future consumption (Phase 12, RFC-ACDP-0014)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** the plan's Phase 12 Approach step 5 literally says to "apply the §6
   policy: run `crossCheckRegistryBinding` … and honour `KEY_REVOCATION_ATTESTED_SCOPE`"
   as part of the persistence-gating step — read narrowly, this could mean the scope
@@ -387,7 +387,7 @@
   wasted candidate query.
 
 ## Adding a manual `signature.key_id` DID-binding check for did:web revocation signers (Phase 12, RFC-ACDP-0014)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** Phase 12's Approach step 3 is silent on whether the resolved signing
   key's DID must be checked against the revocation body's own `agent_id` — it only
   says to resolve `signature.key_id` through `DidWebResolverService.resolveKey` and
@@ -433,7 +433,7 @@
   cosign, witness-signing); this would be the lone exception if removed.
 
 ## A single shared lookback window for both permanent and transient revocation-verification failures (Phase 12, RFC-ACDP-0014)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** a literal reading of Phase 12's revised Edge-cases text ("permanent
   failures... let the event age out of the [ordinary, 24h] window... transient
   failures... give the revocation sweep its own [720h]
@@ -499,7 +499,7 @@
   one-time accumulation the ASC ordering was exposed to.
 
 ## ecdsa-p256 revocation signers are inconsistently, and only partially, handled (Phase 12, RFC-ACDP-0014)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** RFC-ACDP-0014's golden conformance vectors and this phase's own
   Acceptance Criteria are Ed25519-only, so full P-256 support was out of this phase's
   scope — but the pipeline still needed to decide what happens when a P-256 signer
@@ -594,7 +594,7 @@
   verification gate, not a same-day patch. Tracked as
   [issue #170](https://github.com/agentcontextdistributionprotocol/acdp-control-plane/issues/170).
 - **Status:** CONFIRMED (2026-09-25) — the deferred follow-up shipped via
-  `plans/revocation-lineage-p256-status.md` (issue #170, closed by that PR). A third
+  `plans/archive/revocation-lineage-p256-status.md` (issue #170, closed by that PR). A third
   `Status`/`LineageMemberVerdict` value, `'unsupported'`, now covers both branches:
   the did:web algorithm check and a new P-256-multicodec-recognizing early return in
   `RevocationAuditService.verifyRevocationBody`'s did:key branch (after
@@ -611,7 +611,7 @@
   convention. See `DECISIONS.md`'s matching entry for the full record.
 
 ## Lineage cursor TTL hardcoded rather than config-exposed (Phase 13)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** the lineage-walk cursor freshness window is a re-walk-cadence tuning
   knob, not a correctness-affecting value — the "zero facts forces a walk" rule
   (Phase 12's migration 0022 comment, transcribed into Phase 13) already guarantees
@@ -645,7 +645,7 @@
   "ignore cursors, always re-walk" opt-out.
 
 ## A separate metric for §7 classification, not a reuse of Phase 12's (Phase 14)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** the plan's prose ("Metric: `acdp_key_revocation_checks_total{status,
   trust_class}` (created in Phase 12) is incremented here on every classification")
   was a suggestion of convenience, not a hard requirement — its own §7 spec is
@@ -677,7 +677,7 @@
   cell (it was only in prose) — added.
 
 ## Trust-class tie-break on a shared compromise boundary (Phase 14)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** the plan does not address what happens when two revocation rows over
   the same signer fingerprint — one `producer_signed`, one `registry_attested` —
   land on the EXACT same effective boundary instant (an edge case: normally the
@@ -711,7 +711,7 @@
   drives no enforcement decision either way.
 
 ## Phase 15 re-audit scope: continuous re-tightening on a strictly earlier boundary (superseded the original "first amendment only" design)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** the original Phase 15 implementation scoped re-audit to a row's FIRST
   amendment only (`amendKeyRevocation`'s WHERE matched solely on
   `key_revocation_status = 'none'`), reasoning that the plan's "not a cursor"
@@ -762,7 +762,7 @@
 - **Status:** RESOLVED
 
 ## Steady-state fan-out query cost without `ORDER BY` (Phase 15)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** an `ORDER BY receiptAudits.eventId` on `findRevocationAmendmentCandidates`
   was harmless — needed only for a stable, if arbitrary, row order.
 - **Chose:** dropped it, after the gate verifier ran `EXPLAIN (ANALYZE, BUFFERS)`
@@ -785,7 +785,7 @@
 - **Status:** RESOLVED
 
 ## Candidate selection keys on the registry-claimed `key_fingerprint`, with no backfilled resolved-signer column (Phase 15)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** `findRevocationAmendmentCandidates` joining on
   `context_events.key_fingerprint` (the REGISTRY-CLAIMED fingerprint at publish
   time) rather than the independently-resolved signer the §7 verdict itself is
@@ -828,7 +828,7 @@
   missed. Corrected here rather than left open.
 
 ## Retention purges `context_events` but never `receipt_audits`, orphaning revocation-amended rows (Phase 15)
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** N/A — this is a documentation-completeness gap found during the
   end-of-plan `/reconcile` pass (2026-09-23), not a new engineering decision. Both
   `docs/ARCHITECTURE.md` and `CLAUDE.md`'s "Retroactive re-audit (Phase 15)"
@@ -857,7 +857,7 @@
   they were already pointing at.
 
 ## Reusing RECEIPT_AUDIT_BATCH_SIZE as the Phase 15 fan-out cap
-- **Plan:** `plans/rfc-0014-0015-upgrade.md`
+- **Plan:** `plans/archive/rfc-0014-0015-upgrade.md`
 - **Assumed:** the plan's edge case #1/#5 ("bound the fan-out per sweep — reuse
   RECEIPT_AUDIT_BATCH_SIZE or add a dedicated cap") explicitly offers reuse as the
   first option, and revocations are rare by construction (repeated throughout
@@ -900,7 +900,7 @@
   addition later if the (now-corrected) divergence case ever materializes.
 
 ## Lineage-walk member verdicts stay uncounted by any metric (Phase 1, issue #170)
-- **Plan:** `plans/revocation-lineage-p256-status.md`
+- **Plan:** `plans/archive/revocation-lineage-p256-status.md`
 - **Assumed:** issue #170's metric ask ("wherever `Status` is currently counted, count
   `'unsupported'` too") scopes to the webhook-candidate path only —
   `keyRevocationChecksTotal` (incremented in `RevocationAuditService.sweep()`'s
@@ -959,7 +959,7 @@
   one.
 - **Status:** CONFIRMED (2026-09-25) — the follow-up shipped. Issue
   [#173](https://github.com/agentcontextdistributionprotocol/acdp-control-plane/issues/173)
-  is implemented per `plans/revocation-lineage-member-metric.md`:
+  is implemented per `plans/archive/revocation-lineage-member-metric.md`:
   `walkRevocationLineage` now returns a `memberVerdictCounts` tally on every
   outcome (present and non-optional on both branches, so an `'unavailable'`
   abort never silently discards a partial tally), and
@@ -971,7 +971,7 @@
   full implementation/verification record.
 
 ## Any exposed `http-errors` 4xx is answered with its own status and message (Phase 1, issue #182)
-- **Plan:** `plans/error-codes-4xx-182.md`
+- **Plan:** `plans/archive/error-codes-4xx-182.md`
 - **Assumed:** a non-`HttpException` error carrying an integer `status` in
   400..499 and `expose === true` (the `http-errors` contract body-parser uses)
   is a genuine client error whose `message` is safe to return verbatim.
@@ -988,7 +988,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by Opus; see DECISIONS.md
 
 ## Generic 4xx fallback codes are CP-local SCREAMING_SNAKE names (Phase 1, issue #182)
-- **Plan:** `plans/error-codes-4xx-182.md`
+- **Plan:** `plans/archive/error-codes-4xx-182.md`
 - **Assumed:** the CP's `errorCode`/`error.code` stays a CP-local vocabulary
   (not RFC-ACDP-0007 §5 lowercase codes); names are aligned with the RFC word
   where one exists (`NOT_FOUND`, `RATE_LIMITED`, `PAYLOAD_TOO_LARGE`), and the
@@ -1002,7 +1002,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by the user after Fable analysis; alignment is to HTTP reason phrases, not the RFC word (RFC 403 is `not_authorized`); see DECISIONS.md
 
 ## Revoke 403 uses generic FORBIDDEN, not ADMIN_REQUIRED (Phase 2, issue #182)
-- **Plan:** `plans/error-codes-4xx-182.md`
+- **Plan:** `plans/archive/error-codes-4xx-182.md`
 - **Assumed:** `POST /auth/revoke`'s gate is admin-OR-self, so naming it
   "admin required" would misdirect a JWT caller who could legitimately
   self-revoke their own token.
@@ -1014,7 +1014,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Admin-gate helper takes the full client-visible message (Phase 2, issue #182)
-- **Plan:** `plans/error-codes-4xx-182.md`
+- **Plan:** `plans/archive/error-codes-4xx-182.md`
 - **Assumed:** keeping every pre-#182 message byte-identical outranks a uniform
   `${what} is admin-only` template (one site reads "routing stats are admin-only").
 - **Chose:** `assertAdmin(req, message)`; refuses unless `actorIsAdmin === true`.
@@ -1024,7 +1024,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Ingest enrollment codes are answered before HMAC verification (Phase 3, issue #182)
-- **Plan:** `plans/error-codes-4xx-182.md`
+- **Plan:** `plans/archive/error-codes-4xx-182.md`
 - **Assumed:** naming `REGISTRY_NOT_ENROLLED` / `REGISTRY_DISABLED` adds no
   information an unauthenticated caller lacked: the enrollment lookup already
   ran before HMAC verification (`ingest.service.ts`) and the 403 message
@@ -1039,7 +1039,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by the user after Fable analysis; bounded leak (enabled/enrolled state of a named authority) predates #182; deferring the throws would make REGISTRY_NOT_ENROLLED unreachable; see DECISIONS.md
 
 ## Policy deny and indeterminate share POLICY_DENIED (Phase 3, issue #182)
-- **Plan:** `plans/error-codes-4xx-182.md` (Open question 4)
+- **Plan:** `plans/archive/error-codes-4xx-182.md` (Open question 4)
 - **Assumed:** the legacy top-level `code: "indeterminate"` is enough for
   clients to tell "OPA could not decide (retry may help)" from a final deny.
 - **Chose:** one `POLICY_DENIED`; a `POLICY_INDETERMINATE` can be added later
@@ -1048,7 +1048,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Policy/quota bodies labelled in place, adding a top-level `metadata` (Phase 3, issue #182)
-- **Plan:** `plans/error-codes-4xx-182.md`
+- **Plan:** `plans/archive/error-codes-4xx-182.md`
 - **Assumed:** adding `statusCode`, `errorCode` and a `metadata` member that
   duplicates already-top-level fields is a compatible change for the
   documented legacy bodies (AppException bodies already carry `metadata`).
@@ -1059,7 +1059,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## CI rule 7 bans only NotFound/Forbidden, not every Nest built-in (Phase 4, issue #182)
-- **Plan:** `plans/error-codes-4xx-182.md` (Open question 6)
+- **Plan:** `plans/archive/error-codes-4xx-182.md` (Open question 6)
 - **Assumed:** 400/401 built-ins stay acceptable at the HTTP boundary because
   their fallbacks (`INVALID_PAYLOAD`, `UNAUTHORIZED`) are accurate, while a bare
   403/404 erases a distinction clients need (admin vs tenant vs policy).
@@ -1072,7 +1072,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Reserved-tenant assertion stays 403, diverging from the registry's 400 (issue #182)
-- **Plan:** `plans/error-codes-4xx-182.md` (Open question 2)
+- **Plan:** `plans/archive/error-codes-4xx-182.md` (Open question 2)
 - **Assumed:** keeping the CP's existing `403` for an explicit `default`
   tenant assertion (now `TENANT_RESERVED`) is preferable to parity with the
   registry's `schema_violation`/400, because the status is pinned by
@@ -1083,13 +1083,13 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by the user (pre-made decision)
 
 ## The federation proxy's 502 still reports INTERNAL_ERROR (issue #182 scope)
-- **Plan:** `plans/error-codes-4xx-182.md` (Open question 5)
+- **Plan:** `plans/archive/error-codes-4xx-182.md` (Open question 5)
 - **Assumed:** #182 is scoped to 4xx; `contexts.controller.ts`'s
   `BadGatewayException` (502, upstream unreachable) keeps the 5xx fallback
   `INTERNAL_ERROR` (retryable, which is not wrong for a 502) until a follow-up
   mints a code aligned with RFC-ACDP-0007 `cross_registry_resolution_failed`.
 - **Blast radius if wrong:** Low — retryable code on a retryable status.
-- **Status:** CONFIRMED (resolved, 2026-10-03) — fixed by #200 (`plans/federation-502-code-200.md`): the 502 now carries the specific `FEDERATION_UPSTREAM_ERROR` (`src/errors/error-codes.ts`), thrown as an `AppException` in `src/contexts/contexts.controller.ts`. Alignment with the registry's lowercase `cross_registry_resolution_failed` was rejected — CP codes stay SCREAMING_SNAKE and disjoint. See the three #200 entries below.
+- **Status:** CONFIRMED (resolved, 2026-10-03) — fixed by #200 (`plans/archive/federation-502-code-200.md`): the 502 now carries the specific `FEDERATION_UPSTREAM_ERROR` (`src/errors/error-codes.ts`), thrown as an `AppException` in `src/contexts/contexts.controller.ts`. Alignment with the registry's lowercase `cross_registry_resolution_failed` was rejected — CP codes stay SCREAMING_SNAKE and disjoint. See the three #200 entries below.
 
 ## `moduleResolution: "bundler"` is the resting point for the CJS build (issue #156)
 - **Plan:** `plans/typescript-7-156.md` (Phase 1)
@@ -1113,7 +1113,7 @@
 - **Status:** CONFIRMED — SUPERSEDED (2026-10-03): the user decided to ship Phase 2; the side-by-side gate (`@typescript/native` alias, `npm run typecheck` + `typecheck:ts6` in CI/release) is DONE. Dependabot skips `npm:` alias specifiers (dependabot-core `alias_package?`), so the TS 7 line is bumped by hand.
 
 ## Throttler 6.7.x eviction/coercion is behaviour-neutral for our config (issue #155)
-- **Plan:** `plans/nestjs-12-155.md` (Phase 1)
+- **Plan:** `plans/archive/nestjs-12-155.md` (Phase 1)
 - **Assumed:** throttler 6.7's in-memory expiry eviction, numeric coercion and
   explicit-`0` handling change nothing observable here: limits are always
   numbers from `readNumber`, a throttler is always configured, and the tracker
@@ -1124,7 +1124,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by Opus
 
 ## Keep `import 'dotenv/config'` instead of a `src/load-env.ts` loader (issue #155)
-- **Plan:** `plans/nestjs-12-155.md` (Phase 2)
+- **Plan:** `plans/archive/nestjs-12-155.md` (Phase 2)
 - **Assumed:** with `moduleResolution: "bundler"` (#156) dotenv 18's exports-only
   typings resolve, so the planned loader module adds nothing. If the repo ever
   returned to node10 resolution the TS2882 would come back loudly in `tsc`.
@@ -1132,7 +1132,7 @@
 - **Status:** SUPERSEDED (#193, 2026-10-04) — dotenv removed; see the `.env` loader entry below
 
 ## `.env` loaded via a `util.parseEnv` helper, not a bare `process.loadEnvFile` (issue #193)
-- **Plan:** `plans/dotenv-to-loadenvfile-193.md`
+- **Plan:** `plans/archive/dotenv-to-loadenvfile-193.md`
 - **Assumed:** `src/env-file.ts` (read + BOM strip + `parseEnv` + explicit no-override merge)
   behind a 3-line `src/load-env.ts` preload (one rule-3 exemption) is better than
   `if (existsSync('.env')) process.loadEnvFile()`: Node maps EACCES to ENOENT, a BOM
@@ -1143,7 +1143,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by user (Fable analysis); follow-up: EISDIR error hint
 
 ## Jest runs under Node's experimental `--experimental-vm-modules` (issue #155)
-- **Plan:** `plans/nestjs-12-155.md` (Phase 3)
+- **Plan:** `plans/archive/nestjs-12-155.md` (Phase 3)
 - **Assumed:** tying the test harness to an experimental Node flag is acceptable
   debt until jest supports `require(esm)` without it or the build moves to ESM;
   alternatives (`transformIgnorePatterns` down-compiling `@nestjs/*`, Vitest)
@@ -1153,7 +1153,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by Opus — SUPERSEDED (#191, 2026-10-04): the flag is gone; Jest down-compiles `@nestjs/*` to CJS with `@swc/jest` (see the "Jest down-compiles `@nestjs/*` ESM" entry below). The tracking issue was #191, not #201 (#201 was closed as its duplicate).
 
 ## Only the four resource-owning destroy hooks feed the exit-code collector (issue #155)
-- **Plan:** `plans/nestjs-12-155.md` (Phase 4, Open question 1 option b)
+- **Plan:** `plans/archive/nestjs-12-155.md` (Phase 4, Open question 1 option b)
 - **Assumed:** `DatabaseService`, `IssuanceLedgerService`, `QuotaModule` and
   `StreamHubService` are the only hooks releasing external resources; the other
   nine only clear timers/caches. Redis teardowns keep swallowing `quit()` errors
@@ -1165,7 +1165,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by Opus; guard comment added in src/shutdown-failures.ts
 
 ## ExperimentalWarning lines stay visible in test output (issue #155)
-- **Plan:** `plans/nestjs-12-155.md` (Phase 3 → Phase 4 decision)
+- **Plan:** `plans/archive/nestjs-12-155.md` (Phase 3 → Phase 4 decision)
 - **Assumed:** 13 `VM Modules is an experimental feature` lines per unit run do
   not obscure CI output, and `--disable-warning=ExperimentalWarning` would also
   hide unrelated experimental-feature warnings, so it is not added.
@@ -1173,7 +1173,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by Opus — SUPERSEDED (#191, 2026-10-04): moot — without the flag a unit run prints 0 `ExperimentalWarning` lines.
 
 ## `engines.node` is ">=24.15", and Dependabot excludes `@nestjs/*` from catch-alls (issue #155)
-- **Plan:** `plans/nestjs-12-155.md` (Phase 5, Open questions 4 and 5)
+- **Plan:** `plans/archive/nestjs-12-155.md` (Phase 5, Open questions 4 and 5)
 - **Assumed:** `>=24.15` (tightest real tooling floor; Node 25 passes it but
   `@nestjs/schematics` still warns) is advisory only (no `engine-strict`). For
   Dependabot, excluding `@nestjs/*` from `minor-and-patch`/`major-updates` keeps
@@ -1185,7 +1185,7 @@
 - **Status:** CONFIRMED (2026-10-03) — decided by the user (pre-made decision); supersedes the earlier "Not declaring an engines field" entry
 
 ## Unauthenticated IPv6 throttle tracker collapses to /64 by default (issue #187)
-- **Plan:** `plans/throttle-ipv6-187.md` (Phase 1)
+- **Plan:** `plans/archive/throttle-ipv6-187.md` (Phase 1)
 - **Assumed:** `/64` (throttler 6.7's own default, `THROTTLE_IPV6_SUBNET_PREFIX`)
   is the right default granularity: one site/host allocation = one bucket. A caller
   holding a /48 (or a 6to4 `2002:V4::/48`) can still spread over 65 536 /64s, and
@@ -1197,7 +1197,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus
 
 ## Prefix knob range is [1, 128], fail-fast in every environment (issue #187)
-- **Plan:** `plans/throttle-ipv6-187.md` (Open questions)
+- **Plan:** `plans/archive/throttle-ipv6-187.md` (Open questions)
 - **Assumed:** rejecting only the degenerate `0` and out-of-range/fractional values
   is enough; a legal-but-silly `/1`–`/47` is documented ("below 48 is almost
   always wrong") rather than refused. Non-numeric input falls back to 64 per the
@@ -1206,7 +1206,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus; with one change: a set but non-numeric value (`/48`, `sixty-four`) now also fails startup instead of silently falling back to 64 (`readStrictInteger`; any value that is not a plain decimal integer)
 
 ## Normalizing via the throttler's exported `normalizeIp` (issue #187)
-- **Plan:** `plans/throttle-ipv6-187.md` (Phase 1 Approach)
+- **Plan:** `plans/archive/throttle-ipv6-187.md` (Phase 1 Approach)
 - **Assumed:** `@nestjs/throttler`'s public `normalizeIp` export (6.7.x) stays
   stable across minors; we depend on it instead of a hand-rolled parser. Side
   effects accepted: dual-stack IPv4 (`::ffff:a.b.c.d`) now shares the plain IPv4
@@ -1216,7 +1216,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus
 
 ## The upstream-failure 502 is named `FEDERATION_UPSTREAM_ERROR` (issue #200)
-- **Plan:** `plans/federation-502-code-200.md` (Open question 1)
+- **Plan:** `plans/archive/federation-502-code-200.md` (Open question 1)
 - **Assumed:** one code for all four `FederationFetchError` causes (SSRF,
   FETCH, REDIRECT, BODY_TOO_LARGE), named in the `FEDERATION_UPSTREAM_*` family
   of the existing 503 `FEDERATION_UPSTREAM_RATE_LIMITED`.
@@ -1228,7 +1228,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by the user after Fable analysis (RFC-ACDP-0007 §5 collapses these causes into one 502 `cross_registry_resolution_failed`; the `FEDERATION_UPSTREAM_` family prefix matches `FEDERATION_UPSTREAM_RATE_LIMITED`; finer codes are additive; console copy entry is a sibling-repo follow-up, acdp-ui-console #157)
 
 ## The federation fetch cause stays in the log, not on the wire (issue #200)
-- **Plan:** `plans/federation-502-code-200.md` (Open question 2)
+- **Plan:** `plans/archive/federation-502-code-200.md` (Open question 2)
 - **Assumed:** the 502 body carries no `error.details.cause`; the cause is the
   `fetchErrorCode` field of the `federation proxy upstream fetch failed` warn.
   Retryability differs by cause (FETCH transient; SSRF/REDIRECT/BODY_TOO_LARGE
@@ -1238,13 +1238,13 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (nit, left as is: the message says 'unreachable' even for SSRF-blocked/oversize causes)
 
 ## Unlabelled 5xx keeps `INTERNAL_ERROR`; no generic gateway fallback (issue #200)
-- **Plan:** `plans/federation-502-code-200.md` (Open question 3)
+- **Plan:** `plans/archive/federation-502-code-200.md` (Open question 3)
 - **Assumed:** `defaultErrorCode` is unchanged: after #200 nothing in `src/`
   throws an unlabelled 502/503/504, and minting a generic fallback with zero
   producers would be a permanent public name for a hypothetical. CI rule 8 bans
   bare `new BadGateway|ServiceUnavailable|GatewayTimeoutException(`. The former
   known gap (a string-bodied `new HttpException('x', 502)`) is closed by rule 8b
-  (`plans/proxy-and-lint-followups.md` Phase 2); such a throw would still report
+  (`plans/archive/proxy-and-lint-followups.md` Phase 2); such a throw would still report
   `INTERNAL_ERROR` at runtime (pinned by `exception.filter.spec.ts`), but CI now
   rejects it.
 - **Blast radius if wrong:** Low — a future upstream 5xx would be mislabelled
@@ -1252,7 +1252,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus
 
 ## `TRUST_PROXY` is opt-in, strict, and rejects `true` (follow-up to #187)
-- **Plan:** `plans/proxy-and-lint-followups.md` (Phase 1)
+- **Plan:** `plans/archive/proxy-and-lint-followups.md` (Phase 1)
 - **Assumed:** operators behind a proxy want `req.ip` to be the real client, but
   no deployment should be able to make `X-Forwarded-For` client-chosen.
 - **Chose:** unset/empty/`0`/`false` = off (no `app.set` — Express default
@@ -1280,7 +1280,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by the user after Fable analysis (Express 5.2.1 `compileTrust` semantics verified; default-off equals the Express default; ledger hardened by the `isIP` guard in `extractIp`; docs extended for the Docker `uniquelocal` bypass and hop over-count)
 
 ## Issuance-ledger `signer_ip` is `req.ip`, never raw `X-Forwarded-For` (follow-up to #187)
-- **Plan:** `plans/proxy-and-lint-followups.md` (Phase 1)
+- **Plan:** `plans/archive/proxy-and-lint-followups.md` (Phase 1)
 - **Assumed:** `extractIp` preferring the leftmost XFF was a bug: client-written
   with or without a proxy, and unbounded against `signer_ip varchar(64)` (a long
   header could fail the ledger insert).
@@ -1293,7 +1293,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by the user after Fable analysis; with the required change: `extractIp` records `req.ip` only when `isIP(req.ip)` (plus a ≤ 64-char cap, since `isIP` accepts an arbitrarily long IPv6 zone id; a misconfigured `TRUST_PROXY` can no longer push client text into `varchar(64)` and 500 `/auth/token`)
 
 ## Request logs still carry no client address (follow-up to #187)
-- **Plan:** `plans/proxy-and-lint-followups.md` (Plan review item 11)
+- **Plan:** `plans/archive/proxy-and-lint-followups.md` (Plan review item 11)
 - **Assumed:** `RequestLoggerMiddleware`/`CorrelationIdMiddleware` read no client
   address today, so nothing in the logs mis-attributes the proxy; they need no
   change to "see" the trusted `req.ip`.
@@ -1305,7 +1305,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus
 
 ## CI rule 8b uses perl, not basic grep (follow-up to #200)
-- **Plan:** `plans/proxy-and-lint-followups.md` (Phase 2, Plan review item 5)
+- **Plan:** `plans/archive/proxy-and-lint-followups.md` (Phase 2, Plan review item 5)
 - **Assumed:** the brief asked for BASIC grep because `check()`'s `|| true`
   swallows a malformed ERE. Every `new HttpException(` in `src/` is prettier-
   wrapped, so a line grep would miss the realistic form entirely.
@@ -1326,7 +1326,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (perl is present on ubuntu-latest and macOS; `src/ci-conventions.spec.ts` now proves the "scanner failed" branch fires with perl absent or failing)
 
 ## All template-literal log messages converted; CI rule 9 added (follow-up to #200)
-- **Plan:** `plans/proxy-and-lint-followups.md` (Phase 3)
+- **Plan:** `plans/archive/proxy-and-lint-followups.md` (Phase 3)
 - **Assumed:** CLAUDE.md's structured-logging convention applies to every
   interpolated log message, not only the federation 429 warn — 107 sites (106 +
   `bootstrap.ts`'s inline `new Logger('Bootstrap').error`).
@@ -1348,7 +1348,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (known minor false negative: a nested backtick inside `${}` ends the `[^`]*` match early; accepted — a rule-9 hit fails CI, so false positives surface immediately)
 
 ## SSE `retry:` hint is a 1000 ms constant until Phase 2 (issue #192, Phase 1)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 1)
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 1)
 - **Assumed:** Phase 1's helper can ship with `SSE_SHUTDOWN_RETRY_MS = 1000`
   (`src/events/sse-drain.ts`). The `STREAM_SSE_SHUTDOWN_RETRY_MS` knob is listed under
   Phase 2's config work, and Open question 2 (confirm 1000 against the dashboard and
@@ -1362,7 +1362,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by user (Fable analysis)
 
 ## `DrainState` lives in a sibling global module (issue #192, Phase 1)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 1). The plan allowed either option.
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 1). The plan allowed either option.
 - **Assumed:** a separate `@Global() DrainStateModule` (`src/shutdown-drain.ts`), imported
   right after `ShutdownFailuresModule`, is clearer than adding the provider to
   `ShutdownFailuresModule`. One concern per module, and both are hook-free, so both outlive
@@ -1371,7 +1371,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (`src/shutdown-drain.ts:160-165`, wired at `src/app.module.ts:81`; one concern per hook-free global module, outlives `close()`)
 
 ## Idle-socket reaper: interval injectable, absent probe means never reap (issue #192, Phase 1)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 1)
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 1)
 - **Assumed:**
   - `ShutdownDeps` gains `reapIntervalMs?` (default `DEFAULT_REAP_INTERVAL_MS = 100`). The
     plan names only the three deps; the extra one is for tests.
@@ -1389,7 +1389,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus; entry text corrected: a throwing reaper/probe tick is NOT swallowed silently — it is logged ONCE (`idle-socket reaper failed — relying on the shutdown deadline`, `src/shutdown.ts:276-291`), which is the better behaviour (a probe failing every tick stays visible)
 
 ## SSE helper metrics and backstop semantics (issue #192, Phase 1)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 1)
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 1)
 - **Assumed:**
   - `active_sse_connections` is incremented for every subscription, including one opened
     during the drain, which goes inc → terminate → dec in the same tick.
@@ -1408,7 +1408,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (`terminated_total{reason="shutdown"}` reads as "shutdown events written", which includes reconnects into the drain window — accepted; the redundant `isDraining()` early return is kept as a cheap, explicit statement of the hub-untouched invariant)
 
 ## Drain gate reads the path from `req.originalUrl`, not `req.path` (issue #192, Phase 2)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 2) says the SSE exemption matches "on `req.path`".
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 2) says the SSE exemption matches "on `req.path`".
 - **Measured:** inside module middleware applied with `forRoutes('*')`, Express has
   stripped the mount from `req.url`, so `req.path` is `/`. With `req.path` the
   integration spec's new SSE probes got `503 SERVICE_DRAINING`.
@@ -1422,7 +1422,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (`originalUrl` is the only un-rewritten path inside `forRoutes('*')` middleware; the case-insensitive / optional-trailing-slash match mirrors Express 5's default non-strict, case-insensitive routing)
 
 ## Shutdown summary line and forced-connection count semantics (issue #192, Phase 2)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 2, review item 7)
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 2, review item 7)
 - **Assumed:**
   - `shutdown drain complete` is logged on **every** shutdown, including the forced
     one. It is logged after the close/deadline race and before the hook-failure check
@@ -1440,7 +1440,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by user; log strings FROZEN
 
 ## Drain knob validation lives in `validate()`, every environment (issue #192, Phase 2)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 2)
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 2)
 - **Assumed:**
   - `SHUTDOWN_TIMEOUT_MS` (integer ≥ 1000, no upper bound),
     `SHUTDOWN_RETRY_AFTER_SECONDS` (1–300) and `STREAM_SSE_SHUTDOWN_RETRY_MS` (0–60000)
@@ -1458,7 +1458,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by user; follow-up: DB_POOL_CONNECTION_TIMEOUT strict parse
 
 ## Drain gate side effects precede the throw (issue #192, Phase 2)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 2)
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 2)
 - **Assumed:** the gate increments `acdp_shutdown_drain_rejections_total` and
   `DrainState.noteRejection()`, and sets `Retry-After` + `Connection: close` on the
   response, before it throws the `AppException`. `GlobalExceptionFilter` then writes
@@ -1469,7 +1469,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (headers-then-throw is the established pattern, same as `/readyz`'s drain arm; the CLAUDE.md env-var gap is since closed — CLAUDE.md now lists the four drain knobs)
 
 ## Drain delay: phase model, wiring and log fields (issue #192, Phase 3)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 3)
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 3)
 - **Assumed:**
   - `DrainState` keeps `begin()` (→ `draining`, fires `drained$`) and adds
     `beginClosing()` (→ `closing`; calls `begin()` first, so `drained$` still fires
@@ -1493,7 +1493,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (`src/shutdown-drain.ts:54-76`, `src/shutdown.ts:208-294`; monotone three-phase model, delay 0 is byte-for-byte the Phase 2 path)
 
 ## `/readyz` drain 503 carries `Retry-After`; no `Connection: close` (issue #192, Phase 3)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 3) says `/readyz` "returns 503
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 3) says `/readyz` "returns 503
   `SERVICE_DRAINING`"; headers are unspecified.
 - **Assumed:** the health controller sets `Retry-After`
   (`SHUTDOWN_RETRY_AFTER_SECONDS`) via `@Res({ passthrough: true })` before throwing
@@ -1501,12 +1501,12 @@
   `docs/API.md`. It deliberately does NOT set `Connection: close`: during `draining`
   the instance is still serving, and that header is also how the integration spec
   tells the controller's 503 apart from the gate's. The DB is never queried once
-  draining. `plans/readyz-db-down-fix.md` (#210) must keep this drain check first.
+  draining. `plans/archive/readyz-db-down-fix.md` (#210) must keep this drain check first.
 - **Blast radius if wrong:** Low. A probe ignores both headers.
 - **Status:** CONFIRMED (2026-10-04) — decided by user (Fable analysis)
 
 ## `SHUTDOWN_DRAIN_DELAY_MS` bounds and the 25 s budget warning (issue #192, Phase 3)
-- **Plan:** `plans/graceful-drain-192.md` (Phase 3): strict integer ≥ 0, default 0,
+- **Plan:** `plans/archive/graceful-drain-192.md` (Phase 3): strict integer ≥ 0, default 0,
   warn when delay + timeout > 25000.
 - **Assumed:**
   - Upper bound 2^31-1 (setTimeout's ceiling, as for `SHUTDOWN_TIMEOUT_MS`):
@@ -1523,7 +1523,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by user (Fable analysis)
 
 ## Readiness late-settle semantics: late success refreshes, late failure does not (issue #210, Phase 1)
-- **Plan:** `plans/readyz-db-down-fix.md` (Phase 1, Edge cases): "The timed-out query
+- **Plan:** `plans/archive/readyz-db-down-fix.md` (Phase 1, Edge cases): "The timed-out query
   settles later as success. It must not overwrite a newer verdict … If it is the
   latest, it may update the cache, so recovery is seen early." Late failures and
   metrics for a late settle are unspecified.
@@ -1676,7 +1676,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus
 
 ## Jest down-compiles `@nestjs/*` ESM to CJS via `@swc/jest`; production keeps native `require(esm)` (issue #191)
-- **Plan:** `plans/jest-esm-no-flag-191.md` (Phases 1-2, Variant C)
+- **Plan:** `plans/archive/jest-esm-no-flag-191.md` (Phases 1-2, Variant C)
 - **Assumed:** transforming only `node_modules/@nestjs/**` with `@swc/jest`
   (`module.type: commonjs`, `importInterop: node`; ts-jest unchanged for project
   TS) is an acceptable test-only divergence from production, where `dist/main.js`
@@ -1705,7 +1705,7 @@
 - **Status:** CONFIRMED (2026-10-04) — decided by Opus (Variant C first chosen in plan review round 1); re-evaluation TRIGGER recorded: when #156 Phase 3 (TS 7 package move) is planned, decide Option D there — if D is rejected, revisit C vs. the flag
 
 ## /auth/token key_id ↔ agent_id binding (#221 Phase 5)
-- **Plan:** plans/strict-ed25519-bearer-jwt-221.md
+- **Plan:** plans/archive/strict-ed25519-bearer-jwt-221.md
 - **Assumed:** bare fragments stay accepted (docs/examples use them); `#frag` is rejected as malformed (registry parity).
 - **Chose:** exact DID-portion equality on both pinned and did:web paths (D7); malformed/mismatch → 401 with ledger rows `reject_key_id_malformed|mismatch`. Phase 5 executed first (own branch/PR-A) rather than in numeric order, since it is an independent security fix (D8).
 - **Alternatives:** applying the check only on the did:web path (leaves foreign key ids stampable into minted claims).
@@ -1713,7 +1713,7 @@
 - **Status:** CONFIRMED (2026-10-05) — decided by Opus; follow-up: @MaxLength on auth DTO fields (see DECISIONS.md)
 
 ## bearer_jwt conformance decisions (#221 Phases 4 & 6)
-- **Plan:** plans/strict-ed25519-bearer-jwt-221.md
+- **Plan:** plans/archive/strict-ed25519-bearer-jwt-221.md
 - **Assumed:** (D2) EdDSA JWT verification delegates to the SDK; (D3) trusted-issuer tokens whose `aud` is the peer registry stay accepted (existing federation design, documented as a deliberate deviation); (D4) CP does not advertise `bearer_jwt` (not a registry, no capabilities doc); (D5) TLS-only is a deployment requirement, not enforced in code; (D6) `exp` is required for local AND trusted-issuer tokens.
 - **Chose:** the recommendations above. D3 changes nothing (docs only).
 - **Alternatives:** require `aud` to name the CP for peers (breaks federation); advertise via a new acdp.json (CP would look like a registry); runtime TLS enforcement (new knob, req.protocol only trustworthy with TRUST_PROXY).
@@ -1721,7 +1721,7 @@
 - **Status:** D2/D4/D5/D6 CONFIRMED (2026-10-05, decided by Opus on Fable's analysis); D3 CONFIRMED by the user (2026-10-05) with a hardening follow-up, acdp-control-plane#225 (see DECISIONS.md)
 
 ## One scope vocabulary: union of scope / scopes / scp (#225 Phase 2)
-- **Plan:** plans/followups-225.md
+- **Plan:** plans/archive/followups-225.md
 - **Assumed:** a token's scopes are the union of the `scope`, `scopes` and `scp` claims (string = space-delimited, array = members); the guard (policy input) and the trusted-issuer `requiredScope` gate share `readScopes` (src/auth/scopes.ts).
 - **Chose:** union (order-preserving, deduped) rather than precedence. The old guard preferred `scopes` over `scope` and ignored `scp`; the old federation gate read only `scp`.
 - **Alternatives:** keep two vocabularies and document; precedence instead of union (silently drops scopes); only `scp` for federation.
@@ -1729,7 +1729,7 @@
 - **Status:** CONFIRMED (2026-10-06) — decided by Opus
 
 ## read_only is method-based (#225 Phase 4)
-- **Plan:** plans/followups-225.md
+- **Plan:** plans/archive/followups-225.md
 - **Assumed:** no GET route in this service changes state, so GET/HEAD/OPTIONS are safe for a `read_only` issuer; `POST /auth/introspect` is read-shaped and exempt.
 - **Chose:** a method gate in `AuthGuard` (covers future write routes automatically) over a per-route allowlist.
 - **Alternatives:** route allowlist (misses new routes unless updated; safer default but higher maintenance); per-route decorator.

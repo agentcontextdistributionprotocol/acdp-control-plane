@@ -63,7 +63,7 @@ export class HealthController {
 
   /**
    * Readiness = `!draining && deps ok`, evaluated DRAIN-FIRST, in this one code
-   * path (issue #192 Phase 3; `plans/graceful-drain-192.md` plan review #8).
+   * path (issue #192 Phase 3; `plans/archive/graceful-drain-192.md` plan review #8).
    *
    * Once a shutdown signal has arrived (`DrainState` phase `draining` or
    * `closing`) the probe answers `503 SERVICE_DRAINING` WITHOUT consulting

@@ -1,6 +1,6 @@
 # Progress — wave1-cp-1-4-5-6-7
 
-Plan: `plans/wave1-cp-1-4-5-6-7.md`
+Plan: `plans/archive/wave1-cp-1-4-5-6-7.md`
 
 ## Repo map (discovery notes for `/implement` — don't re-scan)
 
@@ -73,7 +73,7 @@ Plan: `plans/wave1-cp-1-4-5-6-7.md`
   @agentcontextdistributionprotocol/acdp` is unsatisfiable by npm's alias-matching behavior,
   needed a documented substitute.
 - **Files touched:** `package.json`, `package-lock.json`, `.github/workflows/bump-acdp.yml`,
-  `.github/dependabot.yml`, `plans/wave1-cp-1-4-5-6-7.md` (corrections + Status: DONE),
+  `.github/dependabot.yml`, `plans/archive/wave1-cp-1-4-5-6-7.md` (corrections + Status: DONE),
   `PROGRESS.md` (this entry).
 - **What's next:** Phase 2 (CP-4) — now also covers `src/audit/cosign.spec.ts`'s stale
   `0.7.0` narration (found during Phase 1's verification, folded into Phase 2's scope).
@@ -87,7 +87,7 @@ Plan: `plans/wave1-cp-1-4-5-6-7.md`
   repo-wide sweep found no further instances.
 - **Files touched:** `src/audit/cosign.ts`, `src/audit/log-verify.ts`,
   `src/audit/cosign.spec.ts`, `src/audit/log-verify.parity.spec.ts`,
-  `plans/wave1-cp-1-4-5-6-7.md` (scope correction + Status: DONE), `PROGRESS.md`.
+  `plans/archive/wave1-cp-1-4-5-6-7.md` (scope correction + Status: DONE), `PROGRESS.md`.
 - **What's next:** Phase 4 (CP-5).
 
 ### Phase 3 — CP-6 (ingest HMAC fails open in production)
@@ -119,7 +119,7 @@ Plan: `plans/wave1-cp-1-4-5-6-7.md`
 - **Files touched:** `.env` (gitignored, not committed — LLM vars removed), `src/main.ts`
   (dotenv preload), `package.json`/`package-lock.json` (`dotenv` added, `@nestjs/config`
   removed), `docs/CONFIGURATION.md` (loading-mechanism paragraph), `ASSUMPTIONS.md`
-  (new file, `@nestjs/config`-removal logged UNCONFIRMED), `plans/wave1-cp-1-4-5-6-7.md`
+  (new file, `@nestjs/config`-removal logged UNCONFIRMED), `plans/archive/wave1-cp-1-4-5-6-7.md`
   (Status: DONE), `PROGRESS.md`.
 - **What's next:** Phase 5 (CP-7) — CI parity-suite fix, Sonnet verify tier.
 
@@ -136,7 +136,7 @@ Plan: `plans/wave1-cp-1-4-5-6-7.md`
 - **Files touched:** `.github/workflows/ci.yml` (pinned spec checkout +
   `ACDP_SPEC_DIR`/`ACDP_REQUIRE_CONFORMANCE`), `src/audit/cosign.spec.ts` and
   `src/audit/log-verify.parity.spec.ts` (require-mode `beforeAll` throw),
-  `plans/wave1-cp-1-4-5-6-7.md` (Status: DONE), `PROGRESS.md`.
+  `plans/archive/wave1-cp-1-4-5-6-7.md` (Status: DONE), `PROGRESS.md`.
 - **All 5 phases now DONE.** Plan complete.
 
 ### Ship
@@ -160,7 +160,7 @@ Plan: `plans/wave1-cp-1-4-5-6-7.md`
 
 # Progress — wave1-cp-2
 
-Plan: `plans/wave1-cp-2.md`
+Plan: `plans/archive/wave1-cp-2.md`
 
 ## Phase 1 — CP-2 (witness surface on a Final RFC): verification-only, no diff
 
@@ -188,7 +188,7 @@ Plan: `plans/wave1-cp-2.md`
   — plus PR #122 (an unrelated Dependabot bump merged 2026-08-29, `main` now at
   `4ecb009`), whose CI reran the same three jobs green against the unchanged `0.8.1`
   pin — https://github.com/agentcontextdistributionprotocol/acdp-control-plane/pull/122.
-- **Files touched:** none in `src/`/`docs/`. Only `plans/wave1-cp-2.md` (new, local-only,
+- **Files touched:** none in `src/`/`docs/`. Only `plans/archive/wave1-cp-2.md` (new, local-only,
   git-ignored) and this `PROGRESS.md` entry.
 - **No PR opened.** Nothing to ship — `/ship`'s own "clean tree, nothing to ship" rule
   applies once you look past the local scratch files (`.drive.lock`, `ASSUMPTIONS.md`,
@@ -200,7 +200,7 @@ Plan: `plans/wave1-cp-2.md`
 
 # Progress — wave1-cp-3
 
-Plan: `plans/wave1-cp-3.md`
+Plan: `plans/archive/wave1-cp-3.md`
 
 ## Phase 1 — CP-3 (anchors passthrough check, RFC-ACDP-0016): one new test, no prod code
 
@@ -245,7 +245,7 @@ Plan: `plans/wave1-cp-3.md`
   5434 for my run, port 5435 for the independent verifier's run) — the unrelated
   `aitp-control-plane-postgres-test` container on port 5433 was left untouched by both.
 - **Files touched:** `test/integration/ingest.integration.spec.ts` (+36 lines, only
-  tracked-file change). `plans/wave1-cp-3.md` (new, local-only) and this `PROGRESS.md`
+  tracked-file change). `plans/archive/wave1-cp-3.md` (new, local-only) and this `PROGRESS.md`
   entry.
 - **Docs:** none needed — `docs/INGEST.md`'s existing "unknown fields preserved in
   raw_payload" line already covers this generic guarantee; no new field-specific
@@ -259,7 +259,7 @@ Plan: `plans/wave1-cp-3.md`
 
 # Progress — dealias-acdp
 
-Plan: `plans/dealias-acdp.md` (issue #123)
+Plan: `plans/archive/dealias-acdp.md` (issue #123)
 
 ## Repo map (discovery notes for `/implement` — don't re-scan)
 
@@ -311,7 +311,7 @@ unaffected, only the version number in the `Chose` line.
 
 # Progress — wave1-cp-8-9
 
-Plan: `plans/wave1-cp-8-9.md` (issue #127)
+Plan: `plans/archive/wave1-cp-8-9.md` (issue #127)
 
 ## Repo map (discovery notes for `/implement` — don't re-scan)
 
@@ -356,7 +356,7 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
   independently shippable, unrelated file to Phase 2's Dockerfile work, no reason to
   hold it).
 - **Files touched:** `src/contexts/safe-federation-client.ts`,
-  `src/contexts/safe-federation-client.spec.ts`, `plans/wave1-cp-8-9.md` (Status:
+  `src/contexts/safe-federation-client.spec.ts`, `plans/archive/wave1-cp-8-9.md` (Status:
   DONE), `PROGRESS.md` (this entry).
 - **Commit:** `584ff60` on `fix/cp-8-stream-cap-body`.
 - **What's next:** ship Phase 1 now via `/ship`, then Phase 2 (CP-9, Sonnet verify).
@@ -399,7 +399,7 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
   root-requiring steps (`npm ci --omit=dev`, the builder-stage `COPY`s) and ran the
   inline healthcheck script standalone to confirm it's functionally correct, not just
   plausible-looking.
-- **Files touched:** `Dockerfile`, `plans/wave1-cp-8-9.md` (Status: DONE), `PROGRESS.md`
+- **Files touched:** `Dockerfile`, `plans/archive/wave1-cp-8-9.md` (Status: DONE), `PROGRESS.md`
   (this entry).
 - **Commit:** `e359b1b` on `fix/cp-9-dockerfile-hardening`.
 - **Both phases of this plan are now DONE.** Plan complete pending end-of-plan closeout
@@ -460,7 +460,7 @@ Plan: `plans/wave1-cp-8-9.md` (issue #127)
   it in a clean environment).
   - **Files touched:** `src/health/health.controller.ts`, `src/health/health.controller.spec.ts`
     (new), `test/integration/health.integration.spec.ts`, `docs/API.md`,
-    `plans/expose-service-version.md` (Status: DONE).
+    `plans/archive/expose-service-version.md` (Status: DONE).
   - **Tests:** `npm test` — 68 suites, 766 passed (3 pre-existing unrelated skips);
     `tsc --noEmit` clean; `npm run lint` clean; `npm run check:conventions` clean.
     Integration suite not run locally (Docker port conflict, unrelated to this change);
@@ -472,7 +472,7 @@ merged #134
 
 ## Plan: dep-migrations-137 (issue #137 — split of closed PR #133)
 
-Plan: `plans/dep-migrations-137.md` (gitignored). Repo map lives in that file's
+Plan: `plans/archive/dep-migrations-137.md` (gitignored). Repo map lives in that file's
 "Repo map" section — later phases read it instead of re-scanning.
 
 **PR strategy: one PR per phase, sequential** (ten phases after re-verify round 1 — see
@@ -496,7 +496,7 @@ across a mixed bump. Each PR goes through `/ship` in full before the next phase 
 | 7 | `ioredis` 5 → 6 | Medium-high runtime — RESP3 default; unit spec mocks client away |
 | 8 | `typescript` 5.7 → 6.0.3 | Highest — 4 config-level breaks, plus a genuinely silent second-build no-emit regression the mitigations themselves introduced |
 | 9 | `@nestjs/cli` + `@nestjs/schematics` 11 → 12 (build tooling only) | Medium — not throttler-blocked; dependency hygiene (drops a redundant nested `typescript`). *Originally "removes the TS compiler split" — that split never existed; see Phase 8.* |
-| — | **NestJS 12 (runtime)** | **BLOCKED upstream — no phase** → **DONE via #155** (`plans/nestjs-12-155.md`, PRs #188/#189/#190/#194) |
+| — | **NestJS 12 (runtime)** | **BLOCKED upstream — no phase** → **DONE via #155** (`plans/archive/nestjs-12-155.md`, PRs #188/#189/#190/#194) |
 
 **Corrections to issue #137 carried by this plan** (all verified empirically, not assumed):
 1. NestJS 12 is hard-blocked by `@nestjs/throttler` (no v7; peers cap at `@nestjs/common ^11`).
@@ -605,7 +605,7 @@ fixes for:
     credentials; SQL schema-qualified and `ORDER BY tablename`.
   - **Files touched:** `test/helpers/test-db.ts`, `test/setup/global-setup.ts`,
     `test/integration/auth-persistence.integration.spec.ts`, `PROGRESS.md`,
-    `ASSUMPTIONS.md`, `plans/dep-migrations-137.md`. No `src/` file.
+    `ASSUMPTIONS.md`, `plans/archive/dep-migrations-137.md`. No `src/` file.
 
   **Baselines recorded (the point of the phase — Phases 2/4/6/7/8/9 gate on these):**
   - Integration: **24 suites / 151 tests**, exit 0. Reproducible: full suite twice on ONE
@@ -1592,8 +1592,8 @@ fixes for:
 
 ## Plan: rfc-0014-0015-upgrade
 
-Plan: `plans/rfc-0014-0015-upgrade.md` (15 phases). Cross-repo companion:
-`plans/cross-repo/acdp-rs-bump-dispatch-fix.md`. Scope: bump the `acdp` SDK `^0.8.5` →
+Plan: `plans/archive/rfc-0014-0015-upgrade.md` (15 phases). Cross-repo companion:
+`plans/archive/acdp-rs-bump-dispatch-fix.md`. Scope: bump the `acdp` SDK `^0.8.5` →
 `^0.14.1` safely, adopt RFC-ACDP-0014 (producer key revocation) end to end, and fix the
 nine + two defects a fresh correctness audit found in the already-merged RFC-ACDP-0015
 witness/cosign code.
@@ -1862,7 +1862,7 @@ seam (a different RFC, or a real code dependency edge).
     (stop the foreign container, or repoint `DATABASE_URL`) outside this plan's scope.
   - Files touched: `src/audit/receipt-verify.ts`, `src/audit/cosign.ts`,
     `src/audit/log-verify.ts`, `scripts/ci-conventions.sh`, `src/audit/receipt-verify.spec.ts`,
-    `src/ci-conventions.spec.ts` (new), `CLAUDE.md` (untracked), `plans/rfc-0014-0015-upgrade.md`
+    `src/ci-conventions.spec.ts` (new), `CLAUDE.md` (untracked), `plans/archive/rfc-0014-0015-upgrade.md`
     (Phase 1 → DONE).
   - **Next:** Phase 2 — bump `^0.8.5` → `^0.14.1`.
 
@@ -1903,7 +1903,7 @@ seam (a different RFC, or a real code dependency edge).
     `src/audit/receipt-audit.service.spec.ts`, `src/audit/receipt-audit.service.crypto.spec.ts`,
     `test/integration/trust-hardening.integration.spec.ts`, `.github/dependabot.yml`,
     `docs/API.md`, `docs/TROUBLESHOOTING.md` (new section), `CLAUDE.md` (untracked),
-    `plans/rfc-0014-0015-upgrade.md` (Phase 2 → DONE).
+    `plans/archive/rfc-0014-0015-upgrade.md` (Phase 2 → DONE).
   - **Next:** Phase 3 — canonical `authority → did:web` + closed-proof re-serialization (B10, B12).
 
 - **2026-09-23 — Phase 3 (Stop accusing conformant registries: canonical `authority → did:web`,
@@ -1947,7 +1947,7 @@ seam (a different RFC, or a real code dependency edge).
     `log-verify.spec.ts`, `src/audit/receipt-audit.service.ts` + `.spec.ts` +
     `.crypto.spec.ts`, `src/audit/checkpoint-witness.service.ts` + `.spec.ts`,
     `src/audit/log-inclusion-audit.service.ts` + `.spec.ts`, `src/witness/witness-signing.service.ts`,
-    `test/integration/log-witness.integration.spec.ts`, `plans/rfc-0014-0015-upgrade.md`
+    `test/integration/log-witness.integration.spec.ts`, `plans/archive/rfc-0014-0015-upgrade.md`
     (Phase 3 → DONE).
   - **Next:** Phase 4 — `verifyCtxIdBinding` on the federation proxy.
 
@@ -1992,7 +1992,7 @@ seam (a different RFC, or a real code dependency edge).
   - Files touched: `src/errors/error-codes.ts`, `src/audit/receipt-verify.ts` + `.spec.ts`,
     `src/contexts/contexts.controller.ts` + `.spec.ts`,
     `test/integration/federation-proxy.integration.spec.ts`, `docs/API.md`, `CLAUDE.md`
-    (untracked), `plans/rfc-0014-0015-upgrade.md` (Phase 4 → DONE).
+    (untracked), `plans/archive/rfc-0014-0015-upgrade.md` (Phase 4 → DONE).
   - **PR1 (Phases 1-4) is now phase-complete.** Proceeding to the finalization pass before
     handing off to `/ship`. Release-notes callout still owed for two live behavior changes on
     `/contexts/*ctxId` (tightened ctx_id grammar; a mis-resolved native binding now 502s 2xx
@@ -2048,7 +2048,7 @@ true against code (not just prose), diff touches only comment/doc lines (`git di
 checked), unit suite pass count identical to pre-phase baseline (72/895/3/898),
 `drizzle/0016_log_witness.sql` untouched. Files touched: `CLAUDE.md`,
 `src/audit/checkpoint-witness.service.ts`, `src/db/schema.ts`, `docs/ARCHITECTURE.md`,
-`plans/rfc-0014-0015-upgrade.md` (Phase 5 → DONE). No `ASSUMPTIONS.md` entries.
+`plans/archive/rfc-0014-0015-upgrade.md` (Phase 5 → DONE). No `ASSUMPTIONS.md` entries.
 Next: Phase 6 (tenant isolation on witness evidence + self-cosignature guard, B7/B8).
 
 **Phase 6 — Tenant isolation on witness evidence, and the self-cosignature guard (B7, B8).**
@@ -2090,7 +2090,7 @@ fundamentally about what a real database does).
   `src/audit/log-inclusion-audit.service.spec.ts`,
   `test/integration/tenancy-isolation.integration.spec.ts`,
   `test/integration/log-witness.integration.spec.ts`,
-  `plans/rfc-0014-0015-upgrade.md` (Phase 6 → DONE). No `ASSUMPTIONS.md` entries.
+  `plans/archive/rfc-0014-0015-upgrade.md` (Phase 6 → DONE). No `ASSUMPTIONS.md` entries.
 
 **Phase 7 — Cosignature freshness: re-mint on every observation, consume the §8.1 split
 (B1, B6, B11).** PASS r1 (fresh Opus verifier; carries a second irreversible DB migration
@@ -2155,7 +2155,7 @@ it did, twice, confirming a clean no-op on retry).
   `test/integration/witness-cosigning.integration.spec.ts`,
   `test/integration/tenancy-isolation.integration.spec.ts`,
   `test/integration/log-witness.integration.spec.ts`,
-  `plans/rfc-0014-0015-upgrade.md` (Phase 7 → DONE). No `ASSUMPTIONS.md` entries.
+  `plans/archive/rfc-0014-0015-upgrade.md` (Phase 7 → DONE). No `ASSUMPTIONS.md` entries.
 
 ## Phase 8 — Witness key resolution: did:key witnesses and retired witness keys (B2, B3)
 
@@ -2228,7 +2228,7 @@ it did, twice, confirming a clean no-op on retry).
   `src/audit/checkpoint-witness.service.spec.ts`,
   `src/auth/did-web/did-web-resolver.service.spec.ts`,
   `test/integration/log-witness.integration.spec.ts`,
-  `plans/rfc-0014-0015-upgrade.md` (Phase 8 → DONE). No `ASSUMPTIONS.md` entries.
+  `plans/archive/rfc-0014-0015-upgrade.md` (Phase 8 → DONE). No `ASSUMPTIONS.md` entries.
 Next: Phase 9 (quorum result fidelity — failure reasons as objects not `"[object
 Object]"` strings, the `invalid_witness_cosignature` error code, cleanup; B4, B5, B9).
 
@@ -2303,7 +2303,7 @@ Object]"` strings, the `invalid_witness_cosignature` error code, cleanup; B4, B5
   `src/witness/witness.controller.ts`, `src/audit/log-verify.ts`, `docs/API.md`,
   `CLAUDE.md`, `src/audit/cosign.spec.ts`, `src/audit/log-verify.spec.ts`,
   `test/integration/witness-cosigning.integration.spec.ts`,
-  `plans/rfc-0014-0015-upgrade.md` (Phase 9 → DONE, divergence notes). No new
+  `plans/archive/rfc-0014-0015-upgrade.md` (Phase 9 → DONE, divergence notes). No new
   `ASSUMPTIONS.md` entries.
 
 This closes out PR2's scope (Phases 5-9, `rfc-0014/pr2-witness-fixes`). Next: `/ship`
@@ -2358,7 +2358,7 @@ PR2, then start PR3 (Phases 10-15, RFC-ACDP-0014 producer key-revocation, branch
 - Files touched: `src/contracts/revocation.ts` (new), `src/contracts/revocation.spec.ts`
   (new), `src/ingest/ingest.service.ts`, `src/ingest/ingest.service.spec.ts`,
   `test/integration/domain-packs.integration.spec.ts`, `docs/INGEST.md`, `CLAUDE.md`,
-  `plans/rfc-0014-0015-upgrade.md` (Phase 10 → DONE, no divergence). No `ASSUMPTIONS.md`
+  `plans/archive/rfc-0014-0015-upgrade.md` (Phase 10 → DONE, no divergence). No `ASSUMPTIONS.md`
   entries.
 Next: Phase 11 (revocation configuration, registry-profile widening, the §6 binding
 check — no behaviour change yet, config surface only).
@@ -2416,7 +2416,7 @@ check — no behaviour change yet, config surface only).
 - Files touched: `src/config/app-config.service.ts`, `src/config/app-config.service.spec.ts`,
   `src/audit/registry-profile.service.ts`, `src/audit/registry-profile.service.spec.ts`,
   `src/audit/revocation-binding.ts` (new), `src/audit/revocation-binding.spec.ts` (new),
-  `docs/CONFIGURATION.md`, `.env.example`, `plans/rfc-0014-0015-upgrade.md` (Phase 11 →
+  `docs/CONFIGURATION.md`, `.env.example`, `plans/archive/rfc-0014-0015-upgrade.md` (Phase 11 →
   DONE, no divergence). No `ASSUMPTIONS.md` entries.
 
 ## Phase 12 — Verified revocation facts: schema, repositories, and the verification sweep
@@ -2510,7 +2510,7 @@ check — no behaviour change yet, config surface only).
   `src/common/multibase.spec.ts`, `CLAUDE.md` (local, gitignored — Producer
   key-revocation verification bullet + env-var entries), `docs/ARCHITECTURE.md`
   (audit-services table row + background-services bullet + RFC-ACDP-0014 references),
-  `plans/rfc-0014-0015-upgrade.md` (local, gitignored — Phase 12 → DONE, 9 divergence
+  `plans/archive/rfc-0014-0015-upgrade.md` (local, gitignored — Phase 12 → DONE, 9 divergence
   notes), `ASSUMPTIONS.md` (4 new entries, all `UNCONFIRMED`).
 Next: Phase 13 (RFC-ACDP-0014 §7 lineage-fold consumption logic — the shared
 `classifyLineageFailure` this phase's local classifiers are temporary stand-ins for,
@@ -2578,7 +2578,7 @@ depends on Phase 12).
   (new), `src/audit/revocation-audit.service.ts`, `src/audit/revocation-audit.service.spec.ts`,
   `src/storage/key-revocation.repository.ts`, `test/integration/revocation.integration.spec.ts`,
   `docs/ARCHITECTURE.md` (new "The §7 lineage walk" paragraph + sweeps-table row),
-  `plans/rfc-0014-0015-upgrade.md` (local, gitignored — Phase 13 → DONE, 5 divergence
+  `plans/archive/rfc-0014-0015-upgrade.md` (local, gitignored — Phase 13 → DONE, 5 divergence
   notes), `ASSUMPTIONS.md` (1 new entry, `LINEAGE_CURSOR_TTL_MS`, `UNCONFIRMED`).
 Next: Phase 14 (§7 consumer semantics in the receipt-audit pipeline — depends on
 Phase 2, Phase 12, Phase 13, all now complete).
@@ -2661,7 +2661,7 @@ Phase 2, Phase 12, Phase 13, all now complete).
   `test/integration/trust-hardening.integration.spec.ts`, `docs/API.md`,
   `docs/ARCHITECTURE.md` (new "§7 consumer classification (Phase 14)" paragraph +
   sweeps-table row update), `CLAUDE.md` (local, gitignored — new §7 paragraph
-  inside the receipt-audit bullet), `plans/rfc-0014-0015-upgrade.md` (local,
+  inside the receipt-audit bullet), `plans/archive/rfc-0014-0015-upgrade.md` (local,
   gitignored — Phase 14 → DONE, 5 divergence notes), `ASSUMPTIONS.md` (2 new
   entries: the separate-metric decision, the trust-class tie-break rule, both
   `UNCONFIRMED`).
@@ -2779,13 +2779,13 @@ verdict — depends on this phase; Files:
   `test/integration/trust-hardening.integration.spec.ts`, `docs/ARCHITECTURE.md`
   (new "Retroactive re-audit (Phase 15)" paragraph, generalized during gap-closure),
   `CLAUDE.md` (local, gitignored — new "Retroactive re-audit (Phase 15)"
-  paragraph, generalized during gap-closure), `plans/rfc-0014-0015-upgrade.md`
+  paragraph, generalized during gap-closure), `plans/archive/rfc-0014-0015-upgrade.md`
   (local, gitignored — Phase 15 → DONE, divergence notes covering the
   gap-closure history), `ASSUMPTIONS.md` (4 entries: the amend-once →
   continuous-re-tightening history, the dropped `ORDER BY`/new index, the
   accepted claimed-fingerprint limitation, plus the pre-existing reused-
   batch-size entry).
-Next: **all 15 phases of `plans/rfc-0014-0015-upgrade.md` are now `Status: DONE`.**
+Next: **all 15 phases of `plans/archive/rfc-0014-0015-upgrade.md` are now `Status: DONE`.**
 Run the `/implement` §4 finalization pass (whole-feature test re-run, seam
 integration-test gap check, doc staleness sweep, one final Opus verify over
 the CUMULATIVE Phases 10-15 diff) before handing PR3 (Phases 10-15,
@@ -2920,7 +2920,7 @@ did **not** trigger a production deploy — nothing is in flight to watch.
 `vercel.json`/`railway.json` absent (Railway is configured on Railway's
 side, tracking the GHCR image tag).
 
-PR3 was the last PR of the whole 15-phase `plans/rfc-0014-0015-upgrade.md`
+PR3 was the last PR of the whole 15-phase `plans/archive/rfc-0014-0015-upgrade.md`
 plan (PR1 #165, PR2 #167, PR3 #168, all merged). Next: run `/reconcile`
 across the full plan to close out every `ASSUMPTIONS.md` entry logged
 across all three PRs, not just PR3's.
@@ -2978,7 +2978,7 @@ spawned — each of the 9 entries already got its own independent analysis,
 which was the actual review). CI green on all 3 jobs, squash-merged
 77c562961a98da6eca44bf90bda32d2f82acfbd3, local branch deleted.
 
-This closes out `plans/rfc-0014-0015-upgrade.md` end to end: all 15 phases
+This closes out `plans/archive/rfc-0014-0015-upgrade.md` end to end: all 15 phases
 implemented and verified, all 3 PRs merged (#165, #167, #168), and every
 assumption logged along the way reconciled to CONFIRMED/RESOLVED except
 one deliberately-deferred follow-up task (ecdsa-p256 lineage-walk status,
@@ -3160,7 +3160,7 @@ counted any verdict on a metric — surfaced and analyzed during `/reconcile`'s
 pass over #170's own follow-on `ASSUMPTIONS.md` entry, which concluded the
 gap was real and filed this issue.
 
-Plan written to `plans/revocation-lineage-member-metric.md` (gitignored,
+Plan written to `plans/archive/revocation-lineage-member-metric.md` (gitignored,
 local-only), grounded in direct reads of the current code (not the issue
 body's paraphrase — caught and corrected one naming error: the issue said
 `LineageWalkResult`, the actual type is `LineageWalkOutcome`). Single phase:
@@ -3367,7 +3367,7 @@ fast-forwarded.
 
 ## Repo map — error-codes-4xx-182
 
-From `plans/error-codes-4xx-182.md` (issue #182) — reuse, don't re-scan.
+From `plans/archive/error-codes-4xx-182.md` (issue #182) — reuse, don't re-scan.
 
 - `src/errors/error-codes.ts` — the public `ErrorCode` enum (one-way door).
 - `src/errors/exception.filter.ts` — `GlobalExceptionFilter`, `defaultErrorCode`,
@@ -3407,12 +3407,12 @@ Plan: `plans/typescript-7-156.md` (reviewed 2026-10-03, SOUND after one revision
 - `.github/workflows/ci.yml:55`, `release.yml:44` bare `npx tsc` typecheck (Phase 2);
   `.github/dependabot.yml:9-15` `typescript` major ignore (Phase 3).
 - `test/integration/shutdown.integration.spec.ts:43-48` ts-node boot (Phase 3 blocker).
-- Cross-plan: lands before `plans/nestjs-12-155.md` Phase 2 (dotenv 18 then typechecks
+- Cross-plan: lands before `plans/archive/nestjs-12-155.md` Phase 2 (dotenv 18 then typechecks
   as-is); Nest 12's `@nestjs/swagger` adds a TS<7 peer gate for Phase 3.
 
 ## Repo map — nestjs-12-155
 
-From `plans/nestjs-12-155.md` (issue #155) + `plans/dep-migrations-137-closeout.md` — reuse, don't re-scan.
+From `plans/archive/nestjs-12-155.md` (issue #155) + `plans/archive/dep-migrations-137-closeout.md` — reuse, don't re-scan.
 
 - `package.json:25-29` `@nestjs/*` + throttler, `:39` dotenv, `:57` `@nestjs/testing`,
   `:18-21` test scripts (Phase 3 adds `--experimental-vm-modules`), `:89-95` coverage gates.
@@ -3436,11 +3436,11 @@ From `plans/nestjs-12-155.md` (issue #155) + `plans/dep-migrations-137-closeout.
   `nestjs` group, `:45-46` `major-updates`; `Dockerfile:13,23` `node:26-bookworm-slim`.
 - Docs: `docs/CONFIGURATION.md:9-12`, `docs/TROUBLESHOOTING.md:388-406`, `docs/README.md:3`,
   `docs/TESTING.md`, `CLAUDE.md:5,12` (gitignored).
-- Closeout: `plans/dep-migrations-137.md:23,93,259,1103`; `PROGRESS.md:499,1487-1490`.
+- Closeout: `plans/archive/dep-migrations-137.md:23,93,259,1103`; `PROGRESS.md:499,1487-1490`.
 
 # Progress — error-codes-4xx-182
 
-Plan: `plans/error-codes-4xx-182.md` (issue #182). Risk: Phase 1-3 complex
+Plan: `plans/archive/error-codes-4xx-182.md` (issue #182). Risk: Phase 1-3 complex
 (public `ErrorCode` vocabulary), Phase 4 simple.
 
 PR strategy: two PRs — PR A = Phases 1-2 (fallback vocabulary + filter fixes,
@@ -3510,7 +3510,7 @@ Final cumulative verify: PASS (fresh Opus, `115606d..HEAD`); its nits applied
 (API.md codes on remaining 404/403 lines, OQ2/OQ5 assumptions logged).
 PR B merged: #185 (squash e83ac9c), all 3 required checks green, branch
 deleted, local main fast-forwarded. Issue #182 CLOSED. 10 ASSUMPTIONS.md
-entries tagged `Plan: plans/error-codes-4xx-182.md`, all UNCONFIRMED, for
+entries tagged `Plan: plans/archive/error-codes-4xx-182.md`, all UNCONFIRMED, for
 `/reconcile`.
 
 ## TypeScript 7 runway — issue #156 (`plans/typescript-7-156.md`)
@@ -3556,7 +3556,7 @@ version-only; only the new `./unstable/*` API — Phase 3 stays gated. Docs:
 TROUBLESHOOTING, TESTING, dependabot.yml comment, CLAUDE.md (local). ASSUMPTIONS
 deferral entry → CONFIRMED/SUPERSEDED. #156 stays open.
 
-## NestJS 11 → 12 — issue #155 (`plans/nestjs-12-155.md`)
+## NestJS 11 → 12 — issue #155 (`plans/archive/nestjs-12-155.md`)
 
 Risk: Phase 0 simple (scratch probe, non-committing), Phase 1 simple, Phase 2
 simple, Phase 3 simple, Phase 4 complex (solo gate: Nest 12 bump + shutdown
@@ -3649,9 +3649,9 @@ fast-forwarded): #188 (squash 90b108a, Phase 1), #189 (f6a9edf, Phases 2-3),
 cumulative verify PASS round 2 (fresh Opus). Issue #155 CLOSED. #137/#156
 untouched. Pending observation: Dependabot config validation and the first
 post-merge npm run grouping; 6 ASSUMPTIONS.md entries tagged
-`Plan: plans/nestjs-12-155.md`, UNCONFIRMED, for `/reconcile`.
+`Plan: plans/archive/nestjs-12-155.md`, UNCONFIRMED, for `/reconcile`.
 
-## Issue #137 closeout (`plans/dep-migrations-137-closeout.md`) — 2026-10-03
+## Issue #137 closeout (`plans/archive/dep-migrations-137-closeout.md`) — 2026-10-03
 
 Issue #137 closed; #155 confirmed CLOSED (by #194); #156 left OPEN. Re-verified
 all 18 PR #133 packages on `main` @ 79057f5 after `npm ci` (scratch script, not
@@ -3695,7 +3695,7 @@ in the `nestjs` group, not `major-updates`, as Phase 5 of #155 intended.
 Bookkeeping: 18 ASSUMPTIONS.md entries UNCONFIRMED (#182: 10, #156: 2,
 #155: 6) — left for `/reconcile`.
 
-## Issue #187 — IPv6 /64 throttle tracker (`plans/throttle-ipv6-187.md`) — 2026-10-03
+## Issue #187 — IPv6 /64 throttle tracker (`plans/archive/throttle-ipv6-187.md`) — 2026-10-03
 
 `ThrottleByUserGuard.getTracker` now keys unauthenticated callers on
 `normalizeIp(req.ip, this.ipv6SubnetPrefix)` (throttler 6.7's exported helper):
@@ -3710,7 +3710,7 @@ gate: fresh Opus verifier PASS round 1. Checks: typecheck (TS7+TS6), lint,
 conventions, check:build ok; unit 83 suites/1220 passed; integration 32
 suites/224 passed. 3 ASSUMPTIONS.md entries UNCONFIRMED (#187).
 
-## Issue #200 — federation proxy upstream 502 code (`plans/federation-502-code-200.md`) — 2026-10-03
+## Issue #200 — federation proxy upstream 502 code (`plans/archive/federation-502-code-200.md`) — 2026-10-03
 
 `GET /contexts/*` upstream failure (`FederationFetchError` SSRF/FETCH/REDIRECT/
 BODY_TOO_LARGE) now throws `AppException(FEDERATION_UPSTREAM_ERROR, <unchanged
@@ -3725,7 +3725,7 @@ Checks: typecheck (TS7+TS6), lint, conventions (8 ✓), check:build ok; unit 83
 suites/1229 passed; integration 32 suites/228 passed. 3 ASSUMPTIONS.md entries
 UNCONFIRMED (#200); #182's "federation proxy's 502" entry resolved.
 
-## Follow-ups to #187/#200 — TRUST_PROXY + CI rule 8 gap + structured logs (`plans/proxy-and-lint-followups.md`) — 2026-10-03
+## Follow-ups to #187/#200 — TRUST_PROXY + CI rule 8 gap + structured logs (`plans/archive/proxy-and-lint-followups.md`) — 2026-10-03
 
 PR strategy: PR A = Phase 1 (TRUST_PROXY; security-adjacent trust boundary, solo
 gate); PR B = Phases 2+3 (CI rule 8 HttpException forms + template-literal log
@@ -3788,7 +3788,7 @@ cumulative verify was run.
 
 ## Repo map — strict-ed25519-bearer-jwt-221
 
-From `plans/strict-ed25519-bearer-jwt-221.md` (issue #221). Reuse this map; don't re-scan.
+From `plans/archive/strict-ed25519-bearer-jwt-221.md` (issue #221). Reuse this map; don't re-scan.
 
 - Ed25519 verification sites:
   - SDK `verifySignatureB64` (`src/auth/acdp-verify.ts:29-43`), called from
@@ -3845,7 +3845,7 @@ PR opened
 
 ## Repo map — followups-225
 
-From `plans/followups-225.md` (issue #225). Reuse this map; don't re-scan.
+From `plans/archive/followups-225.md` (issue #225). Reuse this map; don't re-scan.
 
 - TRUSTED_ISSUERS: grammar + parser `src/auth/trusted-issuers.ts:8-12,34-58,63-119` (min-field check only `:67`, extra fields silently ignored; `:69`/`:113` error messages echo the whole entry incl. HS256 secret); parsed only in `auth.module.ts:101-106` (issuance-enabled boot); raw env `app-config.service.ts:326`.
 - JWT path: `auth.guard.ts:75-147` (actor tagging `:92-98`, tenant `:145`, `extractScopes` `:235-247`); validator `cross-issuer-validator.service.ts` (`verify` `:83-121`, local-first dispatch `:98`, `verifyTrusted` `:164-217`, `scp`-only requiredScope `:197-206`). No integration spec sets TRUSTED_ISSUERS yet.

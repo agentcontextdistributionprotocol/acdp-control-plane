@@ -311,7 +311,7 @@ describe('walkRevocationLineage', () => {
       expect(result.members[0].ctxId).toBe('ctx-2');
       // Key-by-key, NOT a whole-object toEqual: the out-of-union 'bogus'
       // status also mints a dynamic `bogus: 1` key on memberVerdictCounts
-      // (see Edge cases, plans/revocation-lineage-member-metric.md), which a
+      // (see Edge cases, plans/archive/revocation-lineage-member-metric.md), which a
       // strict toEqual would reject. The four KNOWN keys are unaffected
       // either way — they are pre-initialized to 0, so `?? 0` is never
       // exercised for them. It's the DYNAMIC 'bogus' key below that proves

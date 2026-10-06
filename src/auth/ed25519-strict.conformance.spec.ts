@@ -2,7 +2,7 @@
  * RFC-ACDP-0001 §5.10 strict Ed25519 — the `sig-004` negative vector driven
  * through EVERY Ed25519 entry point the control plane routes to the `acdp`
  * SDK (issue #221, Phase 2; inventory paths 1-8 in
- * `plans/strict-ed25519-bearer-jwt-221.md`).
+ * `plans/archive/strict-ed25519-bearer-jwt-221.md`).
  *
  * The forgery: public key A = identity point, signature = (R = identity,
  * s = 0). The cofactorless equation [s]B = R + [k]A then reads
