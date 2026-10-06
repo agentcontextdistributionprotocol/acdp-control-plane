@@ -176,7 +176,16 @@ describe('CrossIssuerValidator', () => {
       const v = makeValidator({ revocations });
       const tok = mint(LOCAL_ISS, LOCAL_SECRET, { jti: 'jti-revoked' });
       await expect(v.verify(tok)).rejects.toThrow(/revoked/);
-      expect(revocations.isRevoked).toHaveBeenCalledWith('jti-revoked');
+      expect(revocations.isRevoked).toHaveBeenCalledWith(LOCAL_ISS, 'jti-revoked');
+    });
+
+    it('looks a peer token up under the PEER issuer, never the local one (#232)', async () => {
+      const revocations = { isRevoked: jest.fn().mockResolvedValue(false) };
+      const peers = [{ iss: PEER_ISS, alg: 'HS256', secret: PEER_SECRET }] as any;
+      const v = makeValidator({ revocations, peers });
+      await v.verify(mint(PEER_ISS, PEER_SECRET, { jti: 'same-jti' }));
+      expect(revocations.isRevoked).toHaveBeenCalledWith(PEER_ISS, 'same-jti');
+      expect(revocations.isRevoked).not.toHaveBeenCalledWith(LOCAL_ISS, 'same-jti');
     });
 
     it('accepts a token whose jti is NOT revoked', async () => {

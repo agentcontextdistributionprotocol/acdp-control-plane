@@ -3870,3 +3870,4 @@ merged #228
 - P2 PASS (Opus solo, 0 rounds). Folded notes; filed #232 (deny-list keyed by jti alone). PR-A ready.
 - P3/P4 implemented (tenant header trust parity + docs). Verifier pending.
 - P3/P4 PASS (Opus solo, 0 rounds; minor docs/test gaps folded). PR-B shipping.
+- #232 implemented: (iss,jti) deny-list key, migration 0025. Verifier pending.

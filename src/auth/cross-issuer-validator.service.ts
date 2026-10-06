@@ -128,7 +128,7 @@ export class CrossIssuerValidator {
     // `/auth/revocations` feed with issuer-confinement). So a single
     // `isRevoked(jti)` check now honors both local and propagated revocations.
     if (this.revocations && claims.jti) {
-      const revoked = await this.revocations.isRevoked(claims.jti);
+      const revoked = await this.revocations.isRevoked(claims.iss, claims.jti);
       if (revoked) {
         throw new UnauthorizedException(
           `token jti=${claims.jti} has been revoked`,

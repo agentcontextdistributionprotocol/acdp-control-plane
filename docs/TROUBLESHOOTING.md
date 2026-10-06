@@ -84,6 +84,10 @@ key for the agent (and no resolvable did:web), or the signature didn't verify.
 - **Boot fails with `equals JWT_AUTHORITY`**: a `TRUSTED_ISSUERS` entry has the same `iss` as this
   control plane's own `JWT_AUTHORITY`. Local tokens are always verified first, so the entry could never
   apply (its audience and `read_only` would be silently ignored). Remove it, or fix the `iss`.
+- **Rollback hazard (migration 0025):** `revoked_tokens` is keyed by `(iss, jti)`; a build older
+  than that migration issues `ON CONFLICT (jti)`, which then errors, so `POST /auth/token/revoke` and
+  the peer-feed poller fail on a rolled-back build. Roll the DB migration back too (restore the
+  `jti` primary key; collisions across issuers must be resolved first).
 - **Rollback hazard:** a build older than the `read_only` flag silently ignores the 6th field,
   so rolling back re-enables writes for that peer. Check before rolling back.
 - For EdDSA peers, the `jwks-url` must be HTTPS and reachable; the client caches

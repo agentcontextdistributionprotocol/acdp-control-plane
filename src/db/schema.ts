@@ -287,7 +287,7 @@ export const authChallenges = pgTable(
 export const revokedTokens = pgTable(
   'revoked_tokens',
   {
-    jti: varchar('jti', { length: 64 }).primaryKey(),
+    jti: varchar('jti', { length: 64 }).notNull(),
     sub: text('sub').notNull(),
     iss: text('iss').notNull(),
     exp: bigint('exp', { mode: 'number' }).notNull(),
@@ -298,6 +298,8 @@ export const revokedTokens = pgTable(
     reason: varchar('reason', { length: 64 }),
   },
   (t) => ({
+    // A jti is unique only within its issuer (#232).
+    pk: primaryKey({ columns: [t.iss, t.jti] }),
     expIdx: index('revoked_tokens_exp_idx').on(t.exp),
     subIdx: index('revoked_tokens_sub_idx').on(t.sub),
   }),

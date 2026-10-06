@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { eq, lt, sql } from 'drizzle-orm';
+import { and, eq, lt, sql } from 'drizzle-orm';
 import { DatabaseService } from '../db/database.service';
 import { revokedTokens } from '../db/schema';
 import {
@@ -19,26 +19,26 @@ export class PostgresRevocationRepository implements RevocationRepository {
       sql`INSERT INTO revoked_tokens (jti, sub, iss, exp, revoked_by, reason)
           VALUES (${record.jti}, ${record.sub}, ${record.iss}, ${record.exp},
                   ${record.revokedBy}, ${record.reason})
-          ON CONFLICT (jti) DO NOTHING
+          ON CONFLICT (iss, jti) DO NOTHING
           RETURNING jti`,
     );
     return result.rows.length > 0;
   }
 
-  async isRevoked(jti: string): Promise<boolean> {
+  async isRevoked(iss: string, jti: string): Promise<boolean> {
     const result = await this.db.db.execute(
       sql`SELECT 1 FROM revoked_tokens
-          WHERE jti = ${jti} AND exp > extract(epoch from now())
+          WHERE iss = ${iss} AND jti = ${jti} AND exp > extract(epoch from now())
           LIMIT 1`,
     );
     return result.rows.length > 0;
   }
 
-  async get(jti: string): Promise<RevocationRecord | null> {
+  async get(iss: string, jti: string): Promise<RevocationRecord | null> {
     const rows = await this.db.db
       .select()
       .from(revokedTokens)
-      .where(eq(revokedTokens.jti, jti))
+      .where(and(eq(revokedTokens.iss, iss), eq(revokedTokens.jti, jti)))
       .limit(1);
     const row = rows[0];
     if (!row) return null;

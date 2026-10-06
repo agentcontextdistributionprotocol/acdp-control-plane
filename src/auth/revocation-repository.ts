@@ -32,15 +32,17 @@ export interface RevocationRecord {
 export interface RevocationRepository {
   /**
    * Mark a token as revoked. Returns true if the token was newly
-   * revoked, false if it was already in the store (idempotent).
+   * revoked, false if it was already in the store (idempotent). The key is
+   * `(iss, jti)`: a jti is only unique within its issuer, so one issuer's
+   * entry can never revoke another issuer's token (#232).
    */
   revoke(record: RevocationRecord): Promise<boolean>;
 
-  /** Return true if the `jti` is currently revoked. */
-  isRevoked(jti: string): Promise<boolean>;
+  /** Return true if the token `(iss, jti)` is currently revoked. */
+  isRevoked(iss: string, jti: string): Promise<boolean>;
 
   /** Look up a revocation record (for introspection / audit). */
-  get(jti: string): Promise<RevocationRecord | null>;
+  get(iss: string, jti: string): Promise<RevocationRecord | null>;
 
   /** Best-effort sweep of records whose `exp` has passed. */
   evictExpired(): Promise<number>;
