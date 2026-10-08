@@ -329,7 +329,9 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
 
       if (attempt < maxAttempts) {
         const backoffMs = 1000 * 2 ** (attempt - 1);
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        // unref'd: a retry backoff must never hold the process (or a jest
+        // worker) open — the outbox sweep re-drives anything left pending.
+        await new Promise((resolve) => setTimeout(resolve, backoffMs).unref());
       }
     }
   }
