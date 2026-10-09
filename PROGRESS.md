@@ -33,3 +33,4 @@ Quota:
 
 Docs to update: docs/{API,INGEST,POLICY,TENANCY,TROUBLESHOOTING,ARCHITECTURE,CONFIGURATION}.md (line refs in the plan phases), `DEFERRED.md`, local CLAUDE.md:317-318.
 pushed fix/enrollment-tenant-immutable 80699bd
+pushed fix/ingest-quota-after-hmac

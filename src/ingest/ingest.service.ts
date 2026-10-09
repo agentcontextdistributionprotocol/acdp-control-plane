@@ -208,8 +208,9 @@ export class IngestService {
     // `publish` quota — counted HERE, after enrollment, tenant resolution,
     // HMAC and every 4xx field/pack check, so only signed, accepted requests
     // consume budget, and they consume the RESOLVED tenant's budget (the
-    // enrollment's tenant, or the strict-mode fallback), never a header- or
-    // forgery-chosen one. Formerly `@CheckQuota('publish')` on the @Public()
+    // enrollment's tenant, the strict-mode fallback, or — only when
+    // INGEST_STRICT_TENANT is off and the authority is unenrolled — the
+    // X-Tenant-Id a secret holder sent), never an unsigned/forged request's. Formerly `@CheckQuota('publish')` on the @Public()
     // controller counted every request — forged ones included — against
     // `default`. A 429 here makes the registry worker drop the event after
     // its short retry budget, so count it as an ingest rejection.
