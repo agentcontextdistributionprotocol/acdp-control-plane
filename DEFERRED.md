@@ -22,7 +22,6 @@ category, then `file:line` evidence. File an issue only once an item has a repro
 - **design** — run-notify endpoints let any HMAC holder pick any non-`default` tenant via `X-Tenant-Id` (`src/runs/runs.controller.ts:252-257`).
 - **gap** — no unenroll/transfer route exists, so an enrollment's (now immutable) tenant binding cannot be moved; an admin `DELETE /registries/enrollments/:authority` would also have to handle the old tenant's `log_witness_cursors` (PK `(tenant_id, registry_authority)`, `src/db/schema.ts:549`) (`src/storage/registry-enrollment.repository.ts` has no delete).
 - **design** — per-tenant admin scoping is deferred: admin keys are global operator keys (`AUTH_ADMIN_API_KEYS`, `src/auth/auth.guard.ts:218`), so any admin may create an enrollment for any tenant via `body.tenantId` (`src/registries/registries.controller.ts`); separating operator vs tenant-admin keys is an auth-model change.
-- **design** — a same-tenant re-enroll still nulls an omitted `webhookSecret`/`baseUrl`/`registryDid` and resets `enabled` to `true` (`src/storage/registry-enrollment.repository.ts` `onConflictDoUpdate.set`).
 - **security** — failed authentication is never rate-limited: `AuthGuard` is registered before `ThrottleByUserGuard` (`src/app.module.ts:130-131`) and throws 401 before the throttle runs (`src/auth/auth.guard.ts:62-89`).
 - **comment** — `src/auth/revoke.controller.ts:25-27` says revoke is "throttled separately"; the controller has no throttle override.
 

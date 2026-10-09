@@ -230,7 +230,7 @@ every route except the probes is also subject to the coarse throttle.
 | GET  | `/capabilities/by-agent/*did` | key/JWT | — | 200 | One agent's capabilities |
 | GET  | `/registries` | key/JWT | — | 200 | Observed registries |
 | GET  | `/registries/enrollments` | key/JWT | — | 200 | Enrolled registries (secrets omitted) |
-| POST | `/registries/enroll` | admin | — | 201 | Enroll a registry, or update it within its tenant (`409 REGISTRY_ENROLLED_ELSEWHERE` if bound to another tenant) |
+| POST | `/registries/enroll` | admin | — | 201 | Enroll a registry, or update it within its tenant — PATCH-like: omitted fields kept, explicit `null` clears (`409 REGISTRY_ENROLLED_ELSEWHERE` if bound to another tenant) |
 | GET  | `/registries/:authority/log-witness` | key/JWT | — | 200 | Witnessed checkpoints + alert state (RFC-ACDP-0012) |
 | GET  | `/registries/log-witness/alerts` | key/JWT | — | 200 | Alerted registries worklist |
 | POST | `/registries/:authority/log-witness/ack` | admin | — | 201 | Acknowledge a witness alert |
@@ -632,7 +632,7 @@ One agent's capabilities: `{ "data": [ … ], "total": N }`.
 |--------|------|-------------|
 | `GET`  | `/registries` | Registries **observed** via ingest in this tenant: `{ data, total }`, each `{ authority, tenantId, baseUrl, firstSeen, lastSeen, eventCount }`, most recently seen first. |
 | `GET`  | `/registries/enrollments` | Enrollments bound to this tenant: `{ data, total }`; `webhookSecret` is always omitted. |
-| `POST` | `/registries/enroll` | **Admin-only**. Create an enrollment, or update one already bound to the requested tenant. `201`; `409 REGISTRY_ENROLLED_ELSEWHERE` when the authority is bound to a different tenant. |
+| `POST` | `/registries/enroll` | **Admin-only**. Create an enrollment, or update one already bound to the requested tenant (PATCH-like: omitted fields keep their stored values, explicit `null` clears). `201`; `409 REGISTRY_ENROLLED_ELSEWHERE` when the authority is bound to a different tenant. |
 | `GET`  | `/registries/:authority/log-witness` | Witness state + latest witnessed checkpoints. |
 | `GET`  | `/registries/log-witness/alerts` | Witness alerts worklist for this tenant. |
 | `POST` | `/registries/:authority/log-witness/ack` | **Admin-only**. Acknowledge an active witness alert. `201`. |
@@ -664,19 +664,45 @@ One agent's capabilities: `{ "data": [ … ], "total": N }`.
   re-enrolling another tenant's authority without `tenantId` gets `409`; name
   the owning tenant explicitly to update it. Explicitly passing `"default"` is
   `403 TENANT_RESERVED`.
-- `baseUrl` (optional, URL) — the registry's public base URL; ingest uses it as
-  a base-URL fallback for the federation proxy.
-- `registryDid` (optional).
-- `webhookSecret` (optional, ≥ 16 chars) — per-registry ingest HMAC secret;
-  omit to use the global `WEBHOOK_SECRET`.
-- `enabled` (optional, default `true`) — whether ingest from this authority is
-  accepted.
+- `baseUrl` (optional, URL or `null`) — the registry's public base URL; ingest
+  uses it as a base-URL fallback for the federation proxy.
+- `registryDid` (optional, string or `null`).
+- `webhookSecret` (optional, ≥ 16 chars, or `null`) — per-registry ingest HMAC
+  secret; while unset, ingest verifies against the global `WEBHOOK_SECRET`.
+  Never echoed back.
+- `enabled` (optional; `true` on first enroll) — whether ingest from this
+  authority is accepted.
 
-A same-tenant update is a full replace of the other fields: an omitted optional field is reset (`baseUrl`,
-`registryDid`, `webhookSecret` → `null`, `enabled` → `true`), so re-send the
-secret when updating other fields. The response echoes the enrollment
-**without** `webhookSecret`. How enrollment drives ingest:
-[INGEST.md](./INGEST.md).
+**First enroll** inserts the row: an omitted `baseUrl` / `registryDid` /
+`webhookSecret` is stored as `null` and an omitted `enabled` as `true`.
+
+**Re-enroll** (same tenant) is **PATCH-like** — only the fields present in the
+body change:
+
+| Field in the body | Effect on the stored enrollment |
+|-------------------|---------------------------------|
+| omitted | kept unchanged |
+| `null` (`baseUrl` / `registryDid` / `webhookSecret`) | cleared to `null` |
+| a value | replaced |
+| `enabled` omitted or `null` | kept unchanged (never re-enables a disabled registry) |
+| `enabled: true` / `false` | replaced |
+
+So rotating the secret, changing the base URL, or disabling a registry needs
+only the fields being changed (plus `authority` and, for an unbound admin key,
+`tenantId`). Sending `"webhookSecret": null` deliberately clears the
+per-registry secret: ingest for that authority then falls back to the global
+`WEBHOOK_SECRET` (no HMAC check at all if that is also unset), and the CP logs a
+structured `warn`. `""` or a secret shorter than 16 characters is still `400`.
+`created_at` and the tenant binding never change on a re-enroll.
+
+> **Behaviour change (tenant-enroll-quota-fix P2).** Re-enroll used to be a
+> full replace: an omitted field was reset (`baseUrl`, `registryDid`,
+> `webhookSecret` → `null`, `enabled` → `true`), silently dropping the
+> per-registry HMAC secret and re-enabling a disabled registry. Callers that
+> relied on omission to clear a field must now send an explicit `null`.
+
+The response echoes the enrollment **without** `webhookSecret`. How
+enrollment drives ingest: [INGEST.md](./INGEST.md).
 
 ### `GET /registries/:authority/log-witness`
 

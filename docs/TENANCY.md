@@ -123,7 +123,8 @@ async list(@Req() req: TenantedRequest) {
   to the caller's tenant, so an unbound admin key (tenant `default`) re-enrolling
   another tenant's authority without `tenantId` also gets `409`. Admin keys
   (`AUTH_ADMIN_API_KEYS`) are global operator keys: they may still create an
-  enrollment for any tenant, or update one within its owning tenant.
+  enrollment for any tenant, or update one within its owning tenant (a re-enroll is
+  PATCH-like: omitted fields are kept, explicit `null` clears — [API.md](./API.md#post-registriesenroll)).
 - Repositories filter `WHERE tenant_id = …` and stamp it on writes. Composite
   unique / conflict targets include `tenant_id` (e.g. ingest idempotency is keyed
   by `(tenant_id, fingerprint)`; runs PK is `(tenant_id, run_id)`), so identical

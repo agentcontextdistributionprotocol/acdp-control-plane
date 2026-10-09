@@ -5,7 +5,7 @@ Plan: `plans/tenant-enroll-quota-fix.md` (plans/ is gitignored; this file is tra
 ## Phase log
 PR strategy (planned): PR-A = P1+P2 (enrollment), PR-B = P3+P4 (quota).
 - P1 DONE (Opus solo gate PASS, 1 round; gap: log read could mask 409 → fixed) — files: registry-enrollment.repository(+spec), registries.controller(+spec), error-codes(+spec), enroll-registry.dto, ingest-trust.integration.spec, docs API/INGEST/TENANCY/ARCHITECTURE, DEFERRED.md
-- P2 TODO
+- P2 DONE (Opus gate GAPS→PASS after fixes, 2 rounds incl. fixes) — repo set-builder, DTO nullable, controller pass-through, registry-enroll-partial integration spec, docs
 - P3 TODO
 - P4 TODO
 

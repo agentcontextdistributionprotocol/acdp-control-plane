@@ -77,6 +77,78 @@ describe('RegistriesController.enroll', () => {
     expect(enrollmentRepo.findByAuthority).not.toHaveBeenCalled();
   });
 
+  // ── PATCH-like re-enroll (tenant-enroll-quota-fix P2) ──────────────────
+  describe('undefined vs null pass-through', () => {
+    it('passes omitted fields as undefined (repo keeps stored values)', async () => {
+      await controller.enroll({ authority: 'reg.example' } as never, req());
+      const input = enrollmentRepo.upsert.mock.calls[0][0] as Record<string, unknown>;
+      expect(input.baseUrl).toBeUndefined();
+      expect(input.registryDid).toBeUndefined();
+      expect(input.webhookSecret).toBeUndefined();
+      expect(input.enabled).toBeUndefined();
+    });
+
+    it('passes explicit nulls for the nullable fields through as null', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      await controller.enroll(
+        { authority: 'reg.example', baseUrl: null, registryDid: null, webhookSecret: null } as never,
+        req(),
+      );
+      expect(enrollmentRepo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ baseUrl: null, registryDid: null, webhookSecret: null }),
+      );
+      warn.mockRestore();
+    });
+
+    it('normalises enabled:null to omitted (never forwards NULL for the NOT NULL column)', async () => {
+      await controller.enroll({ authority: 'reg.example', enabled: null } as never, req());
+      const input = enrollmentRepo.upsert.mock.calls[0][0] as Record<string, unknown>;
+      expect(input.enabled).toBeUndefined();
+    });
+
+    it('forwards enabled:false', async () => {
+      await controller.enroll({ authority: 'reg.example', enabled: false } as never, req());
+      expect(enrollmentRepo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ enabled: false }),
+      );
+    });
+
+    it('warns (structured, no secret) when webhookSecret is explicitly cleared', async () => {
+      enrollmentRepo.upsert.mockResolvedValue({
+        authority: 'reg.example',
+        tenantId: 'tenant-a',
+        webhookSecret: null,
+      });
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const out = await controller.enroll(
+        { authority: 'reg.example', webhookSecret: null } as never,
+        req(),
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          msg: expect.stringContaining('WEBHOOK_SECRET'),
+          authority: 'reg.example',
+          tenantId: 'tenant-a',
+        }),
+      );
+      expect(warn.mock.calls[0][0]).not.toHaveProperty('webhookSecret');
+      expect(out).not.toHaveProperty('webhookSecret');
+      warn.mockRestore();
+    });
+
+    it('does not warn when webhookSecret is omitted or set', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      await controller.enroll({ authority: 'reg.example' } as never, req());
+      await controller.enroll(
+        { authority: 'reg.example', webhookSecret: 'a-sixteen-char-secret' } as never,
+        req(),
+      );
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+  });
+
   describe('authority already enrolled under a different tenant', () => {
     let warn: jest.SpyInstance;
 

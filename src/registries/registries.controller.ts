@@ -161,7 +161,9 @@ export class RegistriesController {
       'Enroll (or update) a registry authority. Admin-only. Binds the authority ' +
       'to a tenant and pins an optional per-registry webhook secret + base URL. ' +
       'The tenant binding is immutable: re-enrolling an authority already bound ' +
-      'to a different tenant is rejected with 409 REGISTRY_ENROLLED_ELSEWHERE.',
+      'to a different tenant is rejected with 409 REGISTRY_ENROLLED_ELSEWHERE. ' +
+      'Re-enroll is PATCH-like: omitted fields keep their stored values; an ' +
+      'explicit null clears baseUrl / registryDid / webhookSecret.',
   })
   async enroll(
     @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
@@ -174,13 +176,17 @@ export class RegistriesController {
     // (parity with the AuthGuard's reserved-tenant rejection).
     assertNotReservedTenant(body.tenantId, 'tenantId');
     const requestedTenant = body.tenantId ?? tenantOf(req);
+    // `undefined` (omitted) vs `null` (clear) is passed through faithfully —
+    // the repository's re-enroll update is PATCH-like on that distinction.
+    // `enabled` is NOT NULL, so an explicit `null` is normalised to "omitted"
+    // here (never written as NULL; never re-enables a disabled registry).
     const row = await this.enrollmentRepo.upsert({
       authority: body.authority,
       tenantId: requestedTenant,
       baseUrl: body.baseUrl,
       registryDid: body.registryDid,
       webhookSecret: body.webhookSecret,
-      enabled: body.enabled,
+      enabled: body.enabled ?? undefined,
     });
     if (row === null) {
       // The authority is bound to ANOTHER tenant and the binding is immutable
@@ -203,6 +209,18 @@ export class RegistriesController {
         `authority "${body.authority}" is already enrolled under a different tenant`,
         HttpStatus.CONFLICT,
       );
+    }
+    if (body.webhookSecret === null) {
+      // Explicit clear: from now on HMAC for this authority is checked against
+      // the global WEBHOOK_SECRET (or not at all if that is unset). Never log
+      // the secret itself.
+      this.logger.warn({
+        msg:
+          'registry enroll sent webhookSecret:null — no per-registry secret is stored; ingest will ' +
+          'use the global WEBHOOK_SECRET for this authority',
+        authority: row.authority,
+        tenantId: row.tenantId,
+      });
     }
     const { webhookSecret: _omit, ...sanitized } = row;
     return sanitized;

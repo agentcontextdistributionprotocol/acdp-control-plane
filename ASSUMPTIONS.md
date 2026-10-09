@@ -1743,3 +1743,11 @@
 - **Alternatives:** composite PK (breaks pre-HMAC tenant resolution); per-tenant admin scoping (removes the only cross-tenant enroll path under `AUTH_REQUIRE_TENANT=true`; deferred in DEFERRED.md); `transfer:true` flag (reintroduces takeover).
 - **Blast radius if wrong:** an operator workflow that relied on moving an authority between tenants via re-enroll now needs manual SQL until an unenroll route exists. Reversible by reverting the PR.
 - **Status:** UNCONFIRMED
+
+## Re-enroll is PATCH-like: omitted fields kept, explicit null clears (P2)
+- **Plan:** plans/tenant-enroll-quota-fix.md
+- **Assumed:** no caller relies on the previous "full replace" (omitting a field cleared it, `enabled` reset to true); nothing in this repo does.
+- **Chose:** re-enroll of an existing authority changes only fields present in the body; explicit `null` clears `baseUrl`/`registryDid`/`webhookSecret` (secret clear logs a structured warn, ingest then uses the global `WEBHOOK_SECRET`); `enabled: null` is treated as omitted (NOT NULL column); built conditionally in TS rather than SQL `coalesce` (which cannot tell omitted from null).
+- **Alternatives:** keep full-replace (silently drops the per-registry HMAC secret and re-enables an operator-disabled registry); reject `enabled:null` with 400.
+- **Blast radius if wrong:** an external admin script that cleared a field by omitting it must now send `null`; revert the PR to restore old semantics.
+- **Status:** UNCONFIRMED
