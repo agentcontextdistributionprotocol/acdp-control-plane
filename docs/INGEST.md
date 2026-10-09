@@ -28,8 +28,8 @@ sequenceDiagram
     R->>X: POST /ingest/acdp (raw JSON body)
     X-->>R: 413 if body > INGEST_MAX_BODY_BYTES, 400 if malformed JSON
     X->>G: rawBody captured, body parsed
-    Note over G: AuthGuard skipped (@Public) - ThrottleByUserGuard keyed on client IP - QuotaGuard counts publish against tenant default
-    G-->>R: 429 when throttled or over quota
+    Note over G: AuthGuard skipped (@Public) - ThrottleByUserGuard keyed on client IP
+    G-->>R: 429 RATE_LIMITED when throttled
     G->>S: handle(rawBody, headers)
     Note over S: depth pre-scan of the raw text, object check (400)
     S->>DB: find enrollment by claimed authority
@@ -37,6 +37,8 @@ sequenceDiagram
     Note over S: HMAC-SHA256 over raw bytes with the chosen secret
     S-->>R: 401 INVALID_WEBHOOK_SIGNATURE
     Note over S: field checks + domain-pack gate (400)
+    Note over S: QuotaService.enforce(resolved tenant, publish)
+    S-->>R: 429 QUOTA_EXCEEDED + Retry-After
     S->>P: process(payload, runId, tenantId, baseUrl, eventId)
     P->>DB: insert context_events (duplicate = stop, no side effects)
     P->>DB: runs, lineage_edges, context_lifecycle, agents, registries
@@ -49,11 +51,11 @@ sequenceDiagram
 | 1 | Express JSON body parser (captures the raw bytes, then parses): size limit `INGEST_MAX_BODY_BYTES` (default 1 MiB); malformed JSON | `413 PAYLOAD_TOO_LARGE` / `400 INVALID_PAYLOAD` |
 | 2 | Drain gate (only while the process is `closing`) | `503 SERVICE_DRAINING` |
 | 3 | `ThrottleByUserGuard` — the route is `@Public()`, so the bucket is the client IP (`normalizeIp`; IPv6 per `/64`; `req.ip` honours `TRUST_PROXY` only) | `429 RATE_LIMITED` |
-| 4 | `QuotaGuard` `publish` — see [Quota](#quota-and-rate-limits) | `429 QUOTA_EXCEEDED` + `Retry-After` |
-| 5 | Nesting depth > `INGEST_MAX_JSON_DEPTH` (default 64); payload not an object | `400 INVALID_PAYLOAD` |
-| 6 | Enrollment lookup for the [claimed authority](#authority-derivation) | `403 REGISTRY_DISABLED` / `403 REGISTRY_NOT_ENROLLED` |
-| 7 | HMAC-SHA256 | `401 INVALID_WEBHOOK_SIGNATURE` |
-| 8 | `type` present; `agent_id` present when `type` is `context_published`; [domain-pack gate](#domain-pack-context_type-gate); an authority is derivable | `400 INVALID_PAYLOAD` |
+| 4 | Nesting depth > `INGEST_MAX_JSON_DEPTH` (default 64); payload not an object | `400 INVALID_PAYLOAD` |
+| 5 | Enrollment lookup for the [claimed authority](#authority-derivation) | `403 REGISTRY_DISABLED` / `403 REGISTRY_NOT_ENROLLED` |
+| 6 | HMAC-SHA256 | `401 INVALID_WEBHOOK_SIGNATURE` |
+| 7 | `type` present; `agent_id` present when `type` is `context_published`; [domain-pack gate](#domain-pack-context_type-gate); an authority is derivable | `400 INVALID_PAYLOAD` |
+| 8 | `publish` quota for the [resolved tenant](#tenant-attribution) — see [Quota](#quota-and-rate-limits) | `429 QUOTA_EXCEEDED` + `Retry-After` |
 | 9 | [Pipeline](./ARCHITECTURE.md#the-pipeline-eventprocessorserviceprocess) (a duplicate stops at its first step) | `500 INTERNAL_ERROR` on a database failure |
 
 Success is always `204 No Content`, for a new event and for a duplicate alike.
@@ -177,21 +179,61 @@ write in the pipeline is stamped with this tenant. See [TENANCY.md](./TENANCY.md
 
 ## Quota and rate limits
 
-`/ingest/acdp` carries `@CheckQuota('publish')`. **Current behaviour:**
+The `publish` quota is enforced **inside** `IngestService`
+(`QuotaService.enforce(tenantId, 'publish', res)`), immediately before the
+pipeline — not by a route guard. A guard would run before the signature is
+checked and before the tenant is known.
 
-- `QuotaGuard` runs **before** `IngestService`, so it counts every request that
-  reaches it — including ones that later fail HMAC.
-- The guard reads `req.tenantId`, which a `@Public()` route never has, so the
-  counter is always `default`'s. Only a `default:publish=…` (or `default:*=…`)
-  rule in `TENANT_QUOTAS` limits ingest; a rule for the enrollment's tenant
-  never applies here.
-- Over the limit → `429 QUOTA_EXCEEDED` with `Retry-After`. With no matching
-  rule, or the quota store unavailable, the request passes.
+- **Only signed, accepted requests count.** The check sits after the enrollment
+  lookup, HMAC verification, field checks and the domain-pack gate, so a request
+  that ends in `400`, `401` or `403` consumes nothing. A forged-signature flood
+  cannot drain a tenant's budget. (With `WEBHOOK_SECRET` empty — dev mode —
+  "signed" just means "passed the other checks".)
+- **Charged to the resolved tenant.** The counter is
+  `acdp:quota:<tenant>:publish`, where `<tenant>` is the one from
+  [Tenant attribution](#tenant-attribution): the enrollment's tenant for an
+  enrolled authority; otherwise `X-Tenant-Id` or `default` (`default` whenever
+  `INGEST_STRICT_TENANT` rejects the header). So a `tenant-x:publish=…` rule in
+  `TENANT_QUOTAS` limits registries enrolled under `tenant-x`.
+- Over the limit → `429 QUOTA_EXCEEDED` with `Retry-After`, counted as
+  `acdp_ingest_rejected_total{reason="quota"}`. With no matching rule, or the
+  quota store unavailable, the request passes (fail-open, unchanged).
+- A registry retry of an event the CP already stored still counts: dedup
+  happens inside the pipeline, after the quota check.
 
-The coarse `ThrottleByUserGuard` (`THROTTLE_LIMIT` per `THROTTLE_TTL_MS`) also
-applies, keyed on the client IP. Behind a proxy, set `TRUST_PROXY` so every
-registry does not share the proxy's bucket. See [POLICY.md](./POLICY.md#quota) for
-quota configuration.
+> **Upgrade note (tenant-enroll-quota-fix P4).** Before this change the route
+> carried `@CheckQuota('publish')`: every request, forged ones included, was
+> counted against `default`, and only a `default:publish` rule ever limited
+> ingest. Now:
+>
+> - A deployment with only `default:publish` **stops throttling enrolled
+>   registries bound to other tenants**. Unenrolled authorities, and
+>   strict-mode fallbacks, still land in `default` and stay limited. Add a
+>   `<tenant>:publish=…` rule for each tenant you want to cap.
+> - With `INGEST_STRICT_TENANT` off, an unenrolled sender holding the global
+>   `WEBHOOK_SECRET` can name any rule-less `X-Tenant-Id` and so avoid the
+>   `default` cap. The same sender (or any enrollment without its own secret)
+>   can also name an *enrolled* tenant and spend that tenant's `publish` budget,
+>   making its registry receive `429`s (and drop events). Set
+>   `INGEST_STRICT_TENANT=true` (or `INGEST_REQUIRE_ENROLLMENT=true`) and give
+>   each enrollment its own `webhookSecret` so only an enrollment chooses the
+>   tenant.
+
+**A quota `429` drops events.** The registry's webhook worker treats `429` as
+retryable, but makes at most `webhook.max_retries` attempts (default 3) with
+exponential backoff from 250 ms — about 0.75 s in total with the defaults, and
+without waiting for `Retry-After` — then logs and drops the event. See the registry's
+[WEBHOOKS.md — delivery and retries](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/WEBHOOKS.md#delivery-and-retries).
+Size `publish` rules for peak legitimate traffic: they shed load by losing
+events, not by delaying them. Watch `acdp_ingest_rejected_total{reason="quota"}`.
+
+**Unsigned traffic is not quota-limited.** What bounds a flood of unsigned or
+forged requests is the coarse `ThrottleByUserGuard` (`THROTTLE_LIMIT` per
+`THROTTLE_TTL_MS`, default 200 per 60 s), keyed on the client IP, plus the body
+size cap ([Request limits](#request-limits)). Each such request still costs one
+JSON parse and one enrollment lookup before it is rejected. Behind a proxy or
+load balancer, set `TRUST_PROXY` so every registry does not share the proxy's
+throttle bucket. See [POLICY.md](./POLICY.md#quota) for quota configuration.
 
 ## Request limits
 

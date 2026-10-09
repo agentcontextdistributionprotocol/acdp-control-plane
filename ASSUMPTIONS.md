@@ -1751,3 +1751,11 @@
 - **Alternatives:** keep full-replace (silently drops the per-registry HMAC secret and re-enables an operator-disabled registry); reject `enabled:null` with 400.
 - **Blast radius if wrong:** an external admin script that cleared a field by omitting it must now send `null`; revert the PR to restore old semantics.
 - **Status:** UNCONFIRMED
+
+## Ingest `publish` quota enforced after HMAC under the resolved tenant (P3/P4)
+- **Plan:** plans/tenant-enroll-quota-fix.md
+- **Assumed:** counting accepted-and-signed requests (duplicates of stored events included) under the enrollment/header-resolved tenant is the intended `publish` semantics; operators with only `default:publish` rules accept that enrolled registries bound to other tenants are no longer throttled by it; per-IP throttle + body cap are adequate residual protection against unsigned floods. The registry worker makes ≤3 attempts (~0.75 s, ignores Retry-After) so a quota 429 drops the event — confirmed in acdp-registry-webhook/src/lib.rs:230-276 (its WEBHOOKS.md wording reads as more retries).
+- **Chose:** `QuotaService.enforce` called from `IngestService` immediately before the pipeline; quota 429 body (existing shape, incl. `tenantId`) goes to the HMAC-authenticated sender; `ingestRejectedTotal{reason="quota"}`; non-429 errors rethrown without the metric.
+- **Alternatives:** keep guard (rejected: counts forged requests against `default`); interceptor (tenant/HMAC unknown there); not counting duplicates (needs pre-insert dedup).
+- **Blast radius if wrong:** rate-limit semantics change for multi-tenant operators (documented upgrade note); in non-strict tenant mode a global-secret holder can spend another tenant's budget (documented; mitigated by INGEST_STRICT_TENANT / per-enrollment secrets). Reversible by reverting the PR.
+- **Status:** UNCONFIRMED

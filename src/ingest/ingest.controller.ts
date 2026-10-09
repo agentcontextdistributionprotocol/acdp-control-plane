@@ -10,7 +10,6 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Public } from '../auth/public.decorator';
-import { CheckQuota } from '../quota/check-quota.decorator';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { IngestService } from './ingest.service';
 
@@ -22,7 +21,10 @@ export class IngestController {
   @Post('acdp')
   @HttpCode(204)
   @Public()
-  @CheckQuota('publish')
+  // No @CheckQuota here: the `publish` quota is enforced inside
+  // IngestService.handle AFTER HMAC verification, under the resolved
+  // tenant (a guard runs before the signature is checked and before the
+  // tenant is known, so it would count forged requests against `default`).
   @ApiOperation({
     summary: 'Receive an ACDP webhook event from a registry. Authenticated by HMAC-SHA256.',
   })
@@ -51,6 +53,7 @@ export class IngestController {
       tenantId,
       origin?.trim(),
       eventId?.trim(),
+      { res: req.res },
     );
   }
 

@@ -22,6 +22,49 @@ interface ChallengeResp {
   signing_input: string;
 }
 
+/**
+ * Mint a bearer for the agent — its `sub` is the subjectDid the PolicyGuard
+ * requires for capability.declare.
+ */
+async function mintBearer(url: string): Promise<TestClient> {
+  const pub = new TestClient(url);
+  const ch = await pub.requestJson<ChallengeResp>('POST', '/auth/challenge', {
+    body: { agent_id: DID },
+  });
+  const sig = sign(null, Buffer.from(ch.signing_input), privateKey).toString('base64');
+  const tok = await pub.requestJson<{ token: string }>('POST', '/auth/token', {
+    body: {
+      agent_id: DID,
+      key_id: `${DID}#key-1`,
+      nonce: ch.nonce,
+      expires_at: ch.expires_at,
+      algorithm: 'ed25519',
+      signature: sig,
+    },
+  });
+  return new TestClient(url, tok.token);
+}
+
+/** Sign `acdp-cap:v1:<did>:<uri>:<declared_at>` with the pinned key. */
+function declareBody(uri: string, declaredAt: string) {
+  const assertion = `acdp-cap:v1:${DID}:${uri}:${declaredAt}`;
+  return {
+    agent_did: DID,
+    capability_uri: uri,
+    declared_at: declaredAt,
+    key_id: `${DID}#key-1`,
+    algorithm: 'ed25519',
+    signature: sign(null, Buffer.from(assertion), privateKey).toString('base64'),
+  };
+}
+
+const TOKEN_ISSUANCE = {
+  jwtSecret: JWT_SECRET,
+  authority: AUTHORITY,
+  pinnedKeys: `${DID}=${RAW_PUB_B64}`,
+  tenantAgents: `${TENANT}:${DID}`,
+};
+
 describe('Capabilities (integration)', () => {
   let ctx: TestAppContext;
   let pub: TestClient;
@@ -30,51 +73,16 @@ describe('Capabilities (integration)', () => {
   beforeAll(async () => {
     ctx = await createTestApp({
       apiKey: 'cap-test-key',
-      tokenIssuance: {
-        jwtSecret: JWT_SECRET,
-        authority: AUTHORITY,
-        pinnedKeys: `${DID}=${RAW_PUB_B64}`,
-        tenantAgents: `${TENANT}:${DID}`,
-      },
+      tokenIssuance: TOKEN_ISSUANCE,
     });
     pub = new TestClient(ctx.url);
-
-    // Mint a bearer for the agent — its `sub` is the subjectDid the PolicyGuard
-    // requires for capability.declare.
-    const ch = await pub.requestJson<ChallengeResp>('POST', '/auth/challenge', {
-      body: { agent_id: DID },
-    });
-    const sig = sign(null, Buffer.from(ch.signing_input), privateKey).toString('base64');
-    const tok = await pub.requestJson<{ token: string }>('POST', '/auth/token', {
-      body: {
-        agent_id: DID,
-        key_id: `${DID}#key-1`,
-        nonce: ch.nonce,
-        expires_at: ch.expires_at,
-        algorithm: 'ed25519',
-        signature: sig,
-      },
-    });
-    bearer = new TestClient(ctx.url, tok.token);
+    bearer = await mintBearer(ctx.url);
   });
 
   afterAll(async () => {
     await ctx.app.close();
     delete process.env.TOKEN_ISSUANCE_ENABLED;
   });
-
-  /** Sign `acdp-cap:v1:<did>:<uri>:<declared_at>` with the pinned key. */
-  function declareBody(uri: string, declaredAt: string) {
-    const assertion = `acdp-cap:v1:${DID}:${uri}:${declaredAt}`;
-    return {
-      agent_did: DID,
-      capability_uri: uri,
-      declared_at: declaredAt,
-      key_id: `${DID}#key-1`,
-      algorithm: 'ed25519',
-      signature: sign(null, Buffer.from(assertion), privateKey).toString('base64'),
-    };
-  }
 
   it('rejects a capability declaration from an API-key caller (no subject DID)', async () => {
     // No bearer → no subjectDid → policy/auth refuses. (Strict tenant mode is on
@@ -156,5 +164,44 @@ describe('Capabilities (integration)', () => {
     );
     expect(res.total).toBeGreaterThanOrEqual(1);
     expect(res.data.some((r) => r.capability_uri === CAP_URI)).toBe(true);
+  });
+});
+
+// The `@CheckQuota('capability.declare')` guard path is untouched by moving the
+// ingest `publish` quota into IngestService (tenant-enroll-quota-fix P4): the
+// authenticated route still meters the bearer's tenant through QuotaGuard.
+describe('capability.declare quota via QuotaGuard (integration)', () => {
+  let ctx: TestAppContext;
+  let bearer: TestClient;
+
+  beforeAll(async () => {
+    ctx = await createTestApp({
+      apiKey: 'cap-test-key',
+      tokenIssuance: TOKEN_ISSUANCE,
+      tenantQuotas: `${TENANT}:capability.declare=1/min`,
+    });
+    bearer = await mintBearer(ctx.url);
+  });
+
+  afterAll(async () => {
+    await ctx.cleanup();
+    await ctx.app.close();
+    delete process.env.TOKEN_ISSUANCE_ENABLED;
+  });
+
+  it("allows the tenant's first declare, then 429 QUOTA_EXCEEDED with Retry-After", async () => {
+    const first = await bearer.requestRaw('POST', '/capabilities', {
+      body: declareBody(CAP_URI, new Date().toISOString()),
+    });
+    expect(first.status).toBe(200);
+
+    const second = await bearer.requestRaw('POST', '/capabilities', {
+      body: declareBody(CAP_URI, new Date().toISOString()),
+    });
+    expect(second.status).toBe(429);
+    expect(Number(second.headers['retry-after'])).toBeGreaterThan(0);
+    const body = second.body as Record<string, unknown>;
+    expect(body.errorCode).toBe('QUOTA_EXCEEDED');
+    expect(body).toMatchObject({ tenantId: TENANT, action: 'capability.declare' });
   });
 });

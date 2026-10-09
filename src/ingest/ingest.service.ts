@@ -1,8 +1,11 @@
 import {
   BadRequestException,
+  HttpException,
   HttpStatus,
+  Inject,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { AppException } from '../errors/app-exception';
@@ -11,10 +14,17 @@ import { AcdpWebhookEvent } from '../contracts/acdp';
 import { REVOCATION_CONTEXT_TYPES } from '../contracts/revocation';
 import { DomainPackRegistry } from '../domain-packs/domain-pack';
 import { EventProcessorService } from '../processor/event-processor.service';
+import { QuotaResponseLike, QuotaService } from '../quota/quota.service';
 import { RegistryEnrollmentRepository } from '../storage/registry-enrollment.repository';
 import { InstrumentationService } from '../telemetry/instrumentation.service';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { verifyWebhookSignature } from './hmac';
+
+/** Optional per-request extras for `IngestService.handle`. */
+export interface IngestHandleOptions {
+  /** The Express response — the quota 429 path sets `Retry-After` on it. */
+  res?: QuotaResponseLike | null;
+}
 
 @Injectable()
 export class IngestService {
@@ -26,6 +36,10 @@ export class IngestService {
     private readonly domainPacks: DomainPackRegistry,
     private readonly enrollmentRepo: RegistryEnrollmentRepository,
     private readonly instrumentation: InstrumentationService,
+    // Explicit token + @Optional(): a test module without QuotaModule still
+    // builds (no quota → never throttled). Type-only DI of an @Optional
+    // class silently resolves null — keep the @Inject (see QuotaGuard, P3).
+    @Optional() @Inject(QuotaService) private readonly quota: QuotaService | null = null,
   ) {}
 
   async handle(
@@ -35,6 +49,7 @@ export class IngestService {
     headerTenantId: string = DEFAULT_TENANT_ID,
     originHeader?: string,
     eventIdHeader?: string,
+    opts?: IngestHandleOptions,
   ): Promise<void> {
     // Bound the parse-DoS surface on this @Public() route: reject an
     // oversized body before decoding, and pre-scan for excessive JSON
@@ -189,6 +204,28 @@ export class IngestService {
     // the envelope's flattened event_id field. Undefined for legacy
     // registries — the processor then falls back to a content fingerprint.
     const eventId = eventIdHeader?.trim() || payload.event_id;
+
+    // `publish` quota — counted HERE, after enrollment, tenant resolution,
+    // HMAC and every 4xx field/pack check, so only signed, accepted requests
+    // consume budget, and they consume the RESOLVED tenant's budget (the
+    // enrollment's tenant, or the strict-mode fallback), never a header- or
+    // forgery-chosen one. Formerly `@CheckQuota('publish')` on the @Public()
+    // controller counted every request — forged ones included — against
+    // `default`. A 429 here makes the registry worker drop the event after
+    // its short retry budget, so count it as an ingest rejection.
+    if (this.quota) {
+      try {
+        await this.quota.enforce(tenantId, 'publish', opts?.res);
+      } catch (err) {
+        if (
+          err instanceof HttpException &&
+          err.getStatus() === HttpStatus.TOO_MANY_REQUESTS
+        ) {
+          this.instrumentation.ingestRejectedTotal.inc({ reason: 'quota' });
+        }
+        throw err;
+      }
+    }
     await this.processor.process(payload, runId, tenantId, baseUrl, eventId);
   }
 }

@@ -6,11 +6,11 @@ category, then `file:line` evidence. File an issue only once an item has a repro
 
 ## Ingest
 
-- **bug** — `/ingest/acdp` `@CheckQuota('publish')` runs before HMAC and, the route being `@Public()`, always counts against `default`, so unsigned requests burn the quota (`src/ingest/ingest.controller.ts:25`, `src/quota/quota.guard.ts:62-65`).
-- **bug** — `INGEST_MAX_JSON_DEPTH` doesn't protect the first parse: Express's JSON body parser has already parsed the body (`src/bootstrap.ts:88`) before the depth pre-scan runs (`src/ingest/ingest.service.ts:48`).
-- **security** — `X-ACDP-Event-Id` is outside the HMAC (body-only, `src/ingest/ingest.service.ts:114`) yet takes precedence as the dedup key (`:191`, `src/processor/event-processor.service.ts:216`), so replaying a signed body with a fresh header bypasses dedup.
-- **security** — unsigned `Origin` overrides the enrolled base URL (`src/ingest/ingest.service.ts:187`) and, when the payload has no `registry_base_url`, is upserted as `registries.base_url` (`src/processor/event-processor.service.ts:159-163`), which the federation proxy fetches from (`src/contexts/contexts.controller.ts:63-74`).
-- **comment** — the base-URL precedence comment (`src/ingest/ingest.service.ts:184-186`: Origin, then enrolled, then payload) contradicts the processor, which takes `payload.registry_base_url` first (`src/processor/event-processor.service.ts:159-162`).
+- **design** — with the `publish` quota now counted after HMAC (tenant-enroll-quota-fix P4), unsigned floods are bounded only by the per-IP `ThrottleByUserGuard` (`THROTTLE_LIMIT`, default 200/min, `src/config/app-config.service.ts:457`), which also caps a legitimate high-volume registry on one IP, and each forged request still costs a JSON parse + an enrollment lookup before the 401 (`src/ingest/ingest.service.ts:75,88`).
+- **bug** — `INGEST_MAX_JSON_DEPTH` doesn't protect the first parse: Express's JSON body parser has already parsed the body (`src/bootstrap.ts:88`) before the depth pre-scan runs (`src/ingest/ingest.service.ts:63`).
+- **security** — `X-ACDP-Event-Id` is outside the HMAC (body-only, `src/ingest/ingest.service.ts:129`) yet takes precedence as the dedup key (`:206`, `src/processor/event-processor.service.ts:216`), so replaying a signed body with a fresh header bypasses dedup.
+- **security** — unsigned `Origin` overrides the enrolled base URL (`src/ingest/ingest.service.ts:202`) and, when the payload has no `registry_base_url`, is upserted as `registries.base_url` (`src/processor/event-processor.service.ts:159-163`), which the federation proxy fetches from (`src/contexts/contexts.controller.ts:63-74`).
+- **comment** — the base-URL precedence comment (`src/ingest/ingest.service.ts:199-201`: Origin, then enrolled, then payload) contradicts the processor, which takes `payload.registry_base_url` first (`src/processor/event-processor.service.ts:159-162`).
 
 ## Auth, tenancy, policy
 

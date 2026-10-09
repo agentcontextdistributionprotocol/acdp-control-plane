@@ -211,7 +211,7 @@ every route except the probes is also subject to the coarse throttle.
 
 | Method | Path | Auth | Gates | OK | Notes |
 |--------|------|------|-------|----|-------|
-| POST | `/ingest/acdp` | Public (HMAC) | quota `publish` | 204 | Registry webhook in |
+| POST | `/ingest/acdp` | Public (HMAC) | quota `publish` (in-handler, after HMAC, resolved tenant) | 204 | Registry webhook in |
 | GET  | `/ingest/health` | Public | — | 200 | Registry config liveness |
 | GET  | `/runs` | key/JWT | policy `run.read` | 200 | List runs |
 | GET  | `/runs/:runId` | key/JWT | policy `run.read` | 200 | Run detail + `trust` |
@@ -268,7 +268,10 @@ every route except the probes is also subject to the coarse throttle.
 **Public** (no bearer); authenticated by an HMAC-SHA256 of the raw body in
 `X-ACDP-Signature: sha256=<hex>`, keyed by the enrolled registry's secret or
 `WEBHOOK_SECRET`. The handler also reads `X-Run-Id`, `X-Tenant-Id`,
-`X-ACDP-Event-Id` and `Origin`, and is quota-gated as action `publish`.
+`X-ACDP-Event-Id` and `Origin`. It is quota-gated as action `publish`, but not by
+`@CheckQuota`: the handler counts only signed, accepted requests, after the HMAC check,
+against the tenant it resolved (the enrollment's tenant for an enrolled authority) —
+see [INGEST.md — Quota and rate limits](./INGEST.md#quota-and-rate-limits).
 [INGEST.md](./INGEST.md) owns the contract: which secret is used, how the
 tenant and run are resolved, enrollment rules, dedup ids, the body's required
 fields, and the order the checks run in.

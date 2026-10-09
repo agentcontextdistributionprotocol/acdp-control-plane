@@ -7,7 +7,7 @@ PR strategy (planned): PR-A = P1+P2 (enrollment), PR-B = P3+P4 (quota).
 - P1 DONE (Opus solo gate PASS, 1 round; gap: log read could mask 409 → fixed) — files: registry-enrollment.repository(+spec), registries.controller(+spec), error-codes(+spec), enroll-registry.dto, ingest-trust.integration.spec, docs API/INGEST/TENANCY/ARCHITECTURE, DEFERRED.md
 - P2 DONE (Opus gate GAPS→PASS after fixes, 2 rounds incl. fixes) — repo set-builder, DTO nullable, controller pass-through, registry-enroll-partial integration spec, docs
 - P3 DONE (Opus solo gate PASS, 1 round) — quota.service(+spec), guard thin wrapper, module
-- P4 TODO
+- P4 DONE (Opus solo gate GAPS→fixed, 2 rounds) — ingest.controller/service, quota integration + capabilities quota tests, 8 docs, DEFERRED.md
 
 ## Repo map (discovery notes for `/implement` — don't re-scan)
 

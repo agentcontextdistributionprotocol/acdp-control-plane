@@ -106,7 +106,7 @@ src/
 │   └── did-web/               # did:web resolver + SSRF guard (acdp SDK wrappers)
 ├── tenant/                    # Tenant resolution + DEFAULT_TENANT_ID + lookups
 ├── policy/                    # PolicyGuard + static/OPA deciders + caching
-├── quota/                     # QuotaGuard + memory/Redis windowed counters
+├── quota/                     # QuotaService + QuotaGuard + memory/Redis windowed counters
 │
 ├── ingest/                    # POST /ingest/acdp + HMAC verify + body caps + gates
 ├── processor/                 # EventProcessorService — the pipeline core
@@ -176,8 +176,9 @@ order**. Each later guard depends on state pinned by an earlier one.
 | 3 | `PolicyGuard`          | no-op      | `@CheckPolicy(action)`| Per-action authorization via a pluggable `PolicyDecider` |
 | 4 | `QuotaGuard`           | no-op      | `@CheckQuota(action)` | Per-tenant per-action windowed counters; runs **last** so requests denied by auth/policy don't burn an increment |
 
-`/ingest/acdp` is `@Public()` because HMAC is its authentication; its quota is
-counted before the HMAC check, against `default`
+`/ingest/acdp` is `@Public()` because HMAC is its authentication, and carries no
+`@CheckQuota`: `IngestService` calls the same `QuotaService` itself, after the HMAC
+check, against the tenant it resolved — so only signed, accepted webhooks count
 ([INGEST.md](./INGEST.md#quota-and-rate-limits)). See [POLICY.md](./POLICY.md)
 for policy/quota detail and [AUTH.md](./AUTH.md) for the auth model.
 

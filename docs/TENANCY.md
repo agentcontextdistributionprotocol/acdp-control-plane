@@ -139,7 +139,7 @@ async list(@Req() req: TenantedRequest) {
 | `AUTH_REQUIRE_TENANT` | `true` / `false` | Strict mode (see above). |
 | `TENANT_HEADER_TRUST` | `none` (default) / `any_peer` | Who may assert a tenant via `X-Tenant-Id` on a claim-less JWT (see above). |
 | `INGEST_STRICT_TENANT` | `true` / `false` (default) | Ingest only: ignore `X-Tenant-Id` from an unenrolled registry (see below). |
-| `TENANT_QUOTAS` | see [POLICY.md](./POLICY.md#quota) | Per-tenant per-action rate limits. Ingest (`publish`) always counts against `default` — see POLICY.md. |
+| `TENANT_QUOTAS` | see [POLICY.md](./POLICY.md#quota) | Per-tenant per-action rate limits. Ingest (`publish`) counts against the ingest-resolved tenant (the enrollment's, else `X-Tenant-Id`/`default`), after HMAC — see [INGEST.md](./INGEST.md#quota-and-rate-limits). |
 
 > **Current behaviour — the two binding lists are parsed lazily, not at boot.** Startup
 > only checks *whether* bindings exist (next section). The entries themselves are parsed

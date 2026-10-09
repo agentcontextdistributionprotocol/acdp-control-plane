@@ -1,10 +1,16 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
 import { ErrorCode } from '../errors/error-codes';
 import { createHmac } from 'node:crypto';
 import { AppConfigService } from '../config/app-config.service';
 import { DomainPackRegistry } from '../domain-packs/domain-pack';
 import { FINANCE_PACK } from '../domain-packs/finance.pack';
+import { Test } from '@nestjs/testing';
 import { EventProcessorService } from '../processor/event-processor.service';
+import { parseQuotaConfig } from '../quota/quota-config';
+import { QUOTA_CONFIG, QUOTA_STORE, QuotaService } from '../quota/quota.service';
+import { InMemoryQuotaStore } from '../quota/quota-store';
+import { RegistryEnrollmentRepository } from '../storage/registry-enrollment.repository';
+import { InstrumentationService } from '../telemetry/instrumentation.service';
 import { extractAuthorityFromCtxId, IngestService } from './ingest.service';
 
 describe('IngestService', () => {
@@ -21,6 +27,7 @@ describe('IngestService', () => {
   let packs: DomainPackRegistry;
   let enrollmentRepo: { findByAuthority: jest.Mock };
   let instrumentation: { ingestRejectedTotal: { inc: jest.Mock } };
+  let quota: { enforce: jest.Mock };
   let service: IngestService;
 
   function sign(body: Buffer): string {
@@ -44,12 +51,14 @@ describe('IngestService', () => {
     packs = new DomainPackRegistry(); // empty → context-type gate is inactive
     enrollmentRepo = { findByAuthority: jest.fn().mockResolvedValue(null) };
     instrumentation = { ingestRejectedTotal: { inc: jest.fn() } };
+    quota = { enforce: jest.fn().mockResolvedValue(undefined) };
     service = new IngestService(
       config as AppConfigService,
       processor as unknown as EventProcessorService,
       packs,
       enrollmentRepo as any,
       instrumentation as any,
+      quota as any,
     );
   });
 
@@ -76,6 +85,7 @@ describe('IngestService', () => {
         packs,
         enrollmentRepo as any,
         instrumentation as any,
+        quota as any,
       );
       const body = Buffer.from(JSON.stringify(validPayload)); // > 32 bytes
       await expect(svc.handle(body, sign(body))).rejects.toThrow(/byte limit/);
@@ -106,6 +116,7 @@ describe('IngestService', () => {
         packs,
         enrollmentRepo as any,
         instrumentation as any,
+        quota as any,
       );
       const body = Buffer.from(JSON.stringify(validPayload));
       await strict.handle(body, sign(body), 'run-1', 'attacker-tenant');
@@ -279,6 +290,7 @@ describe('IngestService', () => {
       packs,
       enrollmentRepo as any,
       instrumentation as any,
+      quota as any,
     );
     const body = Buffer.from(JSON.stringify(validPayload));
     await service.handle(body, '', undefined);
@@ -295,6 +307,7 @@ describe('IngestService', () => {
         reg,
         enrollmentRepo as any,
         instrumentation as any,
+        quota as any,
       );
       const body = Buffer.from(
         JSON.stringify({ ...validPayload, context_type: 'task' }),
@@ -318,6 +331,7 @@ describe('IngestService', () => {
         reg,
         enrollmentRepo as any,
         instrumentation as any,
+        quota as any,
       );
       const body = Buffer.from(
         JSON.stringify({ ...validPayload, context_type: 'earnings_report' }),
@@ -335,6 +349,7 @@ describe('IngestService', () => {
         reg,
         enrollmentRepo as any,
         instrumentation as any,
+        quota as any,
       );
       const body = Buffer.from(
         JSON.stringify({ ...validPayload, context_type: 'data_snapshot' }),
@@ -364,6 +379,7 @@ describe('IngestService', () => {
           reg,
           enrollmentRepo as any,
           instrumentation as any,
+          quota as any,
         );
       });
 
@@ -458,6 +474,7 @@ describe('IngestService', () => {
         packs,
         enrollmentRepo as any, // findByAuthority → null (not enrolled)
         instrumentation as any,
+        quota as any,
       );
       const body = Buffer.from(JSON.stringify(validPayload));
       await expect(service.handle(body, sign(body), undefined)).rejects.toMatchObject({
@@ -465,6 +482,171 @@ describe('IngestService', () => {
         errorCode: ErrorCode.REGISTRY_NOT_ENROLLED,
       });
       expect(processor.process).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('publish quota (enforced after HMAC, under the resolved tenant)', () => {
+    const quota429 = () =>
+      new HttpException(
+        { statusCode: 429, errorCode: ErrorCode.QUOTA_EXCEEDED, message: 'quota exceeded' },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+
+    it('counts an accepted request once, then hands off to the processor', async () => {
+      const body = Buffer.from(JSON.stringify(validPayload));
+      const res = { setHeader: jest.fn() };
+      await service.handle(body, sign(body), 'run-1', 'tenant-x', undefined, undefined, { res });
+      expect(quota.enforce).toHaveBeenCalledTimes(1);
+      expect(quota.enforce).toHaveBeenCalledWith('tenant-x', 'publish', res);
+      expect(processor.process).toHaveBeenCalledTimes(1);
+      expect(quota.enforce.mock.invocationCallOrder[0]).toBeLessThan(
+        processor.process.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('a forged signature never touches the quota', async () => {
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await expect(service.handle(body, 'sha256=deadbeef', undefined)).rejects.toMatchObject({
+        status: 401,
+      });
+      expect(quota.enforce).not.toHaveBeenCalled();
+    });
+
+    it('a 400 (missing type) never touches the quota', async () => {
+      const body = Buffer.from(JSON.stringify({ ...validPayload, type: undefined }));
+      await expect(service.handle(body, sign(body), undefined)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(quota.enforce).not.toHaveBeenCalled();
+    });
+
+    it('a 400 (domain-pack gate) never touches the quota', async () => {
+      const reg = new DomainPackRegistry();
+      reg.register(FINANCE_PACK);
+      service = new IngestService(
+        config as AppConfigService,
+        processor as unknown as EventProcessorService,
+        reg,
+        enrollmentRepo as any,
+        instrumentation as any,
+        quota as any,
+      );
+      const body = Buffer.from(JSON.stringify({ ...validPayload, context_type: 'task' }));
+      await expect(service.handle(body, sign(body), undefined)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(quota.enforce).not.toHaveBeenCalled();
+    });
+
+    it('a 403 (disabled enrollment) never touches the quota', async () => {
+      enrollmentRepo.findByAuthority.mockResolvedValue({
+        tenantId: 'tenant-enrolled',
+        webhookSecret: null,
+        enabled: false,
+      });
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await expect(service.handle(body, sign(body), undefined)).rejects.toMatchObject({
+        status: 403,
+      });
+      expect(quota.enforce).not.toHaveBeenCalled();
+    });
+
+    it('a 403 (unenrolled under INGEST_REQUIRE_ENROLLMENT) never touches the quota', async () => {
+      service = new IngestService(
+        { ...config, ingestRequireEnrollment: true } as AppConfigService,
+        processor as unknown as EventProcessorService,
+        packs,
+        enrollmentRepo as any,
+        instrumentation as any,
+        quota as any,
+      );
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await expect(service.handle(body, sign(body), undefined)).rejects.toMatchObject({
+        status: 403,
+        errorCode: ErrorCode.REGISTRY_NOT_ENROLLED,
+      });
+      expect(quota.enforce).not.toHaveBeenCalled();
+    });
+
+    it("charges the ENROLLMENT's tenant, not the X-Tenant-Id header", async () => {
+      enrollmentRepo.findByAuthority.mockResolvedValue({
+        tenantId: 'tenant-blue',
+        webhookSecret: null,
+        baseUrl: null,
+        enabled: true,
+      });
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await service.handle(body, sign(body), 'run-1', 'attacker-tenant');
+      expect(quota.enforce).toHaveBeenCalledWith('tenant-blue', 'publish', undefined);
+    });
+
+    it('charges `default` for an unenrolled header tenant in strict mode', async () => {
+      service = new IngestService(
+        { ...config, ingestStrictTenant: true } as AppConfigService,
+        processor as unknown as EventProcessorService,
+        packs,
+        enrollmentRepo as any,
+        instrumentation as any,
+        quota as any,
+      );
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await service.handle(body, sign(body), 'run-1', 'attacker-tenant');
+      expect(quota.enforce).toHaveBeenCalledWith('default', 'publish', undefined);
+    });
+
+    it('429 ⇒ the processor is not called, reason="quota" is counted, error rethrown unchanged', async () => {
+      const err = quota429();
+      quota.enforce.mockRejectedValue(err);
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await expect(service.handle(body, sign(body), undefined)).rejects.toBe(err);
+      expect(processor.process).not.toHaveBeenCalled();
+      expect(instrumentation.ingestRejectedTotal.inc).toHaveBeenCalledWith({ reason: 'quota' });
+    });
+
+    it('a non-429 failure from enforce is rethrown without the quota metric', async () => {
+      const err = new Error('boom');
+      quota.enforce.mockRejectedValue(err);
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await expect(service.handle(body, sign(body), undefined)).rejects.toBe(err);
+      expect(instrumentation.ingestRejectedTotal.inc).not.toHaveBeenCalled();
+      expect(processor.process).not.toHaveBeenCalled();
+    });
+
+    // `QuotaService | null` serializes as `Object` in design:paramtypes, so
+    // without the explicit @Inject(QuotaService) Nest would silently inject
+    // nothing and the ingest quota would vanish (the P3 guard lesson).
+    it('receives QuotaService through Nest DI (not silently null)', async () => {
+      const mod = await Test.createTestingModule({
+        providers: [
+          IngestService,
+          QuotaService,
+          { provide: QUOTA_CONFIG, useValue: parseQuotaConfig('default:publish=1/min') },
+          { provide: QUOTA_STORE, useValue: new InMemoryQuotaStore() },
+          { provide: AppConfigService, useValue: config },
+          { provide: EventProcessorService, useValue: processor },
+          { provide: DomainPackRegistry, useValue: packs },
+          { provide: RegistryEnrollmentRepository, useValue: enrollmentRepo },
+          { provide: InstrumentationService, useValue: instrumentation },
+        ],
+      }).compile();
+      const svc = mod.get(IngestService);
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await svc.handle(body, sign(body), undefined);
+      await expect(svc.handle(body, sign(body), undefined)).rejects.toMatchObject({ status: 429 });
+      expect(processor.process).toHaveBeenCalledTimes(1);
+    });
+
+    it('no QuotaService injected (module without QuotaModule) ⇒ unthrottled', async () => {
+      const svc = new IngestService(
+        config as AppConfigService,
+        processor as unknown as EventProcessorService,
+        packs,
+        enrollmentRepo as any,
+        instrumentation as any,
+      );
+      const body = Buffer.from(JSON.stringify(validPayload));
+      await svc.handle(body, sign(body), undefined);
+      expect(processor.process).toHaveBeenCalledTimes(1);
     });
   });
 
