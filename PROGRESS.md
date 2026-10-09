@@ -45,3 +45,4 @@ Siblings (read-only; link, never copy): spec repo local dir `../agentcontextdist
 
 Audit findings are summarized in the plan phases (item numbers refer to the audit reports; re-derive any
 item from the cited `file:line` in the plan — all are code-grounded).
+pushed docs/refresh-against-code df8fe56
