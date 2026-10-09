@@ -2,9 +2,15 @@
 
 ## Ingest
 
-### `401 Unauthorized` from `POST /ingest/acdp`
+Order matters when reading an ingest rejection: the body-size, JSON-depth and
+JSON-parse checks, the `publish` quota, and the enrollment lookup all run
+**before** the HMAC check, so a `413`, `429`, `403` or malformed-JSON `400` says
+nothing about the signature. The ingest contract (header format, enrollment,
+tenant attribution) is in [INGEST.md](./INGEST.md#request-lifecycle).
 
-The HMAC signature didn't verify. Causes:
+### `401 INVALID_WEBHOOK_SIGNATURE` from `POST /ingest/acdp`
+
+The HMAC signature didn't verify (`errorCode: INVALID_WEBHOOK_SIGNATURE`). Causes:
 - The `x-acdp-signature` header is missing.
 - The signature is computed over a different body than what's on the wire (most
   often a re-serialized JSON with different key order or whitespace).
@@ -16,22 +22,29 @@ Checklist:
 2. Confirm the secret is byte-identical on both sides (no trailing newlines).
 3. Temporarily clear `WEBHOOK_SECRET` (dev only) to confirm the path works.
 
-### `400 Bad Request` from `POST /ingest/acdp`
+### `400 INVALID_PAYLOAD` from `POST /ingest/acdp`
 
-One of: body isn't valid JSON; a required field is missing (`type`,
-`registry_authority`, and `agent_id` for `context_published`); the body exceeds
-`INGEST_MAX_BODY_BYTES` (1 MiB); JSON nesting exceeds `INGEST_MAX_JSON_DEPTH`
-(64); or a custom `context_type` is rejected by an active domain pack. See
-[INGEST.md](./INGEST.md#event-shape).
+One of: body isn't valid JSON or isn't an object; JSON nesting exceeds
+`INGEST_MAX_JSON_DEPTH` (64); `type` is missing; `agent_id` is missing on a
+`context_published`; neither `registry_authority` nor an authority inside
+`ctx_id` (`acdp://<authority>/…`) is present; or a custom `context_type` is
+rejected by an active domain pack. See [INGEST.md](./INGEST.md#event-shape).
+
+### `413 PAYLOAD_TOO_LARGE` from `POST /ingest/acdp`
+
+The JSON body exceeds `INGEST_MAX_BODY_BYTES` (default 1 MiB). The body parser
+enforces the same limit on every route, so the request is rejected before it
+reaches the ingest handler. Raise the limit on both sides together: the
+registry's own payload ceiling is 1 MB.
 
 ### `403 Forbidden` from `POST /ingest/acdp`
 
-`errorCode: REGISTRY_NOT_ENROLLED` — the authority isn't enrolled while
+Checked before the HMAC. `errorCode: REGISTRY_NOT_ENROLLED` — the authority isn't enrolled while
 `INGEST_REQUIRE_ENROLLMENT=true`. `errorCode: REGISTRY_DISABLED` — it is
 enrolled but disabled. (With `INGEST_STRICT_TENANT=true` an unenrolled
 authority's non-`default` tenant header is ignored, not rejected.)
 Enroll the registry (`POST /registries/enroll`) or relax the flag. See
-[INGEST.md](./INGEST.md#registry-trust--enrollment).
+[INGEST.md](./INGEST.md#registry-enrollment).
 
 ### A custom `context_type` silently never appears
 
@@ -43,9 +56,11 @@ the type, or unset `DOMAIN_PACKS`. See [INGEST.md](./INGEST.md#domain-pack-conte
 
 ### Run shows `scenario_id: "unknown"`
 
-The first event for a run sets `scenario_id`. If neither top-level `scenario_id`
-nor `metadata.scenario_id` was present, it's `"unknown"`. Re-emitting won't
-backfill — the run row is set on first sight only.
+The first ingested event for a run sets `scenario_id`, taking
+`metadata.scenario_id` over a top-level `scenario_id`; with neither it's
+`"unknown"`. Later webhooks never change it. The run-start notification
+(`POST /runs/started`) does: it overwrites `scenario_id` on an existing row
+without touching the counts ingest accumulated.
 
 ---
 
@@ -54,7 +69,14 @@ backfill — the run row is set on first sight only.
 ### `401` on a route that worked with an API key, now using a JWT
 
 The JWT failed verification. Common causes:
-- `TOKEN_ISSUANCE_ENABLED` is false (the JWT path / validator isn't wired).
+- `TOKEN_ISSUANCE_ENABLED` is false. That switch wires **all** JWT verification,
+  so with it off every bearer JWT is rejected — federated `TRUSTED_ISSUERS`
+  tokens included — and only API keys work.
+- No `exp` claim. `verifyJwt` requires a numeric `exp` on every token, local and
+  trusted-issuer (the reference registry stamps `exp` on everything it issues);
+  a peer or script minting tokens without it gets `401` (logged as
+  `jwt exp claim is required`; `/auth/introspect` answers `{ "active": false }`).
+  Fix the issuer.
 - `aud` mismatch — local tokens must carry `aud == JWT_AUDIENCE`; trusted-issuer
   tokens must carry the `aud` bound in their `TRUSTED_ISSUERS` entry.
 - The token's `(iss, jti)` is revoked (locally or propagated from a peer feed).
@@ -69,7 +91,10 @@ The challenge/signature step failed: unknown or expired nonce (re-run
 `/auth/challenge`), `agent_id`/`expires_at` not matching the challenge, no pinned
 key for the agent (and no resolvable did:web), or the signature didn't verify.
 `400` means an unsupported `algorithm`. The **issuance ledger** records the exact
-`reject_*` reason (`issuance_ledger.decision`) for each attempt.
+reason for each attempt in `issuance_ledger.decision` (`reject_nonce`,
+`reject_signature`, `reject_unpinned`, `reject_agent_mismatch`,
+`reject_expires_mismatch`, `reject_alg`, `reject_key_id_malformed`,
+`reject_key_id_mismatch`, `reject_internal`).
 
 ### Federated peer tokens rejected
 
@@ -187,8 +212,10 @@ notation or an empty entry.
 
 ### Stream stalls after idle
 
-Raise `STREAM_SSE_HEARTBEAT_MS` if your proxy is aggressive about idle connections
-(default 15 s).
+The server sends a `heartbeat` event every `STREAM_SSE_HEARTBEAT_MS` (default
+15 s). If an intermediary closes idle connections sooner than that, **lower** it
+below the proxy's idle timeout, or raise the proxy's timeout (nginx
+`proxy_read_timeout`).
 
 ### `memory` strategy: subscribers on different replicas miss events
 
@@ -250,9 +277,9 @@ a stopping container. Things that are **not** rejected:
   that follows it gets the `503` with CORS headers, so a browser can read it.
 
 Registry webhooks (`POST /ingest/acdp`) are retried by the registry on a `503`,
-but with the registry's default `max_retries = 3` the whole retry window is only
-about 750 ms (250 ms + 500 ms of backoff), after which the delivery is dropped
-silently. A delivery reaches another replica only if your load balancer stops
+but with the registry's default retry settings the whole window is short (see
+the registry's [WEBHOOKS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/WEBHOOKS.md)
+for the current values), after which the delivery is dropped. A delivery reaches another replica only if your load balancer stops
 routing to the stopping one within that window. If you lose deliveries during
 deploys, raise the registry's webhook `max_retries`.
 
@@ -312,10 +339,16 @@ body (>1 MiB), or a transport/timeout error. The specific cause is in the
 carrying `CONTEXT_ID_MISMATCH` / `CONTEXT_BINDING_UNVERIFIABLE` is different:
 the registry did answer, but the served `ctx_id` binding failed.
 
-### `404` from `GET /contexts/*`
+### `404 REGISTRY_NOT_FOUND` from `GET /contexts/*`
 
-The authority isn't enrolled **in the caller's tenant**, or its enrollment has no
-`baseUrl`. Enroll it with a `baseUrl`.
+The proxy looks the authority up in the **observed** `registries` table (filled
+by ingest), in the caller's tenant — not in the enrollment table. A `404` means
+this tenant has never ingested an event from that authority, or no base URL was
+ever recorded for it (from the payload's `registry_base_url`, the webhook
+`Origin` header, or the enrollment's `baseUrl`). Ingest at least one event that
+carries a base URL, or enroll the registry with a `baseUrl` so ingest records it.
+A `404` with a different `errorCode` is the registry's own answer, relayed
+verbatim. A malformed `ctx_id` is a `400` before any lookup.
 
 ---
 
@@ -323,7 +356,7 @@ The authority isn't enrolled **in the caller's tenant**, or its enrollment has n
 
 ### Audits that used to be `verified` are now `error` with `unverified: stored ctx_id … is not canonical`
 
-Since the `acdp` `^0.14.1` bump the SDK parses `expectedCtxId` with `CtxId::parse`
+The SDK parses `expectedCtxId` with `CtxId::parse`
 (`acdp://` + a lowercase DNS authority + a lowercase v4 UUID — a port in the
 authority never parses). `ReceiptAuditService` pre-checks that grammar before the
 federation fetch, so an event whose **stored** `ctx_id` is non-canonical gets an
@@ -357,6 +390,36 @@ with a canonical `ctx_id` audit normally.
 
 ---
 
+## Producer key-revocation (RFC-ACDP-0014)
+
+### `trust.revoked` never appears on `GET /runs/:runId`
+
+Classification runs inside the receipt-audit sweep, so it needs **both**
+`KEY_REVOCATION_CHECK_ENABLED=true` and `RECEIPT_AUDIT_ENABLED=true`. Outside
+`development` the first without the second fails boot; under
+`NODE_ENV=development` that check is skipped, so the revocation sweep runs and
+records facts, but nothing is ever classified against them.
+
+### A published `key-revocation` never lands in `key_revocations`
+
+Read `acdp_key_revocation_checks_total{status}` and the sweep's logs:
+
+- `invalid` (`key-revocation rejected` warn, with `reason`) — permanent: bad
+  hash or signature, a failed §6 registry binding for a registry-attested claim,
+  or a revocation signed by the very key it revokes (the not-self-signed rule).
+  Re-verified to the same result each pass while inside
+  `KEY_REVOCATION_LOOKBACK_HOURS`.
+- `unavailable` (debug log) — transient fetch or DID-resolution failure; retried
+  on later passes for the same window.
+- `unsupported` (warn) — a signer algorithm this pipeline cannot verify yet
+  (ecdsa-p256, issue #170).
+
+The format and trust rules are in
+[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0014-key-revocation.md);
+the knobs in [CONFIGURATION.md](./CONFIGURATION.md#producer-key-revocation-rfc-acdp-0014).
+
+---
+
 ## Database
 
 ### `relation "..." does not exist`
@@ -371,8 +434,8 @@ SELECT name FROM _migrations ORDER BY name;
 ### `pool error: too many clients`
 
 `DB_POOL_MAX` (default 20) × replicas may exceed Postgres `max_connections`. Raise
-`max_connections` or lower `DB_POOL_MAX` (must stay ≥ 2; the config service
-refuses `< 2`).
+`max_connections` or lower `DB_POOL_MAX` (keep it ≥ 2; the config service refuses
+`< 2`, but only outside `NODE_ENV=development`).
 
 ### `GET /readyz` returns `503 DEPENDENCY_UNAVAILABLE`
 
@@ -475,11 +538,15 @@ the raw HTTP request body before any framework re-serialization.
 
 ## Local dev
 
-### `npm run start:dev` exits with `AUTH_API_KEYS must be set …`
+### `npm run start:dev` exits with `AUTH_API_KEYS must be set …` / `WEBHOOK_SECRET must be set …`
 
-`NODE_ENV=production` leaked from the shell or `.env`. Fail-fast runs whenever
-`NODE_ENV !== 'development'`. Set `NODE_ENV=development` or supply the required
-vars. See [CONFIGURATION.md](./CONFIGURATION.md#startup-validation).
+`NODE_ENV` is set to something other than `development` — `production`, but also
+`test` or `staging` — from the shell or `.env`. The production-only checks run
+whenever `NODE_ENV !== 'development'`. Set `NODE_ENV=development` or supply the
+required vars. The reverse also bites: a misconfiguration that only the
+production tier catches (for example `KEY_REVOCATION_CHECK_ENABLED=true` without
+`RECEIPT_AUDIT_ENABLED=true`) boots fine in development. See
+[CONFIGURATION.md](./CONFIGURATION.md#startup-validation).
 
 ### Boot fails with `EISDIR: illegal operation on a directory, read … the .env path ".env" is a directory`
 
@@ -548,15 +615,6 @@ service (published on **6380**, not 6379, so it cannot collide with your own
 local Redis). Start it with the command above. The skip is local-only by
 design — in CI the spec fails loudly rather than skipping, because a
 wire-protocol spec that silently skips reports green while proving nothing.
-
-## Auth
-
-### Trusted peer tokens are rejected after upgrade: `jwt exp claim is required`
-
-`verifyJwt` now requires a numeric `exp` on **every** token — local and trusted-issuer
-(RFC-ACDP-0008 §6.2 `bearer_jwt`; the reference registry stamps `exp` on everything it
-issues). A peer or script minting tokens without `exp` is rejected with 401 (and
-`{ "active": false }` from `/auth/introspect`). Fix the issuer to set `exp`.
 
 ## Build / TypeScript
 

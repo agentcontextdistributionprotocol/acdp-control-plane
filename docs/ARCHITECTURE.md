@@ -21,49 +21,70 @@ registries (which authoritatively store contexts and emit lifecycle webhooks) an
 
 > Where this service mirrors protocol or registry behavior (crypto, SSRF, did:web,
 > auth challenge-response, tenancy, webhook event shapes), it relies on the
-> [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs) and
-> tracks the [registry](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs)
-> rather than re-implementing. See the ecosystem map in [README.md](./README.md#ecosystem--sources-of-truth).
+> [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/bindings.md) and
+> tracks the [registry](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/README.md)
+> rather than re-implementing. See the ecosystem map in [README.md](./README.md#ecosystem--sources-of-truth)
+> and the link index in [README.md — Sibling docs](./README.md#sibling-docs).
 
+```mermaid
+flowchart LR
+    Registries["ACDP registries"]
+    Clients["API clients, UI, playground"]
+    Peers["Peer issuers: JWKS, revocation feeds"]
+    PG[("PostgreSQL")]
+    Redis[("Redis (optional)")]
+    SSE["SSE consumers"]
+    Subs["Webhook subscribers"]
+
+    subgraph CP["Control plane"]
+        Guards["Global guards: Auth, Throttle, Policy, Quota"]
+        Ingest["IngestController + IngestService"]
+        Proc["EventProcessorService"]
+        API["Query + admin controllers"]
+        Proxy["Federation proxy: GET /contexts"]
+        Hub["StreamHubService"]
+        WH["WebhookService (outbox)"]
+        subgraph Sweeps["Background sweeps"]
+            Audit["Receipt, log-inclusion, revocation audits"]
+            Witness["Checkpoint witness + cosigner"]
+            Upkeep["Retention, auth sweeper, revocation poller, webhook retry"]
+        end
+    end
+
+    Registries -->|"POST /ingest/acdp (HMAC)"| Guards
+    Clients -->|"API key or bearer JWT"| Guards
+    Guards --> Ingest --> Proc
+    Guards --> API
+    Guards --> Proxy
+    Proxy -->|"SSRF-gated fetch"| Registries
+    Proc --> PG
+    Proc --> Hub
+    Proc --> WH
+    API --> PG
+    Hub --> SSE
+    Hub <-.->|"pub/sub when STREAM_HUB_STRATEGY=redis"| Redis
+    Guards -.->|"quota counters when REDIS_URL set"| Redis
+    WH -->|"HMAC-signed POST"| Subs
+    Audit -->|"fetch bodies, proofs, DID docs"| Registries
+    Witness -->|"GET /log/checkpoint, /log/proof"| Registries
+    Audit --> PG
+    Witness --> PG
+    Upkeep --> PG
+    Upkeep -->|"poll REVOCATION_FEEDS"| Peers
 ```
-              ┌──────────────────────┐
-              │   ACDP Registry A    │──┐
-              └──────────────────────┘  │  POST /ingest/acdp
-              ┌──────────────────────┐  │  (HMAC-SHA256,
-              │   ACDP Registry B    │──┼──  X-Run-Id header)
-              └──────────────────────┘  │
-                                        ▼
-   ┌──────────────────────────────────────────────────────────────┐
-   │                     ACDP Control Plane                         │
-   │                                                                │
-   │  Four global guards (in order):                                │
-   │    AuthGuard ─► ThrottleByUserGuard ─► PolicyGuard ─► QuotaGuard│
-   │       │ pins req.tenantId, actorDid, scopes                    │
-   │       ▼                                                        │
-   │  IngestController ─► IngestService (HMAC verify, JSON parse,   │
-   │       │              enrollment + domain-pack gate)            │
-   │       ▼                                                        │
-   │  EventProcessorService (the pipeline core)                     │
-   │     ├─ dedup (fingerprint) + persist raw (context_events)      │
-   │     ├─ upsert run (X-Run-Id correlation)                       │
-   │     ├─ insert lineage edges (context_published only)          │
-   │     ├─ upsert agent / registry                                │
-   │     ├─ publish per-run + global SSE                            │
-   │     └─ fire outbound webhooks (outbox-tracked)                 │
-   │                                                                │
-   │  /runs /events /contexts /agents /capabilities /registries    │
-   │  /dashboard /webhooks /domain-packs /routing /auth/*          │
-   │  /log/witness /.well-known/* /admin/pinned-keys/reload        │
-   │  /registries/:authority/log-witness (+alerts, ack)            │
-   │  /healthz /readyz /metrics /docs                              │
-   └──────────────────────────────────────────────────────────────┘
-                 │                │                  │
-                 ▼                ▼                  ▼
-        ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
-        │ PostgreSQL   │  │ Redis (opt.) │  │ SSE consumers    │
-        │ (Drizzle ORM)│  │ SSE / quota  │  │ UI / playground  │
-        └──────────────┘  └──────────────┘  └──────────────────┘
-```
+
+Routes, grouped (full index with auth/quota/policy columns in
+[API.md](./API.md#route-index)): ingest and run-notify (`/ingest/*`,
+`/runs/started`, `/runs/:runId/complete`); read APIs (`/runs`, `/events`,
+`/agents`, `/capabilities`, `/registries`, `/dashboard/overview`,
+`/domain-packs`, `/routing/stats`); SSE (`/runs/:runId/events/stream`,
+`/events/stream`); `/contexts/*ctxId`; `/webhooks`; auth (`/auth/challenge`,
+`/auth/token`, `/auth/token/revoke`, `/auth/introspect`, `/auth/revocations`,
+`/.well-known/jwks.json`); witness (`/log/witness`,
+`/.well-known/acdp-witness.json`, `/.well-known/did.json`); admin
+(`/registries/enroll`, `/registries/log-witness/alerts`,
+`/registries/:authority/log-witness[/ack]`, `/admin/pinned-keys/reload`);
+probes (`/healthz`, `/readyz`, `/metrics`, `/docs`).
 
 ## Module layout
 
@@ -79,9 +100,9 @@ src/
 │
 ├── config/                    # AppConfigService (single home for all process.env reads)
 ├── db/                        # Drizzle schema, Pool wrapper, programmatic migrate runner
-├── middleware/                # Correlation-ID (AsyncLocalStorage), request logger
+├── middleware/                # Correlation-ID (AsyncLocalStorage), request logger, drain gate
 │
-├── auth/                      # AuthGuard, JWT issuance, did:web, federation, revocation
+├── auth/                      # AuthGuard, throttle guard, JWT issuance, federation, revocation
 │   └── did-web/               # did:web resolver + SSRF guard (acdp SDK wrappers)
 ├── tenant/                    # Tenant resolution + DEFAULT_TENANT_ID + lookups
 ├── policy/                    # PolicyGuard + static/OPA deciders + caching
@@ -96,17 +117,17 @@ src/
 ├── audit/                     # Receipt audit (RFC-ACDP-0010), checkpoint witness +
 │                              #   log-inclusion audit (RFC-ACDP-0012), Merkle log-verify,
 │                              #   cosignature helpers, registry-profile probe,
-│                              #   key-revocation audit (RFC-ACDP-0014)
+│                              #   key-revocation audit + lineage walk (RFC-ACDP-0014)
 ├── witness/                   # Witness cosigning (RFC-ACDP-0015): signing service +
 │                              #   /log/witness, /.well-known/acdp-witness.json, did.json
 ├── webhooks/                  # Outbound webhook subs + outbox-tracked delivery + retry sweep
 ├── events/                    # StreamHub (memory + redis strategies), /events controller
-├── runs/                      # /runs controller + service
+├── runs/                      # /runs controller + service (run-notify feeds the bandit)
 ├── contexts/                  # Federation proxy + SafeFederationClient (SSRF)
 ├── agents/                    # /agents + signed capability declare/discovery
-├── routing/                   # BanditRouterService (Thompson-sampling agent selection)
-├── registries/                # /registries + admin enrollment
-├── domain-packs/              # Vertical context_type packs + admin reload
+├── routing/                   # BanditRouter (Thompson sampling) + /routing/stats
+├── registries/                # /registries + admin enrollment + log-witness views
+├── domain-packs/              # Compiled-in context_type packs, boot-selected; GET /domain-packs
 ├── dashboard/                 # /dashboard/overview KPIs (tenant-scoped)
 ├── retention/                 # DataRetentionService (periodic purge)
 ├── health/                    # /healthz, /readyz + ReadinessService (bounded DB probe)
@@ -115,28 +136,33 @@ src/
 ├── contracts/                 # Wire types (AcdpWebhookEvent, AcdpStreamEvent, LineageDag)
 ├── errors/                    # AppException + ErrorCode + GlobalExceptionFilter
 ├── telemetry/                 # OTel SDK init + InstrumentationService (all prom-client metrics)
-└── common/                    # Shared helpers (retry-after parser, etc.)
+└── common/                    # Shared helpers: correlation, pino logger, retry-after,
+                               #   trust-proxy, multibase (did:key), did-authority
 ```
 
 ## The pipeline (`EventProcessorService.process`)
 
-For every **accepted, non-duplicate** event the processor performs these
-ordered steps:
+`IngestService` authenticates and validates the request first (HMAC,
+enrollment, tenant, domain-pack gate — see [INGEST.md](./INGEST.md#request-lifecycle),
+which has the sequence diagram). The processor then runs these steps; the
+numbers match the comments in `src/processor/event-processor.service.ts`:
 
-| # | Step                       | Mutation                                                                       |
-|---|----------------------------|--------------------------------------------------------------------------------|
-| 0 | dedup                      | skip if `(tenant_id, fingerprint)` already seen — no side effects (see [INGEST.md](./INGEST.md#idempotency)) |
-| 1 | persist raw                | `INSERT INTO context_events` — full payload kept as `raw_payload`, with the ACDP 0.2.0 trust columns (`key_fingerprint`, `receipt_present`) lifted out |
-| 2 | run correlation            | `INSERT … ON CONFLICT` into `runs` — bumps `contexts_count`, dedupes registries |
-| 3 | lineage edges              | one `INSERT … ON CONFLICT DO NOTHING` into `lineage_edges` per `derived_from`  |
-| 3b | lifecycle projection      | `context_retracted` / `context_republished` events upsert `context_lifecycle` (RFC-ACDP-0013 mark-not-delete; lifts `actor` + `reason`) |
-| 4 | agent upsert               | `INSERT … ON CONFLICT (tenant_id, agent_did) DO UPDATE` — bumps `last_seen`, `context_count` |
-| 5 | registry upsert            | same shape, on `registries`                                                    |
-| 6 | broadcast + webhooks       | publish to per-run + global SSE (trust signals pass through as `keyFingerprint`/`receiptPresent`); fire matching outbound webhooks (fire-and-forget) |
+| # | Step | Mutation |
+|---|------|----------|
+| 1 | persist raw + dedup | `INSERT INTO context_events … ON CONFLICT DO NOTHING` on `(tenant_id, fingerprint)`. A conflict means a duplicate: the processor **returns here** with no further side effects ([INGEST.md](./INGEST.md#idempotency)). The full payload is kept as `raw_payload`; `key_fingerprint` and `receipt_present` are lifted into columns. |
+| 2 | run correlation | Only when a run id is present. Reads the `(tenant_id, run_id)` row, then inserts it (status `running`) or updates it: `contexts_count + 1`, authority appended to `registries` if new. |
+| 3 | lineage edges | `context_published` with `derived_from`: one `INSERT … ON CONFLICT DO NOTHING` into `lineage_edges` per entry. |
+| 3b | lifecycle projection | `context_retracted` / `context_republished`: upsert `context_lifecycle` (RFC-ACDP-0013 mark-not-delete; lifts `actor` + `reason`), guarded on the event timestamp so replays and out-of-order deliveries are no-ops. |
+| 4 | agent upsert | When `agent_id` is set: `INSERT … ON CONFLICT (tenant_id, agent_did) DO UPDATE` — bumps `last_seen`, `context_count`. |
+| 5 | registry upsert | Same shape on `registries` (`event_count`, `last_seen`); stores the base URL (`registry_base_url`, else `Origin`, else the enrollment's). |
+| 6 | SSE publish | `AcdpStreamEvent` to the per-run feed (when there is a run id) and the global feed, both partitioned by tenant. Trust and lifecycle signals pass through (`keyFingerprint`, `receiptPresent`, `actor`, `reason`). |
+| 7 | outbound webhooks | `void webhookService.fireEvent(…)` — **not awaited**; the outbox rows are written inside `fireEvent` (see [Webhook outbox](#webhook-outbox--retry)). |
 
-Lineage edges are only inserted when `type === 'context_published'` and there is
-at least one `derived_from` entry. The DAG is therefore a property of
-*published* contexts only. Every write is stamped with the resolving `tenant_id`.
+Every write is stamped with the resolved `tenant_id`. Steps 1–5 are separate
+statements, not one transaction. The lineage DAG is a property of *published*
+contexts only. Metrics `acdp_events_ingested_total`, and for publishes
+`acdp_publish_receipts_total` / `acdp_producer_did_method_total`, are
+incremented after step 1.
 
 ## Request guards (the four-guard chain)
 
@@ -145,14 +171,26 @@ order**. Each later guard depends on state pinned by an earlier one.
 
 | # | Guard                  | Always on? | Opt-in                | Responsibility |
 |---|------------------------|------------|-----------------------|----------------|
-| 1 | `AuthGuard`            | yes        | `@Public()` bypasses  | API-key or bearer-JWT auth; pins `req.tenantId`, `req.actorDid`, `req.actorScopes`, `req.actorIsAdmin` |
-| 2 | `ThrottleByUserGuard`  | yes        | —                     | Coarse per-principal request rate limit (`THROTTLE_LIMIT`/`THROTTLE_TTL_MS`); unauthenticated → client IP, IPv6 per `/64` (`THROTTLE_IPV6_SUBNET_PREFIX`) |
+| 1 | `AuthGuard`            | yes        | `@Public()` bypasses  | API-key or bearer-JWT auth; pins `req.tenantId`, `req.actorDid`, `req.actorScopes`, `req.actorIsAdmin` (API keys only; a JWT is never admin), `req.actorIssuer`, `req.actorFederated` |
+| 2 | `ThrottleByUserGuard`  | yes        | `@SkipThrottle()` (probes only) | Coarse per-principal request rate limit (`THROTTLE_LIMIT`/`THROTTLE_TTL_MS`); unauthenticated → client IP, IPv6 per `/64` (`THROTTLE_IPV6_SUBNET_PREFIX`) |
 | 3 | `PolicyGuard`          | no-op      | `@CheckPolicy(action)`| Per-action authorization via a pluggable `PolicyDecider` |
-| 4 | `QuotaGuard`           | no-op      | `@CheckQuota(action)` | Per-tenant per-action windowed counters; runs **last** so denied requests don't burn an increment |
+| 4 | `QuotaGuard`           | no-op      | `@CheckQuota(action)` | Per-tenant per-action windowed counters; runs **last** so requests denied by auth/policy don't burn an increment |
 
-`/ingest/acdp` is `@Public()` because HMAC is its authentication. See
-[POLICY.md](./POLICY.md) for policy/quota detail and [AUTH.md](./AUTH.md) for the
-auth model.
+`/ingest/acdp` is `@Public()` because HMAC is its authentication; its quota is
+counted before the HMAC check, against `default`
+([INGEST.md](./INGEST.md#quota-and-rate-limits)). See [POLICY.md](./POLICY.md)
+for policy/quota detail and [AUTH.md](./AUTH.md) for the auth model.
+
+**Client IP.** `req.ip` is the TCP peer unless `TRUST_PROXY` names the proxies
+in front (`applyTrustProxy`, `src/common/trust-proxy.ts`, called from
+`bootstrap()`); nothing in `src/` parses `X-Forwarded-For` itself. See
+[CONFIGURATION.md](./CONFIGURATION.md).
+
+**Error labelling.** `GlobalExceptionFilter` (`src/errors/exception.filter.ts`)
+gives every error the JSON envelope with an `errorCode`. An unlabelled 4xx gets
+a status-keyed generic code (`INVALID_PAYLOAD`, `UNAUTHORIZED`, `FORBIDDEN`,
+`NOT_FOUND`, `PAYLOAD_TOO_LARGE`, `RATE_LIMITED`, `REQUEST_REJECTED`);
+`INTERNAL_ERROR` is 5xx only. Code table: [API.md](./API.md#error-responses).
 
 ## Tenancy
 
@@ -162,43 +200,52 @@ absence of any assertion → `default`) and pins `req.tenantId`. Controllers rea
 it with `tenantOf(req)` and thread it into every repository call; repositories
 filter `WHERE tenant_id = …` and stamp it on writes, with composite conflict
 targets that include `tenantId`. A spoofed `X-Tenant-Id` that disagrees with the
-signed/bound tenant is rejected. See [TENANCY.md](./TENANCY.md).
+signed/bound tenant is rejected. HMAC routes resolve the tenant differently
+([INGEST.md](./INGEST.md#tenant-attribution)). See [TENANCY.md](./TENANCY.md).
 
 ## SSE strategies
 
 `StreamHubService` consumes a strategy injected via the `STREAM_HUB_STRATEGY`
-token in `AppModule` — services never depend on a concrete strategy.
+token in `AppModule` — services never depend on a concrete strategy. Both
+strategies **partition by tenant**: the global feed is one subject per tenant,
+and per-run subjects are keyed `tenantId:runId`, so a subscriber sees only its
+own tenant's events and two tenants cannot share a run feed.
 
 | Strategy | When to use | Behavior |
 |----------|-------------|----------|
-| `memory` (default) | single instance | Per-run RxJS `Subject` map + one global `Subject`; per-run subjects GC'd ~60s after the last subscriber disconnects |
-| `redis`            | multi-instance HA | Wraps a Redis pub/sub channel (`REDIS_URL`); each instance re-emits inbound messages on local Subjects so any subscriber on any instance receives events |
+| `memory` (default) | single instance | Per-run RxJS `Subject` map + one global `Subject` per tenant; per-run subjects GC'd ~60 s after the last subscriber disconnects |
+| `redis`            | multi-instance HA | One Redis pub/sub channel (`acdp:stream-hub`, needs `REDIS_URL`) carrying the tenant with each message; each instance re-emits inbound messages on its local Subjects |
 
 Heartbeat frames (`event: heartbeat`) are emitted every `STREAM_SSE_HEARTBEAT_MS`
 (default 15 s) to keep intermediaries from closing idle connections.
 
 ## Webhook outbox + retry
 
-Outbound webhooks are **outbox-tracked**. `EventProcessorService` step 6 writes a
-`webhook_deliveries` row (`status='pending'`) **before** HTTP fan-out;
-`WebhookService` fires fire-and-forget and updates the row with `status`,
-`attempts`, `responseStatus`. The delivery body is signed with HMAC-SHA256 using
-the subscription's `secret` (header `X-ACDP-Signature: sha256=…`, event type in
+Outbound webhooks are **outbox-tracked**. The processor's step 7 calls
+`WebhookService.fireEvent` without awaiting it. `fireEvent` lists the tenant's
+active subscriptions whose `events` filter matches (empty = all), and for each
+one inserts a `webhook_deliveries` row (`status='pending'`) **before** starting
+that delivery. Each delivery is a `POST` signed with HMAC-SHA256 using the
+subscription's `secret` (header `X-ACDP-Signature: sha256=…`, event type in
 `X-ACDP-Event`).
 
-A background **retry sweep** runs on an interval (`WEBHOOK_RETRY_INTERVAL_MS`,
-default 5 min; `≤0` disables) and re-attempts failed/pending deliveries. On a
-subscriber `429`, the sweep honors the `Retry-After` header (delta-seconds or
-HTTP-date) by persisting `next_attempt_at` to defer the next attempt. Failed
-deliveries stay in the table for inspection / replay. Subscriber URLs are
-SSRF-gated (HTTPS-only, no IP literals / loopback / private ranges unless
-explicitly relaxed for dev).
+A delivery makes up to **3 attempts** inline with backoff, then the row is
+`failed` (terminal, kept for inspection). On a subscriber `429` the attempt
+honours `Retry-After` (delta-seconds or HTTP-date, `src/common/retry-after.ts`)
+by persisting `next_attempt_at` and leaving the row `pending`. A background
+**retry sweep** (`WEBHOOK_RETRY_INTERVAL_MS`, default 5 min; `≤0` disables)
+re-attempts `pending` rows that are due, across all tenants. Subscriber URLs
+pass the SSRF policy at registration **and** at delivery: HTTPS only, no IP
+literals, resolved IPs not private/loopback, redirects refused
+(`WEBHOOK_SSRF_ALLOW_HTTP` / `WEBHOOK_SSRF_ALLOW_LOOPBACK` relax it for local
+testing).
 
 ## Auth, federation & revocation (summary)
 
 - **API keys** (`AUTH_API_KEYS`, tenant-mapped `TENANT_API_KEYS`) and **bearer
   JWTs** issued via `/auth/challenge` + `/auth/token` (Ed25519/ECDSA-P256
-  challenge-response). The guard accepts either.
+  challenge-response, only when `TOKEN_ISSUANCE_ENABLED=true`). The guard
+  accepts either.
 - JWTs from **trusted external issuers** (`TRUSTED_ISSUERS`, each with a required
   `audience`) are accepted via `CrossIssuerValidatorService` (remote JWKS). An entry may
   carry the opt-in `read_only` flag: `AuthGuard` then limits its tokens to
@@ -216,182 +263,257 @@ Full detail in [AUTH.md](./AUTH.md).
   `acdp-cap:v1:<agent_did>:<capability_uri>:<declared_at>` with their pinned key;
   `CapabilityService` validates URN/skew/algorithm/signature and persists
   idempotently. Discovery via `/capabilities/search` and `/capabilities/by-agent/*did`.
-- **BanditRouterService** layers Thompson-sampling reward-based selection on top
-  of capability discovery (state per-instance in V1). Inspect arms at `/routing/stats`.
-- **Domain packs** gate inbound `context_type`: when ≥1 pack is registered
-  (`DOMAIN_PACKS`), the allowlist is the union of every pack's declared types;
-  the base RFC-ACDP-0001 types (`data_snapshot`, `analysis`, `prediction`,
-  `alert`) are never gated. See [INGEST.md](./INGEST.md#domain-pack-context_type-gate).
+- **`BanditRouter`** (`src/routing/bandit-router.service.ts`) keeps a
+  Thompson-sampling Beta posterior per `(scenario, agent)`, in process memory.
+  Its only input today is run completion: `POST /runs/:runId/complete` with
+  `completed` (reward 1) or `failed` (reward 0) rewards every agent that
+  published in the run. No endpoint calls its `route()` selection yet; the arms
+  are readable at admin-only `GET /routing/stats`. `BANDIT_EXPLORATION_FRACTION`
+  (default 0.05) sets the uniform-random exploration share.
+- **Domain packs** are compiled in (`src/domain-packs/known-packs.ts`), selected
+  at boot by `DOMAIN_PACKS` (an unknown name fails startup), and listed by
+  `GET /domain-packs`; there is no runtime reload. When ≥1 pack is active they
+  gate ingest `context_type` — see
+  [INGEST.md](./INGEST.md#domain-pack-context_type-gate).
 
 ## Transparency, audit & witness (RFC-ACDP-0010 / 0012 / 0014 / 0015)
 
 > **Sources of truth.** The receipt, checkpoint, Merkle-proof, revocation, and
 > cosignature wire formats and verification procedures are normative in the
 > spec —
-> [RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0010-registry-receipts.md)
+> [RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0010-registry-receipts.md)
 > (receipts),
-> [RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)
+> [RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0012-transparency-log.md)
 > (transparency log),
-> [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md)
+> [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0014-key-revocation.md)
 > (producer key-revocation),
-> [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md)
+> [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0015-witness-cosigning.md)
 > (cosigning) — and the registry side is documented in
 > [acdp-registry-rs/docs/RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md).
 > This section is **not** a restatement of those — it describes only what *this
 > service* does as an observer: which sweeps run, what each records, and where
-> the verdicts surface.
+> the verdicts surface. Verification itself (JCS, signatures, Merkle folds,
+> DID/key lifecycle, §7 classification, quorum) comes from the `acdp` SDK
+> ([bindings](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/bindings.md)).
 
 Four independent, advisory-locked sweeps make the control plane a second
 observer of registry honesty — each gated by its own env flag and each
-recording verdicts in its own table so the signals stay independent:
+recording verdicts in its own table so the signals stay independent. All
+fetches go through the SSRF-gated `SafeFederationClient`, and all four share
+`RegistryProfileService`'s cached probe of the registry's
+`/.well-known/acdp.json` profiles.
 
-| Sweep | Verifies | Evidence table | Surfaces |
+```mermaid
+flowchart LR
+    CE[("context_events")]
+    ENR[("registry_enrollments")]
+    REG["Registry: contexts, /log/checkpoint, /log/proof, DID docs"]
+
+    RA["ReceiptAuditService"]
+    RV["RevocationAuditService"]
+    CW["CheckpointWitnessPollerService"]
+    LI["LogInclusionAuditService"]
+    WS["WitnessSigningService"]
+
+    RAUD[("receipt_audits")]
+    KR[("key_revocations")]
+    KRLC[("key_revocation_lineage_cursors")]
+    LWC[("log_witness_checkpoints")]
+    LWCUR[("log_witness_cursors")]
+    LIA[("log_inclusion_audits")]
+    LCS[("log_cosignatures")]
+    OUT["log_witness_alert: SSE + outbound webhook"]
+    WAPI["GET /log/witness"]
+
+    CE -->|"receipt-bearing publishes"| RA
+    CE -->|"key-revocation contexts"| RV
+    CE -->|"receipt-bearing publishes"| LI
+    ENR -->|"enrolled + enabled"| CW
+    REG --> RA
+    REG --> RV
+    REG --> CW
+    REG --> LI
+    RA --> RAUD
+    KR -->|"classify signer (section 7)"| RA
+    RV --> KR
+    RV --> KRLC
+    RV -->|"reauditForFingerprint: amend in place"| RAUD
+    CW --> LWC
+    CW --> LWCUR
+    CW -->|"verified checkpoint"| WS
+    WS --> LCS
+    CW -->|"alert state transition"| OUT
+    LWC -->|"witnessed heads for cross-binding"| LI
+    LI --> LIA
+    LCS --> WAPI
+```
+
+| Sweep (flag) | What the CP does | Evidence table | Surfaces |
 |-------|----------|----------------|----------|
-| `ReceiptAuditService` | Embedded `registry_receipt` vs the event: profile coverage, structural equality, `created_at` skew, full signature (keys from producer/registry DID docs); when enabled, ALSO classifies the signer against verified revocations (RFC-ACDP-0014 §7, below) and retroactively AMENDS already-sealed verdicts a later-discovered revocation predates (Phase 15, below) | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; `acdp_receipt_audit_key_revocation_total{status}`; `acdp_receipt_audit_revocation_reaudits_total{status}`; dashboard `receiptCoverage`, `keyRevocation` |
-| `CheckpointWitnessPollerService` | Fetches each log-advertising registry's `GET /log/checkpoint` and runs the RFC-ACDP-0012 checkpoint + consistency checks against the head it retains | `log_witness_checkpoints` + `log_witness_cursors` | `GET /registries/:authority/log-witness`; `log_witness_alert` SSE/webhook on state transition; `acdp_log_witness_alerts_total{reason}` |
-| `LogInclusionAuditService` | Rebuilds the leaf from OUR stored receipt, fetches `/log/proof?ctx_id=`, runs the RFC-ACDP-0012 inclusion check, and cross-binds against witnessed heads | `log_inclusion_audits` | verdicts `included` \| `invalid_proof` \| `not_logged` \| `no_log` \| `error` |
-| `RevocationAuditService` | Discovers `key-revocation` contexts by `context_type`, recomputes `content_hash`, verifies the body signature, then `AcdpVerifier.parseKeyRevocation` for the RFC-ACDP-0014 §4/§5 shape + not-self-signed checks; a `registry_attested` result additionally requires the §6 registry-binding cross-check; then walks the revocation's full lineage (RFC-ACDP-0014 §7, below); every pass, also triggers `ReceiptAuditService`'s retroactive re-audit fan-out (Phase 15, below) for every known-revoked fingerprint | `key_revocations` (permanent, retention-exempt) + `key_revocation_lineage_cursors` (TTL freshness markers) | `acdp_key_revocation_checks_total{status, trust_class}`; `acdp_key_revocation_lineage_members_total{status}` |
+| `ReceiptAuditService` (`RECEIPT_AUDIT_ENABLED`) | Checks each stored publish's `registry_receipt`: profile coverage, field equality with the event, `created_at` skew, full signature. With `KEY_REVOCATION_CHECK_ENABLED`, also classifies the signer against verified revocations (below). | `receipt_audits` | `trust` member on `GET /runs/:runId`; `acdp_receipt_audits_total{status}`; `acdp_receipt_audit_key_revocation_total{status}`; `acdp_receipt_audit_revocation_reaudits_total{status}`; dashboard `receiptCoverage`, `keyRevocation` |
+| `CheckpointWitnessPollerService` (`LOG_WITNESS_ENABLED`) | For enrolled, enabled registries advertising the transparency-log profile (minus `LOG_WITNESS_EXCLUDE_AUTHORITIES`): fetches `GET /log/checkpoint`, verifies it, and checks consistency against the head it retains. | `log_witness_checkpoints` + `log_witness_cursors` | `GET /registries/:authority/log-witness`, `GET /registries/log-witness/alerts`; `log_witness_alert` SSE/webhook on state transition; `acdp_log_witness_alerts_total{reason}` |
+| `LogInclusionAuditService` (`LOG_INCLUSION_AUDIT_ENABLED`) | Rebuilds the leaf from the CP's stored receipt, fetches `/log/proof?ctx_id=`, verifies inclusion, and cross-binds against witnessed heads. | `log_inclusion_audits` | verdicts `included` \| `invalid_proof` \| `not_logged` \| `no_log` \| `error` |
+| `RevocationAuditService` (`KEY_REVOCATION_CHECK_ENABLED`) | Finds `key-revocation` contexts by `context_type`, fetches and verifies each body (`AcdpVerifier.parseKeyRevocation`), walks the revocation's lineage, and every pass triggers the receipt re-audit for each fingerprint it holds a fact for. | `key_revocations` (permanent, retention-exempt) + `key_revocation_lineage_cursors` | `acdp_key_revocation_checks_total{status, trust_class}`; `acdp_key_revocation_lineage_members_total{status}` |
 
-**The §7 lineage walk.** A single webhook-delivered revocation only proves
-one context exists; RFC-ACDP-0014 §4's earliest-`compromised_since` rule is
-defined over the *whole lineage*, including members this control plane was
-never webhooked about (published before enrollment, or naming an earlier
-key). After persisting a freshly-verified event's own fact,
-`RevocationAuditService` walks that lineage via `GET /lineages/{lineage_id}`
-— **never** `GET /lineages/{lineage_id}/current`, because a lineage whose
-members are all superseded or retracted 404s there (RFC-ACDP-0013 §8.3),
-which is exactly the case the fold most needs. Two rules are easy to get
-backwards and are worth stating plainly: **supersession does not disarm** a
-revocation unless the superseding context is itself a revocation of the same
-signer class (RFC-ACDP-0003 §3.1 constrains supersession by `agent_id`/
-version/lineage, but not by `type`), and **retraction does not un-revoke** —
-a retracted revocation still counts in the fold. The walk's failure
-discipline (`src/audit/revocation-lineage.ts`) is deliberately asymmetric: a
-member that fails verification *permanently* is dropped with a warning and
-the rest still fold (otherwise one injected garbage member suppresses every
-genuine revocation in the lineage — a denial of service the walk exists to
-avoid), while a member that fails *transiently* (DID host unreachable,
-registry erroring) aborts the **whole** walk with no partial fold recorded —
-a dropped-but-would-have-been-earlier member would silently move the fold
-later, a genuine false authorization rather than a mere omission.
-`classifyLineageFailure` is the one place this transient/permanent (plus a
-third, "hard" — a lineage too large to fetch safely, aborted the same as
-exceeding `MAX_LINEAGE_WALKS`) classification lives, shared by this walk and
-the per-event fetch above. A `key_revocation_lineage_cursors` row is a
-TTL-bounded freshness marker only, written *exclusively* on a fully
-successful walk — every failure kind leaves it unset so the next sweep
-retries — and its presence alone is never sufficient to skip a walk: if
-`key_revocations` currently holds zero facts for a lineage, the walk runs
-regardless of cursor freshness, because a cached "walked, found nothing"
-marker suppressing a walk is precisely how a revocation gets missed.
-Every member verdict the walk computes — including on an aborted walk, for
-whichever members were evaluated before the abort — is counted on
-`acdp_key_revocation_lineage_members_total{status}` (issue #173), a metric
-kept genuinely distinct from `acdp_key_revocation_checks_total` above despite
-sharing the identical status vocabulary: that counter is the webhook-CANDIDATE
-sweep's own outcomes, this one is the PER-MEMBER outcomes a lineage walk
-discovers on its own, and folding them would both double-count and make
-"how many candidates" vs. "how many lineage members" unrecoverable from the
-metric. A failed walk leaves no cursor, so an unresolved lineage's members
-are re-counted every sweep — read this counter as a rate of observations,
-not a census of affected members.
+Witness transport and DID failures are environmental
+(`log_witness_cursors.consecutive_failures`), never dishonesty alerts; the
+retained head advances only on full success. `ErrorCode.INVALID_LOG_PROOF` is
+the category for a locally failing checkpoint or proof.
 
-**§7 consumer classification (Phase 14).** The revocation FACTS above are
-inert until something CONSUMES them against actual receipt-audited traffic —
-that's `ReceiptAuditService`'s job when `KEY_REVOCATION_CHECK_ENABLED`.
-`classifyKeyRevocation` (`src/audit/receipt-audit.service.ts`) wraps the
-SDK's `AcdpVerifier.classifyUnderRevocation`, and is a separate verification
-verdict from the receipt audit's own `status` — a registry can be perfectly
-honest about a receipt whose signer has since had their key revoked. The one
-thing worth knowing about the SDK's response shape: a fail-closed verdict
-(§7 steps 3-4 — the publish landed at/after the compromise boundary, or no
-receipt-verified time exists to compare at all) reports
-`authorization:"none"`, the SAME value the "no revocation applies at all"
-case reports — so this code disambiguates on the PRESENCE of the response's
-`boundary` field, never on `authorization` alone. `KEY_REVOCATION_ATTESTED_SCOPE`
-/ `KEY_REVOCATION_IGNORE_FINGERPRINTS` (§6/§13 policy) are enforced HERE, at
-classification time — `RevocationAuditService` above always records every
-binding-verified fact regardless of scope; only the consumer decides whether
-to act on it. Verdicts land in four new `receipt_audits` columns and surface
-on `trust.revoked` (`GET /runs/:runId`), the dashboard `keyRevocation` tile,
-and a metric kept deliberately separate from `RevocationAuditService`'s own
-(`acdp_receipt_audit_key_revocation_total{status}` vs.
-`acdp_key_revocation_checks_total{status, trust_class}`) — the two use
-disjoint status vocabularies (boundary classification vs. revocation-body
-verification outcome) that a shared metric name would make meaningless.
+### Key revocation (RFC-ACDP-0014)
 
-**Retroactive re-audit (Phase 15).** §7 classification above only fires at
-AUDIT TIME. A revocation whose `compromised_since` predates already-sealed
-history — RFC-ACDP-0014 §4's own advice to producers to choose T
-conservatively, i.e. *early* — would otherwise leave those old verdicts
-reporting `verified` forever: `findUnauditedPublishes` excludes anything
-already audited, and its lookback window means old rows are never revisited.
-`ReceiptAuditService.reauditForFingerprint` closes that gap by AMENDING an
-already-sealed `receipt_audits` row IN PLACE, called by
-`RevocationAuditService.sweep()` for every fingerprint it currently holds a
-verified fact for, every pass — not only newly-recorded ones, so a
-fingerprint whose fan-out exceeds one batch (`RECEIPT_AUDIT_BATCH_SIZE`,
-reused rather than a dedicated knob) converges over subsequent sweeps.
-The amendment is deliberately in-place rather than a parallel table (unlike
-`log_inclusion_audits`'s independence from `receipt_audits` under
-RFC-ACDP-0012 §9.3): a §7 fail-closed changes the MEANING of the receipt
-verdict itself — the receipt stays cryptographically valid, that is exactly
-what places it inside the compromise window — so reporting `verified` in one
-table while a fail-closed sits unnoticed in a second table would be a worse
-trap than a documented in-place amendment. Three guarantees, all enforced at
-the SQL layer, not just in application code
-(`ReceiptAuditRepository.amendKeyRevocation`): **monotone** — the `UPDATE`'s
-own `WHERE key_revocation_status = 'none' OR compromise_boundary >
-:newBoundary` means the column can only ever move EARLIER (more severe),
-never later, and a row at its tightest known boundary can never be reached
-by this statement again — which is also what makes batching self-advancing
-with no separate cursor table (a row simply stays, or leaves, the candidate
-set based on whether a strictly tighter boundary currently exists for it);
-**column-scoped** — the `SET` clause touches only the four §7 columns, never
-`status`/`discrepancies`/`skew_ms`/`receipt_created_at`/`event_arrived_at`/
-`checked_at`; **auditable** — `key_revocation_sources` on the amended row
-names the revocation `ctx_id`(s) that drove it, same as at live audit time.
-A SECOND, earlier-dated revocation for a fingerprint already amended by a
-first correctly RE-TIGHTENS every affected row, not just the ones still at
-`'none'` — `findRevocationAmendmentCandidates` takes the fact set's current
-minimum boundary as a parameter and widens its own eligibility predicate to
-match; an earlier "amend-once" design that didn't do this was flagged as
-fail-open during Phase 15's verification gate and fixed (ASSUMPTIONS.md).
-Two accepted, permanent limitations remain (ASSUMPTIONS.md): candidate
-selection joins on `context_events.key_fingerprint`, the registry-CLAIMED
-value at publish time, so a pre-ACDP-0.2.0 event that never populated the
-column is permanently unreachable by this fan-out; and because
-`DataRetentionService` purges `context_events` but never `receipt_audits`,
-a `receipt_audits` row for a retention-purged event becomes a permanent
-orphan — invisible to this fan-out from then on, frozen at its last verdict.
+The fold, boundary and disarm rules are the RFC's
+([§4](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0014-key-revocation.md),
+§6, §7) and are evaluated by the SDK. What the CP decides:
 
-On top of witnessing, the CP can **cosign**: a checkpoint that passes the
-RFC-ACDP-0015 witness obligation is signed with a dedicated Ed25519 witness key
-(`WITNESS_ID` + `WITNESS_SIGNING_PRIVATE_KEY_PEM` — never the JWT key) and
-served at `GET /log/witness`; the mirror side consumes registry-aggregated
-cosignatures and evaluates the **N-witnessed quorum** (`WITNESS_QUORUM_*`),
-recording `meets_quorum` per witnessed head. All the crypto is delegated — JCS,
-Ed25519, DID/key lifecycle, and the receipt/log verification come from the
-`acdp` SDK: the log surface reached the published binding in `acdp` 0.6.0 and
-the pinned floor is now `^0.14.4` (Ed25519 verification is strict, RFC-ACDP-0001
-§5.10, from 0.14.4 on; `bootstrap()` self-tests this with the embedded `sig-004`
-forgery and refuses to start otherwise — `assertStrictEd25519`), so `sdkHasLogSurface()` feature-detects it
-and the §9.1/§9.2 folds delegate to the binding in practice, with
-`src/audit/log-verify.ts` (RFC 9162 folds transcribed from the RFC) kept as
-the fallback for an older binding and cross-checked against the SDK path by
-`log-verify.parity.spec.ts`. Registry-side *aggregation* of cosignatures into
-`/log/checkpoint` (RFC-ACDP-0015 §6.1) is NOT implemented here — the CP is a
-witness (and, independently, an optional quorum consumer of another
-registry's aggregated cosignatures), never a registry itself. Transport/DID
-failures are treated as environmental
-(`consecutive_failures`), never dishonesty alerts; the retained head advances
-only on full success.
+- **Lineage walk failure discipline** (`src/audit/revocation-lineage.ts`,
+  `classifyLineageFailure`): a member that fails verification permanently is
+  dropped with a warning and the rest still fold; a transient failure aborts
+  the whole walk with no partial result; a lineage too large to fetch, or more
+  than `MAX_LINEAGE_WALKS` (100) lineages in one pass, aborts the same way.
+- **Cursors are freshness markers only.** A `key_revocation_lineage_cursors`
+  row is written only after a fully successful walk, expires after
+  `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS`, and never skips a walk for a
+  lineage that has zero recorded facts.
+- **Recording versus acting.** Every verified fact is recorded, with its
+  `publisher` and `trust_class`. `KEY_REVOCATION_ATTESTED_SCOPE` and
+  `KEY_REVOCATION_IGNORE_FINGERPRINTS` apply only when a receipt audit
+  classifies a signer, never at recording time.
+- **Classification result.** `classifyKeyRevocation`
+  (`src/audit/receipt-audit.service.ts`) wraps
+  `AcdpVerifier.classifyUnderRevocation` and stores the verdict in four
+  `receipt_audits` columns (`key_revocation_status`, `_trust_class`,
+  `compromise_boundary`, `_sources`), surfaced as `trust.revoked`. The receipt time counts as verified only when
+  the receipt verdict is `verified` or `verified_historical`; otherwise a
+  revoked key classifies fail-closed. Postgres timestamps are normalized to
+  strict RFC 3339 before the SDK call.
+- **Retroactive re-audit.** `reauditForFingerprint` amends already-sealed
+  `receipt_audits` rows in place. It is monotone (a row's boundary only moves
+  earlier), column-scoped (only the four columns above), and auditable
+  (`key_revocation_sources` names the revocations), all enforced in the SQL of
+  `ReceiptAuditRepository.amendKeyRevocation`. Each pass handles up to
+  `RECEIPT_AUDIT_BATCH_SIZE` rows per fingerprint.
+- **Accepted limitations** (see [ASSUMPTIONS.md](../ASSUMPTIONS.md), Phase 15
+  entries): candidates are found by the registry-claimed
+  `context_events.key_fingerprint`, so pre-0.2.0 events without one are never
+  re-audited; and retention purges `context_events` but not `receipt_audits`,
+  so a purged event's audit row is orphaned and frozen at its last verdict.
+
+`KEY_REVOCATION_CHECK_ENABLED` requires `RECEIPT_AUDIT_ENABLED=true`
+(startup check outside `NODE_ENV=development`). The two revocation metrics stay
+separate on purpose: `acdp_key_revocation_checks_total` counts webhook
+candidates, `acdp_key_revocation_lineage_members_total` counts lineage members
+a walk evaluated, re-counted on every retry, so read it as a rate.
+
+### Witness cosigning and quorum (RFC-ACDP-0015)
+
+Normative rules: [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0015-witness-cosigning.md)
+and the [cosignature schema](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/schemas/json/acdp-log-cosignature.schema.json).
+Minting and consuming are independent switches.
+
+- **Minting** (`WITNESS_COSIGNING_ENABLED`, rides `LOG_WITNESS_ENABLED`):
+  `WitnessSigningService` signs every verified checkpoint observation with a
+  dedicated Ed25519 key (`WITNESS_ID`, `WITNESS_SIGNING_PRIVATE_KEY_PEM`,
+  optional `WITNESS_KEY_ID`; never the JWT key) into `log_cosignatures`, one
+  row per observation. Served, `@Public()`, at `GET /log/witness`,
+  `/.well-known/acdp-witness.json` and `/.well-known/did.json`; all three 404
+  when minting is off. The CP never aggregates cosignatures into a
+  `/log/checkpoint` of its own.
+- **Cosignature retention**: `DataRetentionService` keeps, per
+  `(witness, log, tree_size, root_hash)`, the newest
+  `WITNESS_COSIGNATURE_KEEP_PER_HEAD − 1` rows plus the oldest, and purges the
+  rest older than the TTL (`LogCosignatureRepository.purgeOldPerTuple`).
+- **Quorum consumption** (`WITNESS_QUORUM_ENABLED`, rides `LOG_WITNESS_ENABLED`):
+  counts distinct `WITNESS_QUORUM_TRUSTED` witnesses on each fetched checkpoint
+  and records `witnessed_count` / `meets_quorum` against
+  `WITNESS_QUORUM_MIN_WITNESSES` in `log_witness_checkpoints`.
+- **Freshness split**: cosignatures older than `WITNESS_QUORUM_MAX_AGE_SECONDS`
+  still count toward `witnessed_count` but not toward
+  `fresh_witnessed_count` / `meets_fresh_quorum`. One dated beyond
+  `WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS` in the future does not count at all.
+- **Witness key resolution**: a `did:key` witness is decoded locally
+  (`src/common/multibase.ts`, no fetch); a `did:web` witness resolves via
+  `DidWebResolverService.resolveWitnessKey`. A signature by a retired key
+  counts only in `historical_witnessed_count`, never in `witnessed_count`.
+- **Failing cosignatures** are reported as `INVALID_WITNESS_COSIGNATURE`
+  (distinct from `INVALID_LOG_PROOF`): the cosignature does not count, and the
+  checkpoint is not failed.
+
+Boot checks: a `did:web` `WITNESS_ID` whose host differs from `PUBLIC_HOST`
+fails startup (unset `PUBLIC_HOST` only warns); minting or quorum without
+`LOG_WITNESS_ENABLED`, and quorum with `WITNESS_QUORUM_MIN_WITNESSES < 1`, fail
+startup outside `NODE_ENV=development`. `bootstrap()` also refuses to start if
+the SDK's Ed25519 verification is not strict (`assertStrictEd25519`).
+
+## Data model
+
+21 Drizzle tables in `src/db/schema.ts`, created by the SQL migrations in
+`drizzle/` (applied in filename order at boot; applied names are recorded in
+`_migrations`, which the runner creates and `schema.ts` does not declare).
+Every table except `auth_challenges`, `revoked_tokens`, `revocation_cursors`
+and `issuance_ledger` carries a `tenant_id`.
+
+| Table | Holds | Created | Later changed |
+|-------|-------|---------|---------------|
+| `context_events` | Every ingested event, raw payload + lifted columns, dedup fingerprint | 0000 | 0001, 0006, 0009, 0011, 0014, 0022, 0024 |
+| `runs` | One row per `(tenant, run_id)` | 0000 | 0001, 0006, 0008 |
+| `lineage_edges` | `derived_from` edges | 0000 | 0001, 0007, 0008 |
+| `agents` | Producers seen on ingest | 0000 | 0006, 0008 |
+| `webhooks` | Outbound subscriptions | 0000 | 0007 |
+| `webhook_deliveries` | Outbox rows | 0000 | 0001, 0007, 0012 |
+| `registries` | Authorities seen on ingest + base URL | 0002 | 0007, 0008 |
+| `auth_challenges` | Pending `/auth/challenge` nonces (`AUTH_PERSISTENCE=postgres`) | 0003 | — |
+| `revoked_tokens` | Local + imported JWT revocations, keyed `(iss, jti)` | 0003 | 0025 |
+| `issuance_ledger` | Hash-chained token-issuance audit log | 0004 | — |
+| `agent_capabilities` | Signed capability declarations | 0005 | 0007, 0008 |
+| `registry_enrollments` | Authority → tenant, secret, base URL, enabled | 0010 | — |
+| `revocation_cursors` | Per-issuer cursor for peer revocation feeds | 0013 | — |
+| `receipt_audits` | Receipt-audit verdicts + §7 revocation columns | 0014 | 0023, 0024 |
+| `context_lifecycle` | Retract/republish projection | 0015 | — |
+| `log_witness_checkpoints` | Witnessed checkpoints + quorum counts | 0016 | 0018, 0019, 0020, 0021 |
+| `log_witness_cursors` | Retained head + alert state per `(tenant, registry)` | 0016 | 0018 |
+| `log_inclusion_audits` | Inclusion-proof verdicts | 0016 | — |
+| `log_cosignatures` | Cosignatures this CP minted | 0017 | 0019, 0020 |
+| `key_revocations` | Verified key-revocation facts | 0022 | — |
+| `key_revocation_lineage_cursors` | Lineage-walk freshness markers | 0022 | — |
+
+Migrations: `0000_init`, `0001_indexes`, `0002_registries`,
+`0003_auth_persistence`, `0004_issuance_ledger`, `0005_agent_capabilities`,
+`0006_tenant_id`, `0007_tenancy_completion`, `0008_composite_tenant_keys`,
+`0009_event_fingerprint`, `0010_registry_enrollments`, `0011_widen_fingerprint`,
+`0012_webhook_next_attempt`, `0013_revocation_cursors`, `0014_trust_metadata`,
+`0015_context_lifecycle`, `0016_log_witness`, `0017_log_cosignatures`,
+`0018_witness_quorum`, `0019_witness_tenant_scope`,
+`0020_cosignature_freshness`, `0021_witness_historical_quorum`,
+`0022_key_revocations`, `0023_receipt_audit_revocation`,
+`0024_revocation_reaudit` (indexes only), `0025_revocation_iss_jti_key`.
+
+## Retention
+
+`DataRetentionService` (off unless `DATA_RETENTION_ENABLED`; every
+`DATA_RETENTION_INTERVAL_HOURS`, default 24, advisory-locked) deletes, across
+all tenants, rows older than `DATA_RETENTION_TTL_DAYS` (default 30):
+
+| Table | Deleted when |
+|-------|--------------|
+| `context_events` | `event_ts` is older than the cutoff |
+| `runs` | status is `completed`/`failed`/`cancelled` and `completed_at` is older than the cutoff |
+| `webhook_deliveries` | status is `delivered` and `created_at` is older than the cutoff (`failed` and `pending` rows stay) |
+| `log_cosignatures` | older than the cutoff and outside the per-tuple keep set (see [cosigning](#witness-cosigning-and-quorum-rfc-acdp-0015)) |
+
+`AuthSweeperService` (every `AUTH_SWEEP_INTERVAL_SECONDS`, default 300)
+deletes expired `auth_challenges` and `revoked_tokens` rows. Nothing deletes
+from the other tables: `key_revocations` is exempt by design (a revocation is
+never undone), and `receipt_audits`, `log_inclusion_audits`, the
+`log_witness_*` tables, `lineage_edges`, `agents`, `registries`,
+`context_lifecycle` and `issuance_ledger` grow without bound. A purged event
+also stops deduping, so a replay of it is ingested again.
 
 ## Operational concerns
 
 - **Migrations** run programmatically at boot (`src/db/migrate.ts`) from SQL
   files committed under `drizzle/` (no `drizzle-kit` at runtime). Applied
-  migrations are tracked in `_migrations`.
+  migrations are tracked in `_migrations`. Table-to-migration map: [Data model](#data-model).
 - **Readiness** (issue #210): `GET /readyz` is drain-first (`DrainState`, #192),
   then asks `ReadinessService` (`src/health/readiness.service.ts`) — the single
   authority for dependency health, itself drain-agnostic. Its database check is
@@ -405,8 +527,8 @@ only on full success.
   whole `HealthController` is `@SkipThrottle()`; successful probe request-log
   lines are `debug`. State changes log once (`readiness changed`) and move
   `acdp_dependency_up` / `acdp_readiness_checks_total`. Single-flight relies on
-  the pool's own bounds releasing a stuck probe, hence `DB_POOL_CONNECTION_TIMEOUT
-  > 0` at boot.
+  the pool's own bounds releasing a stuck probe, hence
+  `DB_POOL_CONNECTION_TIMEOUT > 0` at boot.
 - **Liveness** (issue #210 Phase 2): `GET /healthz` answers "is this process
   wedged?" and **never awaits I/O** — the CP equivalent of the registry's
   `/livez`. A database outage is not fixed by a restart, so its status is 200
@@ -526,18 +648,14 @@ only on full success.
   telemetry is never flushed — issue #158). `app.close()` already runs the destroy
   and shutdown hooks by itself, and nothing in `src/` implements
   `OnApplicationShutdown`.
-- **Background services**: `WebhookService` retry sweep, `AuthSweeperService` (GCs
-  expired challenges / revocations / ledger), `RevocationPollerService` (consumes
-  peer feeds), `DataRetentionService` (off unless `DATA_RETENTION_ENABLED`),
-  plus the four advisory-locked audit sweeps — `ReceiptAuditService`
-  (`RECEIPT_AUDIT_ENABLED`), `CheckpointWitnessPollerService`
-  (`LOG_WITNESS_ENABLED`), `LogInclusionAuditService`
-  (`LOG_INCLUSION_AUDIT_ENABLED`), and `RevocationAuditService`
-  (`KEY_REVOCATION_CHECK_ENABLED`, requires `RECEIPT_AUDIT_ENABLED=true`).
-- **Boot assertions (witness)**: with `WITNESS_COSIGNING_ENABLED=true`, a
-  `did:web` `WITNESS_ID` whose host disagrees with `PUBLIC_HOST` is fatal at
-  boot (RFC-ACDP-0015 §9), and cosigning without `LOG_WITNESS_ENABLED=true`
-  refuses to start — the cosigner rides the checkpoint witness.
+- **Background services**: `WebhookService` retry sweep, `AuthSweeperService`
+  (deletes expired challenges and revoked-token rows; the issuance ledger is
+  never purged), `RevocationPollerService` (consumes peer feeds),
+  `DataRetentionService` (off unless `DATA_RETENTION_ENABLED`; scope in
+  [Retention](#retention)), plus the four advisory-locked audit sweeps in
+  [Transparency, audit & witness](#transparency-audit--witness-rfc-acdp-0010--0012--0014--0015).
+  Boot-time witness checks are listed under
+  [Witness cosigning and quorum](#witness-cosigning-and-quorum-rfc-acdp-0015).
 - **Observability**: pino structured logs, Prometheus metrics
   on `/metrics` (all constructed in `InstrumentationService`), optional OTel SDK
   (`OTEL_ENABLED=true`). Metric inventory in [API.md](./API.md#observability).
@@ -554,11 +672,13 @@ only on full success.
   threshold; dev mode routes through `pino-pretty` when it resolves.
 - **Multi-instance**: requires `AUTH_PERSISTENCE=postgres` (shared challenge /
   revocation / ledger state), `STREAM_HUB_STRATEGY=redis`, and a Redis-backed
-  quota store — otherwise per-process state diverges. Startup warns when it
-  detects production + a single-process default.
-- **Dev sandbox**: when `WEBHOOK_SECRET` is empty, HMAC verification is
-  **skipped** (the config service fails startup in production). Never use in
-  production.
+  quota store (`REDIS_URL`) — otherwise per-process state diverges. Outside
+  `NODE_ENV=development`, startup warns for `STREAM_HUB_STRATEGY=memory` and
+  `AUTH_PERSISTENCE=memory`. `BanditRouter` arms are always per-process.
+- **Dev sandbox**: when the HMAC secret for an ingest request is empty (no
+  enrollment secret and no `WEBHOOK_SECRET`), verification is **skipped**.
+  Startup refuses an empty `WEBHOOK_SECRET` unless `NODE_ENV=development` (the
+  default when unset) — see [INGEST.md](./INGEST.md#authentication--hmac-sha256).
 
 ### Deploying behind a load balancer
 
@@ -609,8 +729,8 @@ never restart-storm the fleet — and `readinessProbe` at `/readyz` with
 `HEALTHCHECK` stays on `/healthz` (2xx = healthy); read `/readyz` (or the
 `ok` field of `/healthz`) for dependency health.
 
-Registry webhooks benefit too: the registry's default webhook `max_retries = 3`
-gives a retry window of only ~750 ms. During the delay `/ingest/acdp` is still
+Registry webhooks benefit too: the registry's default webhook retry window is short
+(see the registry's [WEBHOOKS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/WEBHOOKS.md)). During the delay `/ingest/acdp` is still
 served, so deliveries keep succeeding while the load balancer deregisters this
 instance instead of hitting a 503 or a refused port and being dropped after
 three quick retries.

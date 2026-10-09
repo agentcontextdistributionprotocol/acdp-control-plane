@@ -23,8 +23,11 @@ any effect; for a different file, export the variables or run
 `node --env-file=<file> dist/main.js`. `src/env-file.spec.ts` and
 `src/load-env.spec.ts` pin all of this.
 
-Defaults below are the code defaults. Several variables are **fail-fast in
-production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startup-validation).
+Defaults below are the code defaults. Startup checks come in two tiers: some
+run in **every** environment, the rest only when `NODE_ENV` is anything other
+than `development` (so `test` and `staging` count as "production" here). A
+misconfiguration in the second tier boots silently under `NODE_ENV=development`
+— see [Startup validation](#startup-validation) for which check is which.
 
 > Several keys are env-var equivalents of the registry's TOML config (e.g.
 > `AUTH_REQUIRE_TENANT` ↔ `auth.require_tenant`, `TENANT_AGENTS` ↔
@@ -39,7 +42,7 @@ production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startu
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `NODE_ENV` | string | `development` | `development` relaxes fail-fast checks. |
+| `NODE_ENV` | string | `development` | Exactly `development` skips the production-only startup checks and turns Swagger on by default; any other value (`production`, `test`, …) runs them. |
 | `PORT` | number | `3001` | HTTP listen port. |
 | `HOST` | string | `0.0.0.0` | Bind address. |
 | `PUBLIC_HOST` | string | `''` | Externally-resolvable host (`example.com` / `example.com:8443`) a consumer's `did:web` resolver hits for `/.well-known/did.json`. Distinct from `HOST`. Used to assert the `did:web` witness↔host binding at boot. |
@@ -53,7 +56,7 @@ production** (`NODE_ENV !== 'development'`) — see [Startup validation](#startu
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `DATABASE_URL` | string | `postgres://postgres:postgres@localhost:5432/acdp_control_plane` | Postgres connection string. |
-| `DB_POOL_MAX` | number | `20` | Max pool connections per replica. **Must be ≥ 2.** |
+| `DB_POOL_MAX` | number | `20` | Max pool connections per replica. **Must be ≥ 2** (checked only outside `development`). |
 | `DB_POOL_IDLE_TIMEOUT` | number (ms) | `30000` | Idle connection timeout. |
 | `DB_POOL_CONNECTION_TIMEOUT` | integer (ms), 1–2147483647 | `5000` | Connection-acquisition timeout: bounds both waiting for a pool checkout and opening a new connection. **Must be an integer > 0** (every environment, issue #210); 0 would disable pg-pool's checkout/connect timeouts — an unbounded wait on a black-holed database — and a negative value makes every connect fail at once. Strict: a set value that is not a plain decimal integer (`5s`, `1.5`, empty) fails startup instead of falling back to `5000`. |
 | `READINESS_DB_TIMEOUT_MS` | integer (ms), 50–30000 | `1000` | `GET /readyz` database probe deadline (issue #210): `SELECT 1` with this `query_timeout`, raced against an outer deadline of the same length that also covers the checkout and connect wait. Past it, `/readyz` answers `503 DEPENDENCY_UNAVAILABLE` with `reason: "timeout"`. Keep it below your probe's own timeout — with the default, a Kubernetes `readinessProbe` needs `timeoutSeconds: 2` (the k8s default of 1 would time out first). A value ≥ `DB_POOL_CONNECTION_TIMEOUT` only **warns**: the pool's bound then fires first and a slow connect reads as `reason: "error"`. Strict. |
@@ -76,20 +79,20 @@ See [AUTH.md](./AUTH.md).
 | `AUTH_ADMIN_API_KEYS` | CSV | `''` | Subset allowed admin ops (revoke any jti, reload pinned keys, read revocation feed, enroll registry, routing stats). |
 | `AUTH_REQUIRE_TENANT` | bool | `false` | Strict-tenant default-deny. See [TENANCY.md](./TENANCY.md). |
 | `TENANT_HEADER_TRUST` | enum | `none` | `none` \| `any_peer`. Who may assert a tenant via `X-Tenant-Id` on a JWT with no `tenant` claim (registry `tenant_header_trust` parity). `none` → `403 TENANT_HEADER_UNTRUSTED`; `any_peer` honours it (warns at boot on a non-loopback `HOST`). Anything else fails startup. Older builds ignore it (behave as `any_peer`). |
-| `AUTH_PERSISTENCE` | `memory`\|`postgres` | `memory` | Backend for challenges/revocations/ledger. `postgres` required for multi-instance. |
+| `AUTH_PERSISTENCE` | `memory`\|`postgres` | `memory` | Backend for challenges/revocations/ledger. `postgres` required for multi-instance. Any other value fails startup (every environment). |
 | `AUTH_SWEEP_INTERVAL_SECONDS` | number | `300` | Expired-state GC interval; `≤0` disables. |
-| `TOKEN_ISSUANCE_ENABLED` | bool | `false` | Enable `/auth/challenge` + `/auth/token` + JWT verify path. |
-| `JWT_SECRET` | string | `''` | HS256 signing secret. **≥32 bytes** when issuance + HS256. |
-| `JWT_SIGNING_ALG` | `HS256`\|`EdDSA` | `HS256` | Issuance algorithm. |
-| `JWT_PRIVATE_KEY_PEM` | string (PEM) | `''` | Ed25519 PKCS8 private key. **Required** when issuance + EdDSA. |
+| `TOKEN_ISSUANCE_ENABLED` | bool | `false` | Master switch for the whole JWT side: mounts `/auth/challenge`, `/auth/token`, `/auth/token/revoke`, `/auth/introspect`, `/auth/revocations` and `/.well-known/jwks.json`, and wires JWT verification — **including** federated `TRUSTED_ISSUERS` tokens and the `REVOCATION_FEEDS` poller. Off = API keys only; every bearer JWT is rejected. |
+| `JWT_SECRET` | string | `''` | HS256 signing secret. **≥32 bytes** when issuance + HS256 (checked only outside `development`). |
+| `JWT_SIGNING_ALG` | `HS256`\|`EdDSA` | `HS256` | Issuance algorithm (case-sensitive). Any other value fails startup (every environment). |
+| `JWT_PRIVATE_KEY_PEM` | string (PEM) | `''` | Ed25519 PKCS8 private key. **Required** when issuance + EdDSA (checked only outside `development`). |
 | `JWT_KID` | string | `''` | Override `kid`; else derived from key fingerprint. |
 | `JWT_AUTHORITY` | string | `control-plane.local` | `iss` claim + challenge signing input. |
 | `JWT_AUDIENCE` | string | = `JWT_AUTHORITY` | `aud` claim bound + required on local verify. |
-| `JWT_TTL_SECONDS` | number | `3600` | Issued-token TTL. **≥60** when issuance. |
-| `CHALLENGE_TTL_SECONDS` | number | `300` | Challenge-nonce TTL. **≥30** when issuance. |
-| `CONTROL_PLANE_PINNED_KEYS` | CSV | `''` | `did=base64[:alg][:from..until]`. Verification + emergency revocation. |
-| `TRUSTED_ISSUERS` | CSV | `''` | Federated peers. `iss\|alg\|material\|audience[\|scope[\|flags]]`. `audience` required. `flags` (6th field, whitespace-separated, closed set; today only `read_only`) — to set a flag without a scope leave the scope empty: `iss\|HS256\|<secret>\|<aud>\|\|read_only`. `read_only` limits that issuer's tokens to GET/HEAD/OPTIONS (403 `ISSUER_READ_ONLY` otherwise; `POST /auth/introspect` exempt). An entry whose `iss` equals `JWT_AUTHORITY` fails startup (it would be shadowed by the local issuer). Unknown/duplicate flags, a flag name in the scope slot, or >6 fields fail startup. **Rollback hazard:** a build older than this field silently ignores the 6th field, so rolling back drops `read_only`. `scope` (optional) is checked against the token's `scope`/`scopes`/`scp` claims; do not set it for ACDP registry peers (they mint no scope claim). |
-| `REVOCATION_FEEDS` | CSV | `''` | Peer feeds to poll. `issuer\|url\|admin_token[\|poll_seconds]`. |
+| `JWT_TTL_SECONDS` | number | `3600` | Issued-token TTL. **≥60** when issuance (checked only outside `development`). |
+| `CHALLENGE_TTL_SECONDS` | number | `300` | Challenge-nonce TTL. **≥30** when issuance (checked only outside `development`). |
+| `CONTROL_PLANE_PINNED_KEYS` | CSV | `''` | `did=base64[:alg][:from..until]`. Verification + emergency revocation. Loaded whether or not issuance is on; a malformed entry is skipped with a warning, never a boot failure. |
+| `TRUSTED_ISSUERS` | CSV | `''` | Federated peers (parsed — and its boot failures below raised — only when `TOKEN_ISSUANCE_ENABLED=true`). `iss\|alg\|material\|audience[\|scope[\|flags]]`. `audience` required. `flags` (6th field, whitespace-separated, closed set; today only `read_only`) — to set a flag without a scope leave the scope empty: `iss\|HS256\|<secret>\|<aud>\|\|read_only`. `read_only` limits that issuer's tokens to GET/HEAD/OPTIONS (403 `ISSUER_READ_ONLY` otherwise; `POST /auth/introspect` exempt). An entry whose `iss` equals `JWT_AUTHORITY` fails startup (it would be shadowed by the local issuer). Unknown/duplicate flags, a flag name in the scope slot, or >6 fields fail startup. **Rollback hazard:** a build older than this field silently ignores the 6th field, so rolling back drops `read_only`. `scope` (optional) is checked against the token's `scope`/`scopes`/`scp` claims; do not set it for ACDP registry peers (they mint no scope claim). |
+| `REVOCATION_FEEDS` | CSV | `''` | Peer feeds to poll. `issuer\|url\|admin_token[\|poll_seconds]`. The poller runs only with `TOKEN_ISSUANCE_ENABLED=true`. |
 
 ## Tenancy
 
@@ -107,7 +110,7 @@ See [POLICY.md](./POLICY.md).
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `POLICY_BACKEND` | `static`\|`opa` | `static` | Decision backend. |
+| `POLICY_BACKEND` | `static`\|`opa` | `static` | Decision backend (case-insensitive). Any other value fails startup (every environment). |
 | `OPA_URL` | string | `http://localhost:8181` | OPA sidecar base URL. |
 | `OPA_PACKAGE_PATH` | string | `acdp/policy/v1` | OPA package path. |
 | `OPA_TIMEOUT_MS` | number | `1500` | Per-query timeout. |
@@ -119,12 +122,12 @@ See [INGEST.md](./INGEST.md).
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `WEBHOOK_SECRET` | string | `''` | Global HMAC secret for inbound webhooks. Empty = verification skipped (dev only — fails startup in production). |
+| `WEBHOOK_SECRET` | string | `''` | Global HMAC secret for inbound webhooks. Empty = verification skipped (dev only — fails startup outside `development`). |
 | `INGEST_REQUIRE_ENROLLMENT` | bool | `false` | Accept only enrolled authorities. |
-| `INGEST_STRICT_TENANT` | bool | `false` | Unenrolled authority may not assert non-`default` tenant. |
-| `INGEST_MAX_BODY_BYTES` | number | `1048576` | Raw body cap (1 MiB). |
+| `INGEST_STRICT_TENANT` | bool | `false` | An unenrolled authority's non-`default` `X-Tenant-Id` is ignored (warn log) and the event lands in `default`. |
+| `INGEST_MAX_BODY_BYTES` | number | `1048576` | Raw body cap (1 MiB). Also the JSON body-parser limit for every route, so an oversized JSON body is `413 PAYLOAD_TOO_LARGE`. |
 | `INGEST_MAX_JSON_DEPTH` | number | `64` | JSON nesting-depth cap. |
-| `DOMAIN_PACKS` | CSV | `''` | Active domain packs (e.g. `finance`); gates custom `context_type`s. |
+| `DOMAIN_PACKS` | CSV | `''` | Active domain packs; gates custom `context_type`s. The only compiled-in pack today is `finance`; an unknown or duplicate name fails startup (every environment). |
 
 ## Outbound webhooks
 
@@ -138,9 +141,9 @@ See [INGEST.md](./INGEST.md).
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `STREAM_HUB_STRATEGY` | `memory`\|`redis` | `memory` | SSE fan-out backend. `redis` for multi-instance. |
-| `REDIS_URL` | string | `''` | Redis connection (SSE redis strategy + Redis quota store). |
-| `STREAM_SSE_HEARTBEAT_MS` | number | `15000` | SSE heartbeat interval. |
+| `STREAM_HUB_STRATEGY` | `memory`\|`redis` | `memory` | SSE fan-out backend. `redis` for multi-instance. `redis` without `REDIS_URL`, or any other value, silently uses `memory`. |
+| `REDIS_URL` | string | `''` | Redis connection for the SSE `redis` strategy and the quota store. The quota store uses Redis only when `TENANT_QUOTAS` also configures at least one tenant. |
+| `STREAM_SSE_HEARTBEAT_MS` | number | `15000` | Interval of the server-sent `heartbeat` event on both SSE routes. Keep it below your proxy's idle timeout. |
 | `STREAM_SSE_SHUTDOWN_RETRY_MS` | integer (ms), 0–60000 | `1000` | `retry:` hint on the terminal SSE `event: shutdown` (issue #192): how long an `EventSource` waits before reconnecting, by then to a live replica. Strict. |
 
 ## Rate limiting (coarse throttle)
@@ -231,154 +234,109 @@ on. Existing ledger rows (and their hash chain) are unchanged.
 
 ## Receipt audit (RFC-ACDP-0010)
 
-An advisory-locked sweep that makes the CP an independent second observer of
-registry receipts: it picks unaudited `context_published` events, cross-checks
-each embedded `registry_receipt`, records a verdict in `receipt_audits`, and
-surfaces it as the `trust` member on `GET /runs/:runId`. The receipt format and
-the verification procedure it runs are normative in
-[RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0010-registry-receipts.md)
-(registry-side runbook:
-[acdp-registry-rs/docs/RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md)) —
-see [ARCHITECTURE.md](./ARCHITECTURE.md#transparency-audit--witness-rfc-acdp-0010--0012--0015)
-for how the sweep fits the pipeline.
+An advisory-locked sweep that cross-checks each ingested `context_published`
+event's embedded `registry_receipt`, seals a verdict in `receipt_audits`, and
+surfaces it as `trust` on `GET /runs/:runId`. Receipt rules:
+[RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0010-registry-receipts.md)
+(registry side: [RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md));
+how the sweep fits the pipeline:
+[ARCHITECTURE.md](./ARCHITECTURE.md#transparency-audit--witness-rfc-acdp-0010--0012--0014--0015).
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `RECEIPT_AUDIT_ENABLED` | bool | `false` | Enable the receipt-audit sweep. |
-| `RECEIPT_AUDIT_INTERVAL_SECONDS` | number | `300` | Sweep interval. **≥5** when enabled. |
-| `RECEIPT_AUDIT_BATCH_SIZE` | number | `50` | Events audited per sweep. **≥1** when enabled. |
+| `RECEIPT_AUDIT_INTERVAL_SECONDS` | number | `300` | Sweep interval. **≥5** when enabled (checked only outside `development`). |
+| `RECEIPT_AUDIT_BATCH_SIZE` | number | `50` | Events audited per sweep. **≥1** when enabled (checked only outside `development`). Also caps the retroactive key-revocation re-audit fan-out. |
 | `RECEIPT_AUDIT_LOOKBACK_HOURS` | number | `24` | Only events younger than this are picked up. |
 
 ## Transparency-log witnessing (RFC-ACDP-0012 / RFC-ACDP-0015)
 
-The checkpoint witness polls `GET /log/checkpoint` on enrolled registries advertising
-`acdp-registry-transparency-log`, verifies each checkpoint's signature and its
-consistency against the last-witnessed head, and alerts on any dishonesty signal
-(root rewrite, split view, tree-size regression, log reset). The checkpoint/proof
-formats and checks are normative in
-[RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)
-and [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md);
-the knobs below are what this service exposes.
+The checkpoint witness polls `GET /log/checkpoint` on enrolled registries that
+advertise `acdp-registry-transparency-log`, verifies each checkpoint against the
+last-witnessed head, and alerts on dishonesty signals. Checkpoint and proof rules:
+[RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0012-transparency-log.md).
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `LOG_WITNESS_ENABLED` | bool | `false` | Enable the checkpoint-witness sweep. |
-| `LOG_WITNESS_INTERVAL_SECONDS` | number | `300` | Sweep interval. **≥5** when enabled. |
+| `LOG_WITNESS_ENABLED` | bool | `false` | Enable the checkpoint-witness sweep. Prerequisite for cosigning and quorum consumption below. |
+| `LOG_WITNESS_INTERVAL_SECONDS` | number | `300` | Sweep interval. **≥5** when enabled (checked only outside `development`). |
 | `LOG_WITNESS_EXCLUDE_AUTHORITIES` | list | `''` | Authorities never witnessed. |
 
-**Witness cosigning (RFC-ACDP-0015).** When enabled, a checkpoint that passes the §7
-obligation (signature valid **and** consistency from the retained head) is **cosigned**:
-the witness mints a signed `acdp-log-cosignature` over the observed tuple with its own
-Ed25519 `assertionMethod` key and serves it at `GET /log/witness`. Riding the checkpoint
-witness, it requires `LOG_WITNESS_ENABLED=true`. A checkpoint that **fails** the
-obligation is never cosigned. Per §4/§8.1/§15 the witness re-mints a **fresh**
-cosignature on **every** observation — including at an unchanged `tree_size`, as a
-liveness signal — so `log_cosignatures` gains one row per sweep, not per head; only a
-genuine same-millisecond re-mint dedups.
+**Witness cosigning.** The CP cosigns each checkpoint that passes verification with
+its own dedicated Ed25519 witness key, stores one `log_cosignatures` row per
+observation (not per head), and serves them at `GET /log/witness`
+([API.md](./API.md)). Cosignature rules:
+[RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0015-witness-cosigning.md).
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `WITNESS_COSIGNING_ENABLED` | bool | `false` | Enable minting + serving witness cosignatures. |
+| `WITNESS_COSIGNING_ENABLED` | bool | `false` | Enable minting + serving witness cosignatures. Requires `LOG_WITNESS_ENABLED=true` (checked only outside `development`). |
 | `WITNESS_ID` | string | `''` | The witness's DID (`did:web:<this-CP-host>` or `did:key`). Required when enabled. |
-| `WITNESS_SIGNING_PRIVATE_KEY_PEM` | string | `''` | PEM-encoded **Ed25519** private key the witness cosigns with. Required when enabled. **Dedicated** — never the JWT IdP key (§5/§15). |
+| `WITNESS_SIGNING_PRIVATE_KEY_PEM` | string | `''` | PEM-encoded **Ed25519** private key the witness cosigns with. Required when enabled. **Dedicated** — never the JWT key. Generate with `openssl genpkey -algorithm ed25519`. |
 | `WITNESS_KEY_ID` | string | `''` | assertionMethod key id (DID URL under `WITNESS_ID`). Defaults to `<WITNESS_ID>#witness-key-1`. |
-| `WITNESS_COSIGNATURE_KEEP_PER_HEAD` | number | `10` | Retention: cosignatures kept per `(tenant, witness, log, head)` tuple — newest N-1 plus the single OLDEST row unconditionally (§8.1: the oldest surviving cosignature for a head is the strongest anti-backdating evidence, never purged). Requires `DATA_RETENTION_ENABLED=true` to actually run (see Warns below). |
+| `WITNESS_COSIGNATURE_KEEP_PER_HEAD` | number | `10` | Retention: cosignatures kept per `(tenant, witness, log, head)` tuple — the newest N-1 plus the single oldest row, which is never purged. Runs only with `DATA_RETENTION_ENABLED=true`. |
 
-Generate the witness key with `openssl genpkey -algorithm ed25519`. When `WITNESS_ID`
-is a `did:web`, its host **must** match [`PUBLIC_HOST`](#core-server) so consumers can
-dereference `/.well-known/did.json` on this CP — the binding is asserted at boot
-(RFC-ACDP-0015 §9): a mismatch is fatal, and an unset `PUBLIC_HOST` only warns. `did:key`
-witnesses are exempt (self-describing).
+When `WITNESS_ID` is a `did:web`, its host **must** match
+[`PUBLIC_HOST`](#core-server) so consumers can fetch `/.well-known/did.json` from
+this CP: a mismatch fails boot, an unset `PUBLIC_HOST` only warns. `did:key`
+witnesses are exempt.
 
-`GET /log/witness` defaults to the **collapsed** view — the latest cosignature per
-distinct `(log_id, tree_size, root_hash)` head — since B1's per-observation minting would
-otherwise crowd a fixed-size page with liveness re-observations of the same head. Pass
-`?all=true` for the full per-observation series (the §8.1 anti-backdating use: an older
-surviving cosignature for a head is *stronger* evidence it existed early).
-
-**Witness quorum consumption (RFC-ACDP-0015 §8).** The mirror of cosigning: instead of
-minting, evaluate the **N-witnessed quorum** over the cosignatures a registry *aggregates*
-and serves on `GET /log/checkpoint` (the top-level `witness_signatures` sibling, §6.1).
-Each is verified against its witness's **own** key, and DISTINCT trusted witnesses over
-the checkpoint's exact `(log_id, tree_size, root_hash)` tuple are counted — never the
-CP's own local mint. **§9 witness key resolution** branches by DID method: a `did:key`
-witness is self-describing (the multibase-encoded key IS the identity), so it resolves
-LOCALLY with no DID document fetch at all; a `did:web` witness's own key resolves through
-the SAME RFC-ACDP-0010 §9 lifecycle tolerance the registry's receipt key already gets — a
-key rotated out of `assertionMethod` but retained in `verificationMethod` still verifies,
-as **historical** (`historical_witnessed_count`, a separate sub-count, never folded into
-`witnessed_count`/`meets_quorum`). The count + `meets_quorum` are recorded on the
-witnessed head (surfaced on `GET /registries/:authority/log-witness` per checkpoint and on
-the dashboard `logWitness.headsMeetingQuorum` tile). Rides the checkpoint witness, so it
-requires `LOG_WITNESS_ENABLED=true`.
-
-§8.1 layers a **freshness split** on top: `fresh_witnessed_count` / `meets_fresh_quorum`
-count only cosignatures also within `WITNESS_QUORUM_MAX_AGE_SECONDS`. A stale-but-valid
-cosignature still counts toward `witnessed_count`/`meets_quorum` — staleness is never a
-failure (§8.1's anti-backdating principle) — it is simply excluded from the fresh count.
-This is a **soft** overlay, distinct from the **hard** §8 step 5 future-dating gate
-(`WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS`): a cosignature failing that check never counts
-at all, same category as an invalid signature.
+**Witness quorum consumption.** The CP counts the distinct trusted witnesses whose
+cosignatures a registry aggregates on `GET /log/checkpoint`, and records
+`witnessed_count` / `meets_quorum` (plus the `fresh_*` and
+`historical_witnessed_count` sub-counts) on each witnessed head, surfaced on
+`GET /registries/:authority/log-witness` and the dashboard `logWitness` tile.
+Quorum, freshness and witness-key rules:
+[RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0015-witness-cosigning.md)
+§8–§9.
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `WITNESS_QUORUM_ENABLED` | bool | `false` | Enable quorum consumption over aggregated cosignatures. |
-| `WITNESS_QUORUM_TRUSTED` | list | `''` | Witness DIDs whose cosignatures count; others are verified-but-ignored. **Must not contain this CP's own `WITNESS_ID`** — startup refuses to start if it does (a self-attestation would defeat the independent-vantage point of a quorum). |
-| `WITNESS_QUORUM_MIN_WITNESSES` | number | `1` | The N in N-witnessed. **≥1** when enabled. |
-| `WITNESS_QUORUM_MAX_AGE_SECONDS` | number\|null | `300` | §8.1 freshness window. Set to `''` or `0` to **disable the split** — every verified cosignature then also counts as fresh. |
-| `WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS` | number | `120` | §8 step 5 hard future-dating tolerance — a cosignature claiming a `witnessed_at` further than this into the future is rejected outright. |
+| `WITNESS_QUORUM_ENABLED` | bool | `false` | Enable quorum consumption. Requires `LOG_WITNESS_ENABLED=true` (checked only outside `development`). |
+| `WITNESS_QUORUM_TRUSTED` | list | `''` | Witness DIDs whose cosignatures count; others are verified but ignored. **Must not contain this CP's own `WITNESS_ID`** (boot fails outside `development`). Empty only warns: nothing can ever count. |
+| `WITNESS_QUORUM_MIN_WITNESSES` | number | `1` | The N in N-witnessed. **≥1** when enabled (checked only outside `development`). |
+| `WITNESS_QUORUM_MAX_AGE_SECONDS` | number\|null | `300` | Freshness window for the `fresh_*` counts. `''` or `0` disables the split (every verified cosignature counts as fresh); a non-numeric value falls back to `300`. |
+| `WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS` | number | `120` | Hard future-dating tolerance: a cosignature whose `witnessed_at` is further ahead than this never counts. |
 
-**Log-inclusion audit ([RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)).**
-The sibling sweep to the checkpoint witness: for stored receipt-bearing publishes
-from log-advertising registries it proves each context is actually in the
-registry's log (fetching `/log/proof?ctx_id=`) and cross-binds against witnessed
-heads. Verdicts (`included` | `invalid_proof` | `not_logged` | `no_log` | `error`)
-seal once per event in `log_inclusion_audits`.
+**Log-inclusion audit.** The sibling sweep to the checkpoint witness: for stored
+receipt-bearing publishes from log-advertising registries it fetches
+`/log/proof?ctx_id=`, verifies inclusion, and seals one verdict per event
+(`included` | `invalid_proof` | `not_logged` | `no_log` | `error`) in
+`log_inclusion_audits`.
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `LOG_INCLUSION_AUDIT_ENABLED` | bool | `false` | Enable the inclusion-audit sweep. |
-| `LOG_INCLUSION_AUDIT_INTERVAL_SECONDS` | number | `300` | Sweep interval. **≥5** when enabled. |
-| `LOG_INCLUSION_AUDIT_BATCH_SIZE` | number | `50` | Events audited per sweep. **≥1** when enabled. |
+| `LOG_INCLUSION_AUDIT_INTERVAL_SECONDS` | number | `300` | Sweep interval. **≥5** when enabled (checked only outside `development`). |
+| `LOG_INCLUSION_AUDIT_BATCH_SIZE` | number | `50` | Events audited per sweep. **≥1** when enabled (checked only outside `development`). |
 | `LOG_INCLUSION_AUDIT_LOOKBACK_HOURS` | number | `24` | Only events younger than this are picked up. |
 
 ## Producer key-revocation (RFC-ACDP-0014)
 
-When enabled, the receipt-audit sweep additionally classifies each audited event
-under any applicable `key-revocation` context published for the same producer key
-(§7 consumer semantics): a receipt-attested publish before the revocation's
-`compromised_since` boundary is historically authorized; at or after it — or
-unverifiable — fails closed, unconditionally. Requires `RECEIPT_AUDIT_ENABLED=true`,
-because the classification reuses the same receipt-attested `created_at` that sweep
-already establishes. The revocation format and consumer semantics are normative in
-[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md).
-
-Two trust classes are reported distinguishably, never collapsed (§7): producer-signed
-(strong — needs no registry trust at all) and registry-attested (weaker — the
-revocation's `publisher` must pass the §6 registry-binding check against the serving
-registry's own DID and its advertised `capabilities.registry_did`, both via the
-canonical `authorityToDidWeb` encoder — see `src/audit/revocation-binding.ts`).
-
-Classification also runs **retroactively**: a revocation recorded after an event was
-already audited amends that event's stored verdict in place on a later sweep, rather
-than leaving it permanently reporting the pre-revocation result — no separate env var,
-it rides the same `KEY_REVOCATION_CHECK_ENABLED` and reuses `RECEIPT_AUDIT_BATCH_SIZE`
-as its fan-out cap. See `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section.
+When enabled, a sweep fetches and verifies `key-revocation` contexts into
+`key_revocations`, and the receipt-audit sweep classifies each audited event
+against them (`trust.revoked` on `GET /runs/:runId`, dashboard `keyRevocation`
+tile). Already-sealed verdicts are amended retroactively when a later revocation
+reaches back over them — no extra knob. Revocation format, trust classes and
+consumer semantics:
+[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0014-key-revocation.md);
+CP mechanics:
+[ARCHITECTURE.md](./ARCHITECTURE.md#transparency-audit--witness-rfc-acdp-0010--0012--0014--0015).
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `KEY_REVOCATION_CHECK_ENABLED` | bool | `false` | Enable §7 revocation classification. Requires `RECEIPT_AUDIT_ENABLED=true`. |
-| `KEY_REVOCATION_ATTESTED_SCOPE` | `same_registry`\|`global`\|`off` | `same_registry` | How far a registry-attested (not producer-signed) revocation reaches: only events from the attesting registry, every registry, or ignored entirely. |
-| `KEY_REVOCATION_IGNORE_FINGERPRINTS` | list | `''` | §13 operator override: fingerprints listed here never disarm producer trust, even if named by a revocation. |
-| `KEY_REVOCATION_LOOKBACK_HOURS` | number | `720` | How far back the revocation-discovery sweep looks. **Not** the same default as `RECEIPT_AUDIT_LOOKBACK_HOURS` (24h) — revocations are irreversible (§4), so a longer window avoids a registry outage silently and permanently losing one. **≥1** when enabled. |
-| `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS` | number | `1` | Freshness window for the §7 lineage walk's "this lineage was fully walked" marker. A re-walk **cadence** knob, not a correctness gate: a lineage with zero recorded facts is re-walked every pass regardless of cursor freshness, so a wide window can only delay re-discovery of a *superseding* member of an already-fact-bearing lineage. The `1` default matches the DID resolver's own document-cache duration. `0` ignores cursors entirely (always re-walk); **≥0** when enabled (a negative value would mark every cursor fresh forever). |
+| `KEY_REVOCATION_CHECK_ENABLED` | bool | `false` | Enable revocation verification + classification. Requires `RECEIPT_AUDIT_ENABLED=true` — **a production-only check**: under `NODE_ENV=development` the combination is not rejected at boot. |
+| `KEY_REVOCATION_ATTESTED_SCOPE` | `same_registry`\|`global`\|`off` | `same_registry` | How far a registry-attested (not producer-signed) revocation reaches: only events from the attesting registry, every registry, or ignored. Case-sensitive; an unknown value fails boot only outside `development`. |
+| `KEY_REVOCATION_IGNORE_FINGERPRINTS` | list | `''` | Operator override: fingerprints listed here never disarm producer trust, even if a revocation names them. Applied at classification time. |
+| `KEY_REVOCATION_LOOKBACK_HOURS` | number | `720` | Candidate window of the revocation-discovery sweep (30 days, deliberately longer than `RECEIPT_AUDIT_LOOKBACK_HOURS` so an outage cannot lose an irreversible revocation). **≥1** when enabled (checked only outside `development`). |
+| `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS` | number | `1` | Re-walk cadence for the lineage walk's "fully walked" marker; a cadence knob, not a correctness gate. `0` = always re-walk. **≥0** when enabled (checked only outside `development`). |
 
 ## Data retention
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `DATA_RETENTION_ENABLED` | bool | `false` | Enable periodic purge of aged rows. |
-| `DATA_RETENTION_TTL_DAYS` | number | `30` | Age threshold. **≥1** when enabled. |
+| `DATA_RETENTION_TTL_DAYS` | number | `30` | Age threshold. **≥1** when enabled (checked only outside `development`). |
 | `DATA_RETENTION_INTERVAL_HOURS` | number | `24` | Purge-job interval. |
 
 ## Routing
@@ -391,11 +349,11 @@ as its fan-out cap. See `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section.
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `LOG_LEVEL` | string | `info` | `debug`\|`info`\|`warn`\|`error`. |
-| `OTEL_ENABLED` | bool | `false` | Enable OpenTelemetry SDK. |
+| `LOG_LEVEL` | string | `info` | pino level: `trace`\|`debug`\|`info`\|`warn`\|`error`\|`fatal`\|`silent`. |
+| `OTEL_ENABLED` | bool | `false` | Start the OpenTelemetry Node SDK with auto-instrumentations. |
 | `OTEL_SERVICE_NAME` | string | `acdp-control-plane` | Span/metric service name. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | string | `''` | OTLP endpoint; empty discards traces. |
-| `SWAGGER_ENABLED` | bool | dev: on / prod: off | Serve Swagger UI. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | string | `''` | OTLP endpoint. Empty = the CP configures no exporter of its own, and the SDK falls back to its built-in default: OTLP over `http/protobuf` to `http://localhost:4318/v1/traces`. Without a collector there, spans are dropped. The SDK also honours the other standard `OTEL_*` variables (`OTEL_TRACES_EXPORTER`, `OTEL_EXPORTER_OTLP_PROTOCOL`, …) directly; the CP does not read them. |
+| `SWAGGER_ENABLED` | bool | on when `NODE_ENV=development`, else off | Serve Swagger UI. |
 | `SWAGGER_PATH` | string | `docs` | Swagger UI path. |
 
 ## Misc
@@ -406,56 +364,99 @@ as its fan-out cap. See `docs/ARCHITECTURE.md`'s "Retroactive re-audit" section.
 
 ## Startup validation
 
-`AppConfigService.validate()` runs at boot. **Throws** (refuses to start) on:
+Checks fall into two tiers. `AppConfigService.validate()` runs the first block
+in every environment, then **returns early when `NODE_ENV=development`**, so
+everything in the second tier is skipped in development. Integration tests run
+with `NODE_ENV=development`, so they never exercise the second tier.
 
-- Tenant bindings configured (`TENANT_AGENTS` or tenant-bound `TENANT_API_KEYS`)
+### Every environment
+
+Refuses to start on:
+
+- An invalid `POLICY_BACKEND`, `JWT_SIGNING_ALG` or `AUTH_PERSISTENCE`, or a
+  rejected `TRUST_PROXY` (these are parsed when `AppConfigService` is built, so
+  the process exits before migrations run).
+- An unknown or duplicate `DOMAIN_PACKS` name.
+- Tenant bindings (`TENANT_AGENTS`, or a tenant-bound `TENANT_API_KEYS` entry)
   **without** `AUTH_REQUIRE_TENANT=true`.
-- Production with empty `AUTH_API_KEYS`.
-- Production with empty `WEBHOOK_SECRET` (inbound webhook HMAC verification would
-  otherwise be silently disabled — see `src/ingest/hmac.ts`).
+- `TENANT_HEADER_TRUST` other than `none` / `any_peer`.
+- `THROTTLE_IPV6_SUBNET_PREFIX` not an integer in [1, 128].
+- `SHUTDOWN_TIMEOUT_MS` not an integer in [1000, 2147483647],
+  `SHUTDOWN_RETRY_AFTER_SECONDS` not in [1, 300], `STREAM_SSE_SHUTDOWN_RETRY_MS`
+  not in [0, 60000], or `SHUTDOWN_DRAIN_DELAY_MS` not in [0, 2147483647]
+  (issue #192).
+- `READINESS_DB_TIMEOUT_MS` not an integer in [50, 30000], `READINESS_CACHE_MS`
+  not in [0, 60000], or `DB_POOL_CONNECTION_TIMEOUT` not in [1, 2147483647]
+  (issue #210).
+
+These strict knobs never fall back to their default: a set value that is not a
+plain decimal integer (`5s`, `1.5`, `0x40`, empty) fails.
+
+Starts, but **warns** on:
+
+- `TENANT_HEADER_TRUST=any_peer` with a `HOST` other than `127.0.0.1`, `::1` or
+  `localhost`.
+- `SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS` above 25000 ms (check the
+  platform's termination grace period).
+- `READINESS_DB_TIMEOUT_MS >= DB_POOL_CONNECTION_TIMEOUT` (a slow connect is
+  then reported as `reason: "error"`, not `"timeout"`).
+
+### Production only (`NODE_ENV` ≠ `development`)
+
+Refuses to start on:
+
+- Empty `AUTH_API_KEYS`.
+- Empty `WEBHOOK_SECRET` (inbound webhook HMAC verification would otherwise be
+  disabled).
 - `DB_POOL_MAX < 2`.
-- `DB_POOL_CONNECTION_TIMEOUT` not an integer in 1–2147483647 (`0`, `-1`, `1.5`, `5s`, empty) — in every
-  environment (issue #210). Strict parse: a non-integer value no longer falls back to `5000`.
-- `READINESS_DB_TIMEOUT_MS` not an integer in [50, 30000], or `READINESS_CACHE_MS` not an
-  integer in [0, 60000] (e.g. `abc`, `-1`) — in every environment (issue #210).
-  `READINESS_DB_TIMEOUT_MS >= DB_POOL_CONNECTION_TIMEOUT` only **warns**.
-- `SHUTDOWN_TIMEOUT_MS` not an integer in 1000–2147483647, `SHUTDOWN_RETRY_AFTER_SECONDS` not an
-  integer in [1, 300], `STREAM_SSE_SHUTDOWN_RETRY_MS` not an integer in [0, 60000], or
-  `SHUTDOWN_DRAIN_DELAY_MS` not an integer in [0, 2147483647] (e.g. `-1`, `abc`)
-  — in every environment (issue #192). `SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS`
-  above 25000 only **warns**: check your termination grace period.
 - `DATA_RETENTION_ENABLED=true` with `DATA_RETENTION_TTL_DAYS < 1`.
-- `POLICY_BACKEND` not in {`static`,`opa`}; `JWT_SIGNING_ALG` not in {`HS256`,`EdDSA`}.
-- Issuance + `HS256` with `JWT_SECRET` < 32 bytes.
-- Issuance + `EdDSA` with empty `JWT_PRIVATE_KEY_PEM`.
-- Issuance with `JWT_TTL_SECONDS < 60` or `CHALLENGE_TTL_SECONDS < 30`.
-- `LOG_WITNESS_ENABLED=true` with `LOG_WITNESS_INTERVAL_SECONDS < 5`.
 - `RECEIPT_AUDIT_ENABLED=true` with `RECEIPT_AUDIT_INTERVAL_SECONDS < 5` or
   `RECEIPT_AUDIT_BATCH_SIZE < 1`.
+- `LOG_WITNESS_ENABLED=true` with `LOG_WITNESS_INTERVAL_SECONDS < 5`.
 - `LOG_INCLUSION_AUDIT_ENABLED=true` with `LOG_INCLUSION_AUDIT_INTERVAL_SECONDS < 5`
   or `LOG_INCLUSION_AUDIT_BATCH_SIZE < 1`.
 - `WITNESS_COSIGNING_ENABLED=true` without `WITNESS_ID`, without
   `WITNESS_SIGNING_PRIVATE_KEY_PEM`, or without `LOG_WITNESS_ENABLED=true`.
-  (`WitnessSigningService` additionally rejects a non-Ed25519 key, a malformed
-  witness DID, or a `WITNESS_KEY_ID` not under `WITNESS_ID` — in every environment.)
-- `WITNESS_QUORUM_ENABLED=true` with this CP's own `WITNESS_ID` present in
-  `WITNESS_QUORUM_TRUSTED` (self-cosignature would count toward its own quorum).
-  A consume-only deployment (`WITNESS_COSIGNING_ENABLED=false`, `WITNESS_ID`
-  unset) is unaffected by this check.
-- `KEY_REVOCATION_CHECK_ENABLED=true` without `RECEIPT_AUDIT_ENABLED=true`; with
-  `KEY_REVOCATION_ATTESTED_SCOPE` not in {`same_registry`,`global`,`off`}; or with
-  `KEY_REVOCATION_LOOKBACK_HOURS < 1`; or with
-  `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS < 0` (`0` itself is legal — it opts out
-  of cursor-based walk suppression).
+- `WITNESS_QUORUM_ENABLED=true` without `LOG_WITNESS_ENABLED=true`, with
+  `WITNESS_QUORUM_MIN_WITNESSES < 1`, or with this CP's own `WITNESS_ID` listed in
+  `WITNESS_QUORUM_TRUSTED` (a consume-only deployment with no `WITNESS_ID` is
+  unaffected by the last check).
+- `KEY_REVOCATION_CHECK_ENABLED=true` without `RECEIPT_AUDIT_ENABLED=true`, with
+  `KEY_REVOCATION_ATTESTED_SCOPE` not in {`same_registry`,`global`,`off`}, with
+  `KEY_REVOCATION_LOOKBACK_HOURS < 1`, or with
+  `KEY_REVOCATION_LINEAGE_CURSOR_TTL_HOURS < 0` (`0` is legal).
+- `TOKEN_ISSUANCE_ENABLED=true` with: `HS256` and a `JWT_SECRET` under 32 bytes;
+  `EdDSA` and an empty `JWT_PRIVATE_KEY_PEM`; `JWT_TTL_SECONDS < 60`; or
+  `CHALLENGE_TTL_SECONDS < 30`.
 
-**Warns** (starts, but flags a risk) on, in production:
+Starts, but **warns** on:
 
-- `STREAM_HUB_STRATEGY=memory` (SSE won't sync across replicas).
-- `OTEL_ENABLED=true` with empty `OTEL_EXPORTER_OTLP_ENDPOINT` (traces discarded).
-- `REVOCATION_FEEDS` set with `TOKEN_ISSUANCE_ENABLED=false` (poller won't run).
-- `TOKEN_ISSUANCE_ENABLED=true` with `AUTH_PERSISTENCE=memory` (state not shared).
-- `WITNESS_QUORUM_ENABLED=true` with empty `WITNESS_QUORUM_TRUSTED` (no
-  cosignature can ever count toward quorum).
-- `WITNESS_COSIGNING_ENABLED=true` with `DATA_RETENTION_ENABLED=false` (B1 mints a
-  fresh `log_cosignatures` row on every observation sweep — without the retention
-  purge running, the table grows unbounded).
+- `STREAM_HUB_STRATEGY=memory` (SSE does not sync across replicas).
+- `OTEL_ENABLED=true` with an empty `OTEL_EXPORTER_OTLP_ENDPOINT`. The warning
+  says traces are discarded; in fact the SDK exports to its default
+  `http://localhost:4318` (see [Observability](#observability)), so they are
+  lost only if no collector listens there.
+- `WITNESS_COSIGNING_ENABLED=true` with `DATA_RETENTION_ENABLED=false`
+  (`log_cosignatures` gains a row on every observation and grows unbounded).
+- `WITNESS_QUORUM_ENABLED=true` with an empty `WITNESS_QUORUM_TRUSTED` (no
+  cosignature can ever count).
+- `REVOCATION_FEEDS` set with `TOKEN_ISSUANCE_ENABLED=false` (the poller does
+  not run).
+- `TOKEN_ISSUANCE_ENABLED=true` with `AUTH_PERSISTENCE=memory` (challenge and
+  revocation state is not shared across replicas).
+
+### Other boot-time failures
+
+Not part of `validate()`, but they also stop the process in every environment:
+
+- The `acdp` SDK binding verifies Ed25519 non-strictly (the `sig-004` self-test
+  that runs first in `bootstrap()`; see
+  [TROUBLESHOOTING.md](./TROUBLESHOOTING.md#boot-fails-the-loaded-acdp-sdk-binding-verifies-ed25519-non-strictly--sig-004)).
+- With `TOKEN_ISSUANCE_ENABLED=true`: a malformed `TRUSTED_ISSUERS` entry, or
+  one whose `iss` equals `JWT_AUTHORITY`.
+- With `WITNESS_COSIGNING_ENABLED=true`: `WitnessSigningService` rejects an
+  empty or malformed `WITNESS_ID`, a missing, unparseable or non-Ed25519
+  `WITNESS_SIGNING_PRIVATE_KEY_PEM`, a `WITNESS_KEY_ID` not under `WITNESS_ID`,
+  or a `did:web` witness whose host does not match a set `PUBLIC_HOST`. So
+  cosigning without a witness DID or key fails in development too; only the
+  `LOG_WITNESS_ENABLED` prerequisite is production-only.

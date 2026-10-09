@@ -111,8 +111,8 @@ and must move in the same PR as the first spec reading a new fixture.
 Live in `test/integration/**.integration.spec.ts`. They boot the full NestJS app,
 run real migrations against a real Postgres on **port 5433**
 (`acdp_control_plane_test`), and exercise the service over HTTP. Config is
-`test/jest.integration.config.ts`: `maxWorkers: 1` (serial), 60 s timeout, with
-`globalSetup`/`globalTeardown`.
+`test/jest.integration.config.ts`: `maxWorkers: 1` plus `--runInBand` (serial), 60 s
+timeout, `detectOpenHandles`, with `globalSetup`/`globalTeardown`.
 
 ```bash
 npm run test:integration                       # full suite
@@ -123,8 +123,9 @@ npm run test:integration -- ingest.integration # single spec (regex against path
 
 - `test/setup/global-setup.ts` runs `docker compose -f docker-compose.test.yml up
   -d postgres-test redis-test --wait` (skipped when `CI` is set — rely on CI
-  service containers instead), waits for connectivity, and points `DATABASE_URL`
-  at the test DB.
+  service containers instead), waits for connectivity (the give-up error names
+  the target and the driver's message), points `DATABASE_URL` at the test DB, and
+  truncates every table so a run never inherits the previous run's rows.
 - **Redis is now a second prerequisite.** `redis-test` is published on **6380**
   (not 6379, so it cannot collide with a developer's own local Redis) and backs
   `test/integration/redis-live.integration.spec.ts`, which drives a REAL ioredis
@@ -135,9 +136,12 @@ npm run test:integration -- ingest.integration # single spec (regex against path
   - `CI` set + `REDIS_URL` unset → **fails loudly**, never skips
   - local, no Redis on 6380 → skips, with a message telling you how to start one
 
-  Note `REDIS_URL` is NOT exported by `global-setup`: setting it process-wide
-  would flip `QuotaModule` onto the Redis store for every other spec. The live
-  spec connects on its own.
+  `global-setup` does not export `REDIS_URL` (the live spec defaults to
+  `redis://127.0.0.1:6380` locally), but the CI `integration` job sets it for the
+  whole run. That is safe because `QuotaModule` opens a Redis client only when
+  `TENANT_QUOTAS` also configures a tenant — a client opened with no tenants once
+  kept the event loop alive and hung the suite after an all-green report.
+  `quota-store-lifecycle.integration.spec.ts` pins both halves.
   The same file also boots the app with `STREAM_HUB_STRATEGY=redis` (issue #210
   Phase 3): against a port nothing listens on — "Redis stopped", without ever
   stopping the shared Redis — `/readyz` must stay 200 with
@@ -182,13 +186,30 @@ npm run test:integration -- ingest.integration # single spec (regex against path
 | `witness-cosigning.integration.spec.ts` | RFC-ACDP-0015 cosignature mint/serve + quorum |
 | `error-envelope.integration.spec.ts` | `GlobalExceptionFilter` acdp+json envelope over HTTP |
 | `migrations.integration.spec.ts` | Migration re-run idempotency + core table presence |
+| `agents-routes.integration.spec.ts` | `/agents` vs `/agents/*did` route shapes: list not shadowed by the wildcard, colon- and slash-bearing DIDs rejoined, 404 from the handler |
+| `federation-read-only.integration.spec.ts` | `TRUSTED_ISSUERS` end to end (#225): `read_only` peer → 403 `ISSUER_READ_ONLY` on writes, reads + introspect allowed, `TENANT_HEADER_TRUST` precedence, boot failure when `iss` equals `JWT_AUTHORITY` |
+| `revoke-authz.integration.spec.ts` | `POST /auth/token/revoke` authorizes on verified claims only (#229); deny-list keyed by `(iss, jti)` (#232) |
+| `revocation.integration.spec.ts` | RFC-ACDP-0014 key-revocation sweep: both context-type spellings, producer-signed and registry-attested facts, §6 binding failure, idempotency, tampered body, lineage walk + cursor semantics against the real DB |
+| `logging-correlation.integration.spec.ts` | #159: HTTP summary line as pino fields, guard-level lines carry the request's `requestId`, no bleed between concurrent requests, omitted outside a request |
+| `throttle-ipv6.integration.spec.ts` | #187: IPv6 `/64` rotation hits the coarse throttle (429 `RATE_LIMITED`), IPv4-mapped shares the IPv4 bucket, principals keyed by actor, `THROTTLE_IPV6_SUBNET_PREFIX=128` wiring |
+| `trust-proxy.integration.spec.ts` | `TRUST_PROXY=1` resolves `req.ip` from the trusted hop only; unset ignores `X-Forwarded-For` |
+| `shutdown.integration.spec.ts` | #158/#192: spawns the real entrypoint and signals it — SIGTERM/SIGINT exit codes, failed destroy hook → exit 1, forced exit on in-flight requests, SSE `event: shutdown`, the drain gate, `SHUTDOWN_DRAIN_DELAY_MS`, strict `SHUTDOWN_TIMEOUT_MS` |
+| `redis-live.integration.spec.ts` | Real ioredis client against a live Redis: pub/sub, the quota Lua `eval`, `quit()`; `/readyz` stays 200 with `checks.streamHub` down (skip policy above) |
+| `quota-store-lifecycle.integration.spec.ts` | `QuotaModule` picks the in-memory store when `REDIS_URL` is set without tenants, the Redis store when both are set, and closes the live client on shutdown |
+| `test-db-guard.integration.spec.ts` | `truncateAll` refuses a database whose `current_database()` doesn't end in `_test`, redacts the password, leaves the data intact |
 
 ### How the test app is wired (`test/helpers/test-app.ts`)
 
+- Forces `NODE_ENV=development`, so the production-only startup checks
+  ([CONFIGURATION.md](./CONFIGURATION.md#startup-validation)) never run in
+  integration tests; specs that need a boot failure use an every-environment check.
 - Clears the `prom-client` registry to avoid duplicate-metric errors across suites.
 - Runs `runMigrations(TEST_DB_URL)` against the test DB before booting.
 - Boots the real `AppModule` with `rawBody: true`, the global `ValidationPipe`,
-  and `GlobalExceptionFilter` — same wiring as `src/bootstrap.ts` minus helmet and swagger.
+  and `GlobalExceptionFilter`, the body-parser limit from `INGEST_MAX_BODY_BYTES`, and
+  `TRUST_PROXY` via the same `applyTrustProxy` — the wiring of `src/bootstrap.ts` minus
+  helmet, Swagger and the shutdown-drain arrival marker, and with a permissive CORS
+  origin (`shutdown.integration.spec.ts` spawns the real entrypoint for the drain path).
 - Listens on a random port (`app.listen(0)`); reach it via `ctx.url` or the typed
   `ctx.client` (`TestClient`).
 - `databaseUrl` points the app (not the migrations) at another URL — e.g. a
@@ -240,17 +261,28 @@ it needs Docker plus an OpenAI key and is **not** wired into CI. See
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every PR/push to `main`:
+`.github/workflows/ci.yml` runs on every PR and push to `main` (Node 26, matching
+the Dockerfile; each job has a 20–25 min timeout):
 
-1. **unit** — convention greps (`scripts/ci-conventions.sh`), ESLint
-   (`--max-warnings 0`), `npm run typecheck` (TS 7) + `npm run typecheck:ts6`,
-   the build-emit check, then the unit suite with coverage
-   thresholds enforced; the lcov report uploads as an artifact.
-2. **integration** — the full integration suite against a `postgres:16`
-   service container on port 5433.
+1. **unit** — checks out the ACDP spec repo at the pinned commit (for the
+   conformance vectors above), then convention greps (`scripts/ci-conventions.sh`),
+   ESLint (`--max-warnings 0`), `npm run typecheck` (TS 7) + `npm run typecheck:ts6`,
+   the build-emit check, and finally
+   `npm test -- --testPathIgnorePatterns='/test/integration/' --ci --coverage` with
+   `NODE_ENV=test`, `ACDP_SPEC_DIR` and `ACDP_REQUIRE_CONFORMANCE=1`, so coverage
+   thresholds are enforced and a missing spec checkout fails instead of skipping.
+   The lcov report uploads as an artifact.
+2. **integration** (job name `jest integration (Postgres)` — a required status
+   check, do not rename) — `npm run test:integration` against two service
+   containers: `postgres:16` on 5433 and `redis:7` on 6380, with `CI=true` and
+   `REDIS_URL` set, so `global-setup` skips Docker Compose and the live-Redis
+   spec must run.
 3. **docker** — builds the production `Dockerfile` (no push) so image breaks
    surface at PR time, not at release time.
 
-Release tags additionally gate the GHCR push on the unit suite and a container
-smoke test (boot against Postgres, assert `/healthz` + `/readyz`) — see
-`.github/workflows/release.yml`.
+Release tags additionally gate the GHCR push on conventions, lint, both
+typechecks, the unit suite (without coverage) and a container smoke test (boot
+against Postgres, assert `/healthz` + `/readyz`) — see
+`.github/workflows/release.yml`. `.github/workflows/toolchain-tripwire.yml` probes
+the latest TypeScript weekly; it goes red only when everything passes (the signal
+to start the TS 7 move, issue #156).

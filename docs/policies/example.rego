@@ -1,8 +1,11 @@
 # ACDP Control-Plane reference policy.
 #
 # Mirrors the static-rules backend's decision tree (src/policy/
-# static-rules-policy.decider.ts) so deployments can switch
-# POLICY_BACKEND=static → POLICY_BACKEND=opa without behavior change.
+# static-rules-policy.decider.ts). Behaviour differs for an authenticated
+# context.retrieve with resource_visibility null — which PolicyGuard always
+# sends today: static allows it, this corpus matches no rule
+# (indeterminate → 403). Add a rule for that case before switching
+# POLICY_BACKEND=static → POLICY_BACKEND=opa. See docs/POLICY.md.
 # Customize per-tenant by overriding individual rules in a
 # `bundles/<tenant-id>/policy.rego` file shipped alongside this one.
 #
