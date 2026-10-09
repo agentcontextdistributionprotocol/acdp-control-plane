@@ -12,6 +12,7 @@
  * `capability.declare` guard path is covered in capabilities.integration.spec.ts.
  */
 import { createTestApp, TestAppContext } from '../helpers/test-app';
+import { resetQuotaCounters } from '../helpers/quota-reset';
 import { TestClient } from '../helpers/test-client';
 
 function event(runId: string, authority = 'r.local') {
@@ -30,6 +31,7 @@ describe('Quota enforcement (integration)', () => {
   let ctx: TestAppContext;
 
   beforeAll(async () => {
+    await resetQuotaCounters();
     // WEBHOOK_SECRET empty (dev mode) → HMAC is skipped, every request is
     // "signed"; unenrolled with no X-Tenant-Id → resolves to `default`.
     ctx = await createTestApp({ tenantQuotas: 'default:publish=2/min' });
@@ -74,6 +76,7 @@ describe('Ingest quota is counted only after HMAC (integration)', () => {
   let ctx: TestAppContext;
 
   beforeAll(async () => {
+    await resetQuotaCounters();
     ctx = await createTestApp({
       webhookSecret: GLOBAL_SECRET,
       tenantQuotas: 'default:publish=2/min',
@@ -111,6 +114,7 @@ describe('Ingest quota is charged to the enrollment-resolved tenant (integration
   let ctx: TestAppContext;
 
   beforeAll(async () => {
+    await resetQuotaCounters();
     ctx = await createTestApp({
       adminApiKey: 'admin-key',
       webhookSecret: GLOBAL_SECRET,

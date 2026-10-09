@@ -4,6 +4,7 @@
 import '../helpers/enable-token-issuance';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { createTestApp, TestAppContext } from '../helpers/test-app';
+import { resetQuotaCounters } from '../helpers/quota-reset';
 import { TestClient } from '../helpers/test-client';
 
 const JWT_SECRET = 'integration-issuer-secret-key-0123456789';
@@ -175,6 +176,7 @@ describe('capability.declare quota via QuotaGuard (integration)', () => {
   let bearer: TestClient;
 
   beforeAll(async () => {
+    await resetQuotaCounters();
     ctx = await createTestApp({
       apiKey: 'cap-test-key',
       tokenIssuance: TOKEN_ISSUANCE,
