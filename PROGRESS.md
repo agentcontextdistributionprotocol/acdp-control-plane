@@ -32,3 +32,4 @@ Quota:
 - Registry retry on 429: `../acdp-registry-rs/docs/WEBHOOKS.md:258-263`.
 
 Docs to update: docs/{API,INGEST,POLICY,TENANCY,TROUBLESHOOTING,ARCHITECTURE,CONFIGURATION}.md (line refs in the plan phases), `DEFERRED.md`, local CLAUDE.md:317-318.
+pushed fix/enrollment-tenant-immutable 80699bd
