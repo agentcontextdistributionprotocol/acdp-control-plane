@@ -141,6 +141,13 @@ export enum ErrorCode {
   /** 403 — INGEST_REQUIRE_ENROLLMENT and the registry is not enrolled. */
   REGISTRY_NOT_ENROLLED = "REGISTRY_NOT_ENROLLED",
   /**
+   * 409 — `POST /registries/enroll` for an authority already enrolled under a
+   * DIFFERENT tenant. The tenant binding is immutable (ingest resolves the
+   * tenant from the authority alone), so the row is left unchanged. The body
+   * deliberately does not name the owning tenant. Not retryable.
+   */
+  REGISTRY_ENROLLED_ELSEWHERE = "REGISTRY_ENROLLED_ELSEWHERE",
+  /**
    * 403 — PolicyGuard denied (or could not decide: the legacy top-level
    * `code: "indeterminate"` distinguishes that case). The body keeps its
    * documented top-level `code`/`reason`.

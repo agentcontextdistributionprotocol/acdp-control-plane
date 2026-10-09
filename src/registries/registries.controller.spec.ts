@@ -1,10 +1,11 @@
+import { Logger } from '@nestjs/common';
 import { ErrorCode } from '../errors/error-codes';
 import { AppException } from '../errors/app-exception';
 import { RegistriesController } from './registries.controller';
 import { TenantedRequest } from '../tenant/request-tenant';
 
 describe('RegistriesController.enroll', () => {
-  const enrollmentRepo = { upsert: jest.fn(), list: jest.fn() };
+  const enrollmentRepo = { upsert: jest.fn(), list: jest.fn(), findByAuthority: jest.fn() };
   const registryRepo = { list: jest.fn() };
   const logWitnessRepo = {
     getCursor: jest.fn(),
@@ -65,6 +66,80 @@ describe('RegistriesController.enroll', () => {
       req(),
     );
     expect(out).not.toHaveProperty('webhookSecret');
+  });
+
+  it('returns the enrollment when the upsert succeeds (insert / same-tenant update)', async () => {
+    const out = await controller.enroll(
+      { authority: 'reg.example', tenantId: 'tenant-a' } as never,
+      req(),
+    );
+    expect(out).toEqual({ authority: 'reg.example', tenantId: 'tenant-a' });
+    expect(enrollmentRepo.findByAuthority).not.toHaveBeenCalled();
+  });
+
+  describe('authority already enrolled under a different tenant', () => {
+    let warn: jest.SpyInstance;
+
+    beforeEach(() => {
+      enrollmentRepo.upsert.mockResolvedValue(null);
+      enrollmentRepo.findByAuthority.mockResolvedValue({
+        authority: 'reg.example',
+        tenantId: 'owner-tenant-secret',
+      });
+      warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => warn.mockRestore());
+
+    it('throws 409 REGISTRY_ENROLLED_ELSEWHERE without leaking the owning tenant', async () => {
+      let caught: unknown;
+      try {
+        await controller.enroll(
+          { authority: 'reg.example', tenantId: 'tenant-b' } as never,
+          req({ tenantId: 'tenant-b' }),
+        );
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(AppException);
+      const err = caught as AppException;
+      expect(err.errorCode).toBe(ErrorCode.REGISTRY_ENROLLED_ELSEWHERE);
+      expect(err.getStatus()).toBe(409);
+      expect(err.message).toBe(
+        'authority "reg.example" is already enrolled under a different tenant',
+      );
+      // Nothing the client sees names the owning tenant.
+      expect(JSON.stringify(err.getResponse())).not.toContain('owner-tenant-secret');
+      expect(JSON.stringify(err)).not.toContain('owner-tenant-secret');
+    });
+
+    it('logs the owning tenant server-side as structured fields', async () => {
+      await expect(
+        controller.enroll({ authority: 'reg.example' } as never, req({ tenantId: 'tenant-b' })),
+      ).rejects.toMatchObject({ errorCode: ErrorCode.REGISTRY_ENROLLED_ELSEWHERE });
+      expect(enrollmentRepo.findByAuthority).toHaveBeenCalledWith('reg.example');
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          msg: expect.any(String),
+          authority: 'reg.example',
+          requestedTenant: 'tenant-b',
+          owningTenant: 'owner-tenant-secret',
+        }),
+      );
+    });
+  });
+
+  describe('enroll — log lookup failure', () => {
+    it('still returns the 409 (owningTenant null) when the log-only read throws', async () => {
+      enrollmentRepo.upsert.mockResolvedValue(null);
+      enrollmentRepo.findByAuthority.mockRejectedValue(new Error('db blip'));
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      await expect(
+        controller.enroll({ authority: 'reg.example' } as never, req({ tenantId: 'tenant-b' })),
+      ).rejects.toMatchObject({ errorCode: ErrorCode.REGISTRY_ENROLLED_ELSEWHERE });
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ owningTenant: null }));
+      warn.mockRestore();
+    });
   });
 
   // ── Witness alert worklist + acknowledgement (durability hardening) ──────

@@ -1735,3 +1735,11 @@
 - **Alternatives:** route allowlist (misses new routes unless updated; safer default but higher maintenance); per-route decorator.
 - **Blast radius if wrong:** a future state-changing GET (or a new POST that is really a read) would bypass / be wrongly blocked; verifier audited every current `@Get` and found none mutating.
 - **Status:** CONFIRMED (2026-10-06) — decided by Opus
+
+## Enrollment tenant binding is immutable; admin trust stays global (P1)
+- **Plan:** plans/tenant-enroll-quota-fix.md
+- **Assumed:** admin keys are global operator keys, so P1 guards only the immutability of an existing authority's tenant binding (409 `REGISTRY_ENROLLED_ELSEWHERE`); admins may still create enrollments for any tenant or update an authority within its owning tenant.
+- **Chose:** atomic `ON CONFLICT … DO UPDATE … WHERE tenant_id = excluded.tenant_id`; unbound admin (tenant `default`) re-enrolling a tenant-x authority without `tenantId` now gets 409 instead of silently moving it. The owning-tenant lookup for the warn log is a separate non-atomic read (log-only; failure never masks the 409).
+- **Alternatives:** composite PK (breaks pre-HMAC tenant resolution); per-tenant admin scoping (removes the only cross-tenant enroll path under `AUTH_REQUIRE_TENANT=true`; deferred in DEFERRED.md); `transfer:true` flag (reintroduces takeover).
+- **Blast radius if wrong:** an operator workflow that relied on moving an authority between tenants via re-enroll now needs manual SQL until an unenroll route exists. Reversible by reverting the PR.
+- **Status:** UNCONFIRMED

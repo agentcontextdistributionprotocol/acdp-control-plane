@@ -14,7 +14,11 @@ export class EnrollRegistryDto {
   authority!: string;
 
   @ApiPropertyOptional({
-    description: 'Tenant this authority belongs to. Defaults to "default".',
+    description:
+      "Tenant this authority belongs to. Defaults to the caller's tenant (the admin " +
+      'key\'s bound tenant; an unbound key resolves to the untenanted bucket). The ' +
+      'reserved `default` tenant cannot be named explicitly. Immutable once enrolled: ' +
+      're-enrolling under a different tenant is rejected with 409 REGISTRY_ENROLLED_ELSEWHERE.',
   })
   @IsOptional()
   @IsString()

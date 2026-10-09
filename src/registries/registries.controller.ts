@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpStatus,
+  Logger,
   Param,
   Post,
   Query,
@@ -26,6 +27,8 @@ import {
 @ApiTags('registries')
 @Controller('registries')
 export class RegistriesController {
+  private readonly logger = new Logger(RegistriesController.name);
+
   constructor(
     private readonly registryRepo: RegistryRepository,
     private readonly enrollmentRepo: RegistryEnrollmentRepository,
@@ -156,7 +159,9 @@ export class RegistriesController {
   @ApiOperation({
     summary:
       'Enroll (or update) a registry authority. Admin-only. Binds the authority ' +
-      'to a tenant and pins an optional per-registry webhook secret + base URL.',
+      'to a tenant and pins an optional per-registry webhook secret + base URL. ' +
+      'The tenant binding is immutable: re-enrolling an authority already bound ' +
+      'to a different tenant is rejected with 409 REGISTRY_ENROLLED_ELSEWHERE.',
   })
   async enroll(
     @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
@@ -168,14 +173,37 @@ export class RegistriesController {
     // the reserved untenanted sentinel — it can never be named explicitly
     // (parity with the AuthGuard's reserved-tenant rejection).
     assertNotReservedTenant(body.tenantId, 'tenantId');
+    const requestedTenant = body.tenantId ?? tenantOf(req);
     const row = await this.enrollmentRepo.upsert({
       authority: body.authority,
-      tenantId: body.tenantId ?? tenantOf(req),
+      tenantId: requestedTenant,
       baseUrl: body.baseUrl,
       registryDid: body.registryDid,
       webhookSecret: body.webhookSecret,
       enabled: body.enabled,
     });
+    if (row === null) {
+      // The authority is bound to ANOTHER tenant and the binding is immutable
+      // (the upsert's conflict update was suppressed atomically; the row is
+      // unchanged). Name the owning tenant only in the server-side log — the
+      // response must not disclose which tenant holds the authority. This
+      // read is separate from the write (not atomic); it is log-only.
+      // A failing lookup must never mask the 409 with a 500.
+      const existing = await this.enrollmentRepo
+        .findByAuthority(body.authority)
+        .catch(() => null);
+      this.logger.warn({
+        msg: 'registry enroll rejected: authority already enrolled under a different tenant',
+        authority: body.authority,
+        requestedTenant,
+        owningTenant: existing?.tenantId ?? null,
+      });
+      throw new AppException(
+        ErrorCode.REGISTRY_ENROLLED_ELSEWHERE,
+        `authority "${body.authority}" is already enrolled under a different tenant`,
+        HttpStatus.CONFLICT,
+      );
+    }
     const { webhookSecret: _omit, ...sanitized } = row;
     return sanitized;
   }

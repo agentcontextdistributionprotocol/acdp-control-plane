@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../db/database.service';
 import { RegistryEnrollment, registryEnrollments } from '../db/schema';
 import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
@@ -17,8 +17,23 @@ export interface EnrollRegistryInput {
 export class RegistryEnrollmentRepository {
   constructor(private readonly database: DatabaseService) {}
 
-  /** Create or update the enrollment for an authority (authority is the PK). */
-  async upsert(input: EnrollRegistryInput): Promise<RegistryEnrollment> {
+  /**
+   * Create or update the enrollment for an authority (authority is the PK).
+   *
+   * The tenant binding is IMMUTABLE once written: an authority is bound to
+   * exactly one tenant, and ingest resolves the tenant from the authority
+   * alone (before HMAC), so re-pointing it would silently move a registry's
+   * traffic into another tenant. The conflict branch therefore never writes
+   * `tenantId`, and only fires when the existing row's tenant equals the
+   * requested one (`setWhere`). Because the check is part of the single
+   * `INSERT … ON CONFLICT … DO UPDATE … WHERE` statement it is atomic — no
+   * check-then-write race; concurrent first-enrolls serialize on the PK.
+   *
+   * Returns the inserted/updated row, or `null` when the authority is already
+   * enrolled under a DIFFERENT tenant (`RETURNING` is empty because the
+   * conflict update was suppressed) — the row is left untouched.
+   */
+  async upsert(input: EnrollRegistryInput): Promise<RegistryEnrollment | null> {
     const now = new Date().toISOString();
     const tenantId = input.tenantId ?? DEFAULT_TENANT_ID;
     const rows = await this.database.db
@@ -35,17 +50,18 @@ export class RegistryEnrollmentRepository {
       })
       .onConflictDoUpdate({
         target: registryEnrollments.authority,
+        // `tenantId` is deliberately absent — see the docblock.
         set: {
-          tenantId,
           baseUrl: input.baseUrl ?? null,
           registryDid: input.registryDid ?? null,
           webhookSecret: input.webhookSecret ?? null,
           enabled: input.enabled ?? true,
           updatedAt: now,
         },
+        setWhere: sql`${registryEnrollments.tenantId} = excluded.tenant_id`,
       })
       .returning();
-    return rows[0];
+    return rows[0] ?? null;
   }
 
   /** Lookup by authority. Authority is globally unique → one tenant. */
