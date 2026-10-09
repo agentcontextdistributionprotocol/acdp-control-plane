@@ -236,10 +236,10 @@ registry receipts: it picks unaudited `context_published` events, cross-checks
 each embedded `registry_receipt`, records a verdict in `receipt_audits`, and
 surfaces it as the `trust` member on `GET /runs/:runId`. The receipt format and
 the verification procedure it runs are normative in
-[RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0010-registry-receipts.md)
+[RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0010-registry-receipts.md)
 (registry-side runbook:
 [acdp-registry-rs/docs/RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md)) —
-see [ARCHITECTURE.md](./ARCHITECTURE.md#transparency-audit--witness-rfc-acdp-0010--0012--0015)
+see [ARCHITECTURE.md](./ARCHITECTURE.md#transparency-audit--witness-rfc-acdp-0010--0012--0014--0015)
 for how the sweep fits the pipeline.
 
 | Var | Type | Default | Meaning |
@@ -256,8 +256,8 @@ The checkpoint witness polls `GET /log/checkpoint` on enrolled registries advert
 consistency against the last-witnessed head, and alerts on any dishonesty signal
 (root rewrite, split view, tree-size regression, log reset). The checkpoint/proof
 formats and checks are normative in
-[RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)
-and [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md);
+[RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0012-transparency-log.md)
+and [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0015-witness-cosigning.md);
 the knobs below are what this service exposes.
 
 | Var | Type | Default | Meaning |
@@ -328,7 +328,7 @@ at all, same category as an invalid signature.
 | `WITNESS_QUORUM_MAX_AGE_SECONDS` | number\|null | `300` | §8.1 freshness window. Set to `''` or `0` to **disable the split** — every verified cosignature then also counts as fresh. |
 | `WITNESS_QUORUM_MAX_CLOCK_SKEW_SECONDS` | number | `120` | §8 step 5 hard future-dating tolerance — a cosignature claiming a `witnessed_at` further than this into the future is rejected outright. |
 
-**Log-inclusion audit ([RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)).**
+**Log-inclusion audit ([RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0012-transparency-log.md)).**
 The sibling sweep to the checkpoint witness: for stored receipt-bearing publishes
 from log-advertising registries it proves each context is actually in the
 registry's log (fetching `/log/proof?ctx_id=`) and cross-binds against witnessed
@@ -351,7 +351,7 @@ under any applicable `key-revocation` context published for the same producer ke
 unverifiable — fails closed, unconditionally. Requires `RECEIPT_AUDIT_ENABLED=true`,
 because the classification reuses the same receipt-attested `created_at` that sweep
 already establishes. The revocation format and consumer semantics are normative in
-[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md).
+[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0014-key-revocation.md).
 
 Two trust classes are reported distinguishably, never collapsed (§7): producer-signed
 (strong — needs no registry trust at all) and registry-attested (weaker — the

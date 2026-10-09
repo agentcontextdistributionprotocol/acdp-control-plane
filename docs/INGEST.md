@@ -120,8 +120,8 @@ The wire shape of these events is defined by the **emitter** — the registry �
 its [WEBHOOKS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/WEBHOOKS.md)
 (event envelope + `context.published` / `context.retrieved` / `search.executed`
 variants); the lifecycle event types (`context_retracted` / `context_republished`)
-are normative in [RFC-ACDP-0013](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0013-lifecycle-events.md)
-and the [lifecycle-event-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/registries/lifecycle-event-types.md).
+are normative in [RFC-ACDP-0013](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0013-lifecycle-events.md)
+and the [lifecycle-event-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/registries/lifecycle-event-types.md).
 The table below is **not** a second definition of that wire format; it
 is the subset of fields the CP *extracts* and what each is used for. The control
 plane is intentionally **liberal** — it stores the raw payload in
@@ -157,7 +157,7 @@ When one or more domain packs are configured (`DOMAIN_PACKS` set, e.g.
 - **Base ACDP types are always accepted** — `data_snapshot`, `analysis`,
   `prediction`, `alert` are never pack-gated. These are the protocol baseline,
   registered in the spec's
-  [context-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/registries)
+  [context-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/registries/context-types.md)
   (RFC-ACDP-0001); domain packs only *add* vertical types on top.
 - **`key-revocation` and `acdp:key-revocation` are also always accepted** —
   RFC-ACDP-0014 §4 registers `key-revocation` as a standard protocol context

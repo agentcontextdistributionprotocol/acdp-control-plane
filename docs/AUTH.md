@@ -9,13 +9,14 @@ Endpoint shapes live in [API.md](./API.md#auth); tenancy in [TENANCY.md](./TENAN
 > registry's so agent code and tokens are interchangeable. The authoritative
 > description of that shared model is the registry's
 > [AUTHENTICATION.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md).
-> The normative wire rules are [RFC-ACDP-0001 §5.8](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/rfcs)
-> (agent auth) and the [signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/registries).
+> The normative wire rules are [RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0008-security.md#62-read-authentication)
+> (`bearer_jwt` read authentication; see also the [auth-methods registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/registries/auth-methods.md))
+> and the [signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/registries/signature-algorithms.md).
 > This page documents only what is **CP-specific** (how those rules are wired,
 > issuance ledger, persistence, the guard).
 
 All protocol crypto (Ed25519 / ECDSA-P256 verification, did:web resolution, SSRF
-classification) comes from the [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs)
+classification) comes from the [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/bindings.md)
 (Rust `acdp-rs` via NAPI), wrapped thinly in `src/auth/` — never hand-rolled. The
 SSRF defenses the did:web resolver inherits are documented in
 [acdp-rs · Security](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/security.md).
@@ -141,7 +142,7 @@ Signing still uses `node:crypto`.
 `kid` is `JWT_KID` if set, else derived from a stable fingerprint of the key
 material. It is embedded in the JWT header and published in JWKS so verifiers can
 match. The supported signature algorithms are governed by the spec's
-[signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/registries);
+[signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/registries/signature-algorithms.md);
 the CP accepts exactly the set the SDK verifies.
 
 > **Witness signing key is separate.** When witness cosigning

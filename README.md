@@ -49,6 +49,9 @@ Quota** — and resolves to a **tenant** that scopes all reads and writes. See
 
 ## Quick start
 
+Requires **Node ≥ 24.15** (`package.json` `engines`; CI and the Docker image use
+Node 26) and Docker for Postgres.
+
 ```bash
 docker compose up -d postgres
 npm install
@@ -56,6 +59,16 @@ cp .env.example .env
 npm run start:dev
 # → http://localhost:3001/docs
 ```
+
+`.env.example`'s `DATABASE_URL` matches the compose Postgres (`acdp:acdp`). If
+`DATABASE_URL` is unset entirely, the code falls back to
+`postgres://postgres:postgres@localhost:5432/acdp_control_plane`.
+
+To run the **whole compose stack** (`docker compose up`, which also builds and
+starts the control-plane image), export `CP_API_KEY` (mapped to
+`AUTH_API_KEYS`) and `WEBHOOK_SECRET` first: the image sets
+`NODE_ENV=production`, and production startup refuses an empty value for
+either.
 
 ## Testing
 
@@ -109,12 +122,13 @@ Full env reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | Domain packs | `GET /domain-packs` | `DOMAIN_PACKS` gates ingest `context_type` (base RFC types always allowed) |
 | Registry enrollment | `POST /registries/enroll`, `GET /registries/enrollments` | Admin-only trust anchor; per-registry webhook secret + `baseUrl`; gates ingest when `INGEST_REQUIRE_ENROLLMENT=true` |
 
-### Trust, audit & witnessing — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#transparency-audit--witness-rfc-acdp-0010--0012--0015)
+### Trust, audit & witnessing — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#transparency-audit--witness-rfc-acdp-0010--0012--0014--0015)
 
 | Capability | Endpoint(s) | Env var | Notes |
 |---|---|---|---|
 | Receipt audit (RFC-ACDP-0010) | `trust` on `GET /runs/:runId`, dashboard `receiptCoverage` | `RECEIPT_AUDIT_ENABLED=true` (+ `_INTERVAL_SECONDS`, `_BATCH_SIZE`, `_LOOKBACK_HOURS`) | Independent second observer: cross-checks embedded registry receipts, full signature verification |
 | Transparency-log witness (RFC-ACDP-0012) | `GET /registries/:authority/log-witness`, `GET /registries/log-witness/alerts` (+ admin ack) | `LOG_WITNESS_ENABLED=true` | Detects root rewrites, split views, tree-size regressions, log resets; alerts via SSE + webhook |
+| Producer key-revocation (RFC-ACDP-0014) | `trust.revoked` on `GET /runs/:runId`, dashboard `keyRevocation` | `KEY_REVOCATION_CHECK_ENABLED=true` (rides the receipt-audit sweep, so needs `RECEIPT_AUDIT_ENABLED=true`; + `KEY_REVOCATION_ATTESTED_SCOPE`, `_IGNORE_FINGERPRINTS`, `_LOOKBACK_HOURS`) | Verifies `key-revocation` contexts and classifies audited events against the revoked key's compromise boundary; verified facts are retention-exempt |
 | Log-inclusion audit (§9.1) | (verdicts in `log_inclusion_audits`) | `LOG_INCLUSION_AUDIT_ENABLED=true` | Proves OUR stored receipts are in the registry's log; `not_logged` is omission evidence |
 | Witness cosigning (RFC-ACDP-0015) | `GET /log/witness`, `/.well-known/acdp-witness.json`, `/.well-known/did.json` | `WITNESS_COSIGNING_ENABLED=true`, `WITNESS_ID`, `WITNESS_SIGNING_PRIVATE_KEY_PEM` | Mints cosignatures over honest checkpoints with a dedicated Ed25519 key |
 | N-witnessed quorum (§8) | per-checkpoint `meets_quorum`, dashboard `logWitness` | `WITNESS_QUORUM_ENABLED=true`, `WITNESS_QUORUM_TRUSTED`, `WITNESS_QUORUM_MIN_WITNESSES` | Consumes registry-aggregated cosignatures from trusted witnesses |
@@ -141,10 +155,13 @@ subsystems and the ecosystem (which sibling repo owns what).
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Complete env-var reference + startup validation |
 | [docs/TESTING.md](docs/TESTING.md)             | Unit + integration test layout and how to write a new spec |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common errors and how to diagnose them |
-| `CLAUDE.md`                                    | Project conventions for agents working in this repo |
 
 This service is part of the ACDP ecosystem — the
-[spec](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol),
-the [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs), and
-the [registry](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs).
-See [docs/README.md](docs/README.md#ecosystem--sources-of-truth) for how they fit together.
+[spec](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/README.md)
+(RFC index, pinned to the commit CI tests against),
+the [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/bindings.md)
+(this service consumes its Node binding), and
+the [registry](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/WEBHOOKS.md)
+(whose webhooks feed `/ingest/acdp`).
+See [docs/README.md](docs/README.md#ecosystem--sources-of-truth) for how they fit
+together and [Sibling docs](docs/README.md#sibling-docs) for the full link index.

@@ -21,8 +21,8 @@ registries (which authoritatively store contexts and emit lifecycle webhooks) an
 
 > Where this service mirrors protocol or registry behavior (crypto, SSRF, did:web,
 > auth challenge-response, tenancy, webhook event shapes), it relies on the
-> [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs) and
-> tracks the [registry](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs)
+> [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/bindings.md) and
+> tracks the [registry](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/README.md)
 > rather than re-implementing. See the ecosystem map in [README.md](./README.md#ecosystem--sources-of-truth).
 
 ```
@@ -228,13 +228,13 @@ Full detail in [AUTH.md](./AUTH.md).
 > **Sources of truth.** The receipt, checkpoint, Merkle-proof, revocation, and
 > cosignature wire formats and verification procedures are normative in the
 > spec —
-> [RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0010-registry-receipts.md)
+> [RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0010-registry-receipts.md)
 > (receipts),
-> [RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0012-transparency-log.md)
+> [RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0012-transparency-log.md)
 > (transparency log),
-> [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0014-key-revocation.md)
+> [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0014-key-revocation.md)
 > (producer key-revocation),
-> [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/main/rfcs/RFC-ACDP-0015-witness-cosigning.md)
+> [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0015-witness-cosigning.md)
 > (cosigning) — and the registry side is documented in
 > [acdp-registry-rs/docs/RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md).
 > This section is **not** a restatement of those — it describes only what *this
