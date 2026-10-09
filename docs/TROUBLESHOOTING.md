@@ -277,9 +277,9 @@ a stopping container. Things that are **not** rejected:
   that follows it gets the `503` with CORS headers, so a browser can read it.
 
 Registry webhooks (`POST /ingest/acdp`) are retried by the registry on a `503`,
-but with the registry's default `max_retries = 3` the whole retry window is only
-about 750 ms (250 ms + 500 ms of backoff), after which the delivery is dropped
-silently. A delivery reaches another replica only if your load balancer stops
+but with the registry's default retry settings the whole window is short (see
+the registry's [WEBHOOKS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/WEBHOOKS.md)
+for the current values), after which the delivery is dropped. A delivery reaches another replica only if your load balancer stops
 routing to the stopping one within that window. If you lose deliveries during
 deploys, raise the registry's webhook `max_retries`.
 
@@ -356,7 +356,7 @@ verbatim. A malformed `ctx_id` is a `400` before any lookup.
 
 ### Audits that used to be `verified` are now `error` with `unverified: stored ctx_id … is not canonical`
 
-Since the `acdp` `^0.14.1` bump the SDK parses `expectedCtxId` with `CtxId::parse`
+The SDK parses `expectedCtxId` with `CtxId::parse`
 (`acdp://` + a lowercase DNS authority + a lowercase v4 UUID — a port in the
 authority never parses). `ReceiptAuditService` pre-checks that grammar before the
 federation fetch, so an event whose **stored** `ctx_id` is non-canonical gets an

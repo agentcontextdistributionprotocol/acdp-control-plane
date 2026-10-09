@@ -1,6 +1,6 @@
 # Progress — docs-refresh
 
-Plan: `plans/docs-refresh.md` (plans/ and CLAUDE.md are gitignored; PROGRESS.md is tracked)
+Plan: `plans/docs-refresh.md` (plans/ is gitignored; PROGRESS.md is tracked)
 
 ## Phase log
 PR strategy: ONE PR (docs-only, reversible, disjoint files; no natural seam needing separate PRs). All phases Risk: simple (docs-only) — verified in batches of ≤2 by fresh Opus; P2–P5 executed in parallel by Opus subagents on disjoint files after P1 commit.
@@ -17,7 +17,7 @@ Docs (all under this repo): `README.md` (150), `docs/README.md` (85, index), `do
 `docs/ARCHITECTURE.md` (616, ASCII diagram only), `docs/AUTH.md` (300), `docs/TENANCY.md` (179),
 `docs/POLICY.md` (220), `docs/policies/{example.rego,example_test.rego}`, `docs/INGEST.md` (258),
 `docs/CONFIGURATION.md` (461), `docs/TESTING.md` (256), `docs/TROUBLESHOOTING.md` (686), `.env.example`.
-Local-only (gitignored): `CLAUDE.md` (764), `plans/`.
+Local-only (gitignored): `plans/`.
 
 Code ground truth:
 - `src/config/app-config.service.ts` — all env vars; dev early-return at :766; validate() checks.

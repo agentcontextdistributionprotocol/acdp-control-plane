@@ -99,7 +99,7 @@ Full env reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | did:web key resolution | (used by `/auth/token` fallback) | — | SSRF-guarded, content-type checked, body-capped |
 | Pinned-key directory | `POST /admin/pinned-keys/reload` | `CONTROL_PLANE_PINNED_KEYS=did=B64KEY[:alg][:from..until],...` | Admin-reloadable; default alg `ed25519` |
 | Persistent auth stores | — | `AUTH_PERSISTENCE=memory\|postgres`, `AUTH_SWEEP_INTERVAL_SECONDS` | `postgres` required for multi-replica |
-| Issuance audit ledger | — | (same `AUTH_PERSISTENCE`) | Append-only SHA-256 hash chain; tamper detection via `verifyChain()` |
+| Issuance audit ledger | — | (same `AUTH_PERSISTENCE`) | Append-only SHA-256 hash chain (`verifyChain()` exists but is not currently invoked by any runtime path) |
 
 ### Multi-tenancy — [docs/TENANCY.md](docs/TENANCY.md)
 

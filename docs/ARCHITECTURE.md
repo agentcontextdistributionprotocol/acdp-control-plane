@@ -729,8 +729,8 @@ never restart-storm the fleet — and `readinessProbe` at `/readyz` with
 `HEALTHCHECK` stays on `/healthz` (2xx = healthy); read `/readyz` (or the
 `ok` field of `/healthz`) for dependency health.
 
-Registry webhooks benefit too: the registry's default webhook `max_retries = 3`
-gives a retry window of only ~750 ms. During the delay `/ingest/acdp` is still
+Registry webhooks benefit too: the registry's default webhook retry window is short
+(see the registry's [WEBHOOKS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/WEBHOOKS.md)). During the delay `/ingest/acdp` is still
 served, so deliveries keep succeeding while the load balancer deregisters this
 instance instead of hitting a 503 or a refused port and being dropped after
 three quick retries.
