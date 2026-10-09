@@ -1,13 +1,17 @@
- 
-import { ExecutionContext, HttpException } from '@nestjs/common';
-import { ErrorCode } from '../errors/error-codes';
+import { ExecutionContext, HttpException, HttpStatus } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { Test } from '@nestjs/testing';
+import { DEFAULT_TENANT_ID } from '../tenant/tenant-context';
 import { QUOTA_ACTION_KEY } from './check-quota.decorator';
+import { QuotaGuard } from './quota.guard';
 import { parseQuotaConfig } from './quota-config';
 import { InMemoryQuotaStore } from './quota-store';
-import { QuotaGuard } from './quota.guard';
+import { QUOTA_CONFIG, QUOTA_STORE, QuotaService } from './quota.service';
 
-function ctx(req: any, _action?: string): ExecutionContext {
+// Enforcement itself (limits, fail-open, 429 body) is covered by
+// quota.service.spec.ts; this spec pins only the wrapper.
+
+function ctx(req: any, response: unknown = { setHeader: jest.fn() }): ExecutionContext {
   const handler = function fakeHandler() {};
   class FakeClass {}
   return {
@@ -15,7 +19,7 @@ function ctx(req: any, _action?: string): ExecutionContext {
     getClass: jest.fn().mockReturnValue(FakeClass),
     switchToHttp: () => ({
       getRequest: () => req,
-      getResponse: jest.fn().mockReturnValue({ setHeader: jest.fn() }),
+      getResponse: jest.fn().mockReturnValue(response),
       getNext: jest.fn(),
     }),
     getArgs: jest.fn(),
@@ -36,111 +40,83 @@ function newReflector(action?: string): Reflector {
   return r as Reflector;
 }
 
+function mockService(impl?: () => Promise<void>): QuotaService & { enforce: jest.Mock } {
+  return { enforce: jest.fn(impl ?? (async () => undefined)) } as unknown as QuotaService & {
+    enforce: jest.Mock;
+  };
+}
+
 describe('QuotaGuard', () => {
-  it('passes through handlers without @CheckQuota()', async () => {
-    const g = new QuotaGuard(newReflector(undefined));
+  it('passes through handlers without @CheckQuota() and never calls the service', async () => {
+    const svc = mockService();
+    const g = new QuotaGuard(newReflector(undefined), svc);
     expect(await g.canActivate(ctx({ tenantId: 'tenant-a' }))).toBe(true);
+    expect(svc.enforce).not.toHaveBeenCalled();
   });
 
-  it('passes through when no config is registered', async () => {
+  it('passes through when no QuotaService is registered', async () => {
     const g = new QuotaGuard(newReflector('publish'));
     expect(await g.canActivate(ctx({ tenantId: 'tenant-a' }))).toBe(true);
   });
 
-  it('passes through when no rule matches the (tenant, action)', async () => {
-    const g = new QuotaGuard(
-      newReflector('publish'),
-      parseQuotaConfig('tenant-other:publish=1/min'),
-      new InMemoryQuotaStore(),
-    );
-    expect(await g.canActivate(ctx({ tenantId: 'tenant-a' }))).toBe(true);
+  it('forwards the pinned tenant, the action and req.res', async () => {
+    const svc = mockService();
+    const g = new QuotaGuard(newReflector('publish'), svc);
+    const res = { setHeader: jest.fn() };
+    expect(await g.canActivate(ctx({ tenantId: 'tenant-a', res }))).toBe(true);
+    expect(svc.enforce).toHaveBeenCalledWith('tenant-a', 'publish', res);
   });
 
-  it('allows the first N requests up to the limit', async () => {
-    const g = new QuotaGuard(
-      newReflector('publish'),
-      parseQuotaConfig('tenant-a:publish=3/min'),
-      new InMemoryQuotaStore(),
-    );
-    for (let i = 0; i < 3; i++) {
-      expect(await g.canActivate(ctx({ tenantId: 'tenant-a' }))).toBe(true);
-    }
+  it('falls back to the context response when req.res is absent', async () => {
+    const svc = mockService();
+    const g = new QuotaGuard(newReflector('publish'), svc);
+    const response = { setHeader: jest.fn() };
+    await g.canActivate(ctx({ tenantId: 'tenant-a' }, response));
+    expect(svc.enforce).toHaveBeenCalledWith('tenant-a', 'publish', response);
   });
 
-  it('throws 429 with structured body once the limit is exceeded', async () => {
-    const g = new QuotaGuard(
-      newReflector('publish'),
-      parseQuotaConfig('tenant-a:publish=2/min'),
-      new InMemoryQuotaStore(),
-    );
-    await g.canActivate(ctx({ tenantId: 'tenant-a' }));
-    await g.canActivate(ctx({ tenantId: 'tenant-a' }));
-    let err: unknown;
-    try {
-      await g.canActivate(ctx({ tenantId: 'tenant-a' }));
-    } catch (e) {
-      err = e;
-    }
-    expect(err).toBeInstanceOf(HttpException);
-    const httpErr = err as HttpException;
-    expect(httpErr.getStatus()).toBe(429);
-    const body = httpErr.getResponse() as Record<string, unknown>;
-    expect(body.code).toBe('rate_limited');
-    expect(body.tenantId).toBe('tenant-a');
-    expect(body.action).toBe('publish');
-    expect(body.limit).toBe(2);
-    // #182: labelled in place — category + envelope details, legacy fields kept.
-    expect(body.statusCode).toBe(429);
-    expect(body.errorCode).toBe(ErrorCode.QUOTA_EXCEEDED);
-    expect(body.windowSeconds).toBe(60);
-    expect(typeof body.retryAfterSeconds).toBe('number');
-    expect(body.metadata).toEqual({
-      code: 'rate_limited',
-      tenantId: 'tenant-a',
-      action: 'publish',
-      limit: 2,
-      windowSeconds: 60,
-      retryAfterSeconds: body.retryAfterSeconds,
+  it.each([undefined, '', 42])(
+    'meters under DEFAULT_TENANT_ID when req.tenantId is %p',
+    async (tenantId) => {
+      const svc = mockService();
+      const g = new QuotaGuard(newReflector('run.start'), svc);
+      await g.canActivate(ctx({ tenantId }));
+      expect(svc.enforce).toHaveBeenCalledWith(
+        DEFAULT_TENANT_ID,
+        'run.start',
+        expect.anything(),
+      );
+    },
+  );
+
+  it('propagates a service rejection (429) unchanged', async () => {
+    const err = new HttpException({ message: 'quota exceeded' }, HttpStatus.TOO_MANY_REQUESTS);
+    const svc = mockService(async () => {
+      throw err;
     });
+    const g = new QuotaGuard(newReflector('publish'), svc);
+    await expect(g.canActivate(ctx({ tenantId: 'tenant-a' }))).rejects.toBe(err);
   });
 
-  it('different tenants have independent counters', async () => {
-    const g = new QuotaGuard(
-      newReflector('publish'),
-      parseQuotaConfig('tenant-a:publish=1/min;tenant-b:publish=1/min'),
-      new InMemoryQuotaStore(),
-    );
+  // Regression guard: the @Optional() service param is typed `| null`, which
+  // serializes as `Object` in design:paramtypes — without the explicit
+  // @Inject(QuotaService) Nest silently injects nothing and quotas vanish.
+  it('receives QuotaService through Nest DI (not silently null)', async () => {
+    const mod = await Test.createTestingModule({
+      providers: [
+        Reflector,
+        QuotaService,
+        QuotaGuard,
+        { provide: QUOTA_CONFIG, useValue: parseQuotaConfig('tenant-a:publish=1/min') },
+        { provide: QUOTA_STORE, useValue: new InMemoryQuotaStore() },
+      ],
+    }).compile();
+    const reflector = mod.get(Reflector);
+    jest
+      .spyOn(reflector, 'getAllAndOverride')
+      .mockImplementation((key: unknown) => (key === QUOTA_ACTION_KEY ? 'publish' : undefined));
+    const g = mod.get(QuotaGuard);
     expect(await g.canActivate(ctx({ tenantId: 'tenant-a' }))).toBe(true);
-    expect(await g.canActivate(ctx({ tenantId: 'tenant-b' }))).toBe(true);
-    // tenant-a's 2nd request fails; tenant-b's 1st was its own bucket
-    await expect(g.canActivate(ctx({ tenantId: 'tenant-a' }))).rejects.toThrow(
-      HttpException,
-    );
-  });
-
-  it('fail-open when store returns sentinel (Redis down)', async () => {
-    const sentinel = { increment: async () => ({ count: 0, ttlSeconds: 0 }) };
-    const g = new QuotaGuard(
-      newReflector('publish'),
-      parseQuotaConfig('tenant-a:publish=1/min'),
-      sentinel,
-    );
-    // Even though limit=1 and we'd normally expect 429 after a few calls,
-    // the store says "no signal" so we pass.
-    for (let i = 0; i < 5; i++) {
-      expect(await g.canActivate(ctx({ tenantId: 'tenant-a' }))).toBe(true);
-    }
-  });
-
-  it('wildcard * applies when action has no explicit limit', async () => {
-    const g = new QuotaGuard(
-      newReflector('run.start'),
-      parseQuotaConfig('tenant-a:*=1/min'),
-      new InMemoryQuotaStore(),
-    );
-    expect(await g.canActivate(ctx({ tenantId: 'tenant-a' }))).toBe(true);
-    await expect(g.canActivate(ctx({ tenantId: 'tenant-a' }))).rejects.toThrow(
-      HttpException,
-    );
+    await expect(g.canActivate(ctx({ tenantId: 'tenant-a' }))).rejects.toThrow(HttpException);
   });
 });

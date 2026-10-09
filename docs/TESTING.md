@@ -83,7 +83,7 @@ is covered. Highlights of the contracts most likely to break under refactor:
 | Federation & revocation | `auth/cross-issuer-validator.service.spec.ts`, `auth/jwks-client.spec.ts`, `auth/trusted-issuers.spec.ts`, `auth/revocation-feeds.spec.ts`, `auth/revocation-poller.service.spec.ts` |
 | did:web & SSRF | `auth/did-web/did-web-resolver.service.spec.ts`, `auth/did-web/ssrf-guard.spec.ts`, `contexts/safe-federation-client.spec.ts` |
 | Policy | `policy/static-rules-policy.decider.spec.ts`, `policy/opa-policy.decider.spec.ts`, `policy/caching-policy.decider.spec.ts`, `policy/policy.guard.spec.ts`, `policy/controller-coverage.spec.ts` |
-| Quota | `quota/quota.guard.spec.ts`, `quota/quota-config.spec.ts`, `quota/quota-store.spec.ts` |
+| Quota | `quota/quota.service.spec.ts`, `quota/quota.guard.spec.ts`, `quota/quota-config.spec.ts`, `quota/quota-store.spec.ts` (ingest's in-handler `publish` check: `ingest/ingest.service.spec.ts`) |
 | Capabilities & routing | `agents/capability.service.spec.ts`, `agents/capability-uri.spec.ts`, `routing/bandit-router.service.spec.ts` |
 | Tenancy parsers | `tenant/tenant-context.spec.ts`, `tenant/tenant-agents.spec.ts` |
 | Streaming | `events/memory-stream-hub.strategy.spec.ts`, `events/redis-stream-hub.strategy.spec.ts` |
@@ -177,8 +177,8 @@ npm run test:integration -- ingest.integration # single spec (regex against path
 | `domain-packs.integration.spec.ts` | Pack-gated `context_type` accept/reject |
 | `federation-proxy.integration.spec.ts` | `/contexts` proxy + SSRF + 429→503 mapping |
 | `retention-routing.integration.spec.ts` | Data retention purge + bandit routing |
-| `quota.integration.spec.ts` | Per-tenant per-action quotas, 429 + `Retry-After` |
-| `capabilities.integration.spec.ts` | Signed capability declare + discovery |
+| `quota.integration.spec.ts` | Per-tenant per-action quotas, 429 + `Retry-After`; ingest `publish` counted only after HMAC (forged flood stays 401, budget intact) and against the enrollment's tenant |
+| `capabilities.integration.spec.ts` | Signed capability declare + discovery; `capability.declare` quota via `QuotaGuard` |
 | `dashboard.integration.spec.ts` | `/dashboard/overview` KPIs + trust tiles |
 | `auth-issuance.integration.spec.ts` | `/auth/challenge` → `/auth/token` IdP flow end-to-end |
 | `auth-introspect.integration.spec.ts` | RFC 7662 introspection: active claims, `{active:false}` collapse, auth gate |

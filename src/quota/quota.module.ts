@@ -1,12 +1,12 @@
 /**
  * Quota module — registers parsed `TENANT_QUOTAS` config and a quota
- * store (Redis when `REDIS_URL` is set, in-memory otherwise) so the
- * `QuotaGuard` (mounted as APP_GUARD by AppModule) can enforce
- * per-tenant rate limits.
+ * store (Redis when `REDIS_URL` is set, in-memory otherwise) so
+ * `QuotaService` — called by `QuotaGuard` (mounted as APP_GUARD by
+ * AppModule) — can enforce per-tenant rate limits.
  *
  * The store is **optional** by design. When `TENANT_QUOTAS` is empty
  * (single-tenant / dev deployments) the parsed config has no tenants
- * and the guard short-circuits on every request — no Redis traffic
+ * and `QuotaService` short-circuits on every request — no Redis traffic
  * even when a Redis URL is configured.
  */
 import { Global, Inject, Logger, Module, Optional, type OnModuleDestroy } from '@nestjs/common';
@@ -14,11 +14,8 @@ import { AppConfigService } from '../config/app-config.service';
 import { ConfigModule } from '../config/config.module';
 import { ShutdownFailures } from '../shutdown-failures';
 import { parseQuotaConfig, type ParsedQuotaConfig } from './quota-config';
-import {
-  QUOTA_CONFIG,
-  QUOTA_STORE,
-  QuotaGuard,
-} from './quota.guard';
+import { QuotaGuard } from './quota.guard';
+import { QUOTA_CONFIG, QUOTA_STORE, QuotaService } from './quota.service';
 import {
   InMemoryQuotaStore,
   QuotaStore,
@@ -83,9 +80,10 @@ import {
       },
       inject: [AppConfigService, QUOTA_CONFIG],
     },
+    QuotaService,
     QuotaGuard,
   ],
-  exports: [QUOTA_CONFIG, QUOTA_STORE, QuotaGuard],
+  exports: [QUOTA_CONFIG, QUOTA_STORE, QuotaService, QuotaGuard],
 })
 export class QuotaModule implements OnModuleDestroy {
   constructor(

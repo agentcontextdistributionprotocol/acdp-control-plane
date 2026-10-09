@@ -12,12 +12,14 @@ flowchart LR
     T --> P["PolicyGuard<br/>(@CheckPolicy only)"]
     P --> Q["QuotaGuard<br/>(@CheckQuota only, runs last)"]
     Q --> H["handler"]
+    H -. "ingest only: after HMAC" .-> QS["QuotaService.enforce<br/>(resolved tenant, publish)"]
 ```
 
 `QuotaGuard` runs **last** by design — a request denied by auth, throttle or policy
-never burns a quota increment. Anything checked *inside* the handler is a different
-story: see [ingest](#which-handlers-are-gated-1), where the HMAC is verified after the
-quota has already been counted.
+never burns a quota increment. Both the guard and ingest call the same
+`QuotaService` (`src/quota/quota.service.ts`); ingest calls it **inside** the
+handler instead, once the HMAC is verified and the tenant resolved — see
+[ingest](#which-handlers-are-gated-1).
 
 ---
 
@@ -217,13 +219,15 @@ no handler uses them (`POST /runs/started` and `POST /runs/:runId/complete` are
 
 ## Quota
 
-`QuotaGuard` (`src/quota/quota.guard.ts`) reads `@CheckQuota(action)` and enforces
+`QuotaService.enforce(tenantId, action, res?)` (`src/quota/quota.service.ts`) enforces
 per-tenant, per-action **windowed counters** (fixed window starting at the first hit).
-Lookup chain (cheap → expensive); any miss passes through:
+`QuotaGuard` (`src/quota/quota.guard.ts`) is a thin wrapper that reads
+`@CheckQuota(action)` and calls it; `IngestService` calls it directly. Lookup chain
+(cheap → expensive); any miss passes through:
 
-1. No `@CheckQuota` decorator → pass.
-2. Tenant = `req.tenantId`, or `default` when none was pinned (always the case on a
-   `@Public()` route).
+1. Guard path: no `@CheckQuota` decorator → pass.
+2. Tenant = guard path: `req.tenantId`, or `default` when none was pinned; ingest:
+   the tenant `IngestService` resolved (see below).
 3. No limit configured for `(tenant, action)` (nor a `*` wildcard for that tenant) → pass.
 4. Increment `acdp:quota:<tenant>:<action>`; if the store is unavailable it **fails
    open** (allows, warning logged by the store).
@@ -238,7 +242,7 @@ Lookup chain (cheap → expensive); any miss passes through:
 
 Setting `REDIS_URL` without `TENANT_QUOTAS` opens no quota connection
 (`src/quota/quota.module.ts`). The Redis store fails open on transport error (it returns
-a sentinel that the guard treats as "no signal").
+a sentinel that `QuotaService` treats as "no signal").
 
 ### Config — `TENANT_QUOTAS`
 
@@ -281,17 +285,22 @@ action-scoped.
 
 | Action | Handler | Tenant counted |
 |--------|---------|----------------|
-| `publish` | `POST /ingest/acdp` | **always `default`** (see below) |
-| `capability.declare` | `POST /capabilities` | the caller's tenant |
+| `publish` | `POST /ingest/acdp` (in `IngestService`, no decorator) | the ingest-resolved tenant (see below) |
+| `capability.declare` | `POST /capabilities` (`@CheckQuota`) | the caller's tenant |
 
-**Ingest quota — current behaviour.** `/ingest/acdp` is `@Public()`, so `AuthGuard`
-pins no tenant and `QuotaGuard` counts every webhook against
-`acdp:quota:default:publish`, whatever tenant the event is later attributed to (by
-enrollment or `X-Tenant-Id`, which are resolved inside the handler). A `publish` limit
-for any tenant other than `default` therefore never applies, and a `default` limit (or a
-`default` `*` wildcard) caps **all** ingest traffic together. Because the guard runs
-before the handler verifies the HMAC, unsigned or badly signed requests also consume
-that budget. See [INGEST.md](./INGEST.md) for the ingest request order.
+**Ingest quota.** `/ingest/acdp` is `@Public()` — HMAC is its authentication, and
+the tenant is only known inside the handler — so it carries no `@CheckQuota`.
+`IngestService` calls `QuotaService.enforce(tenant, 'publish', res)` after the
+enrollment lookup, HMAC verification, field checks and domain-pack gate, right before
+the pipeline. Only signed, accepted requests count, and they count against the
+resolved tenant: the enrollment's tenant for an enrolled authority, otherwise
+`X-Tenant-Id` or `default` (`default` whenever `INGEST_STRICT_TENANT` overrides the
+header). A `tenant-x:publish` rule therefore limits registries enrolled under
+`tenant-x`; a lone `default:publish` rule no longer limits them. A quota `429` is
+counted as `acdp_ingest_rejected_total{reason="quota"}` and makes the registry drop
+the event after its short retry budget. See
+[INGEST.md — Quota and rate limits](./INGEST.md#quota-and-rate-limits) for the
+upgrade note, the event-loss caveat and what still bounds unsigned floods.
 
 ---
 
@@ -301,6 +310,6 @@ that budget. See [INGEST.md](./INGEST.md) for the ingest request order.
 request limiter (`THROTTLE_LIMIT` per `THROTTLE_TTL_MS`, with a tighter 20/min override
 on `/auth/challenge` + `/auth/token`). Its bucket keys — API-key 8-character prefix,
 JWT `sub`, or the client IP (`TRUST_PROXY`, IPv6 `/64`) on `@Public()` routes — are
-documented in [AUTH.md](./AUTH.md#request-throttling-throttlebyuserguard). `QuotaGuard`
+documented in [AUTH.md](./AUTH.md#request-throttling-throttlebyuserguard). `QuotaService`
 is the *business* quota: per-tenant, per-action, and only where opted in. They are
 independent layers.

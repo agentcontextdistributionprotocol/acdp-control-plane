@@ -102,7 +102,7 @@ See [TENANCY.md](./TENANCY.md).
 |-----|------|---------|---------|
 | `TENANT_API_KEYS` | CSV | `''` | `tenantId:key,…,bareKey`. Bare keys → `default`. |
 | `TENANT_AGENTS` | CSV | `''` | `tenantId:agent_did,…`. Stamps JWT `tenant` claim. |
-| `TENANT_QUOTAS` | string | `''` | Per-tenant quotas. See [POLICY.md](./POLICY.md#config--tenant_quotas). |
+| `TENANT_QUOTAS` | string | `''` | Per-tenant quotas. See [POLICY.md](./POLICY.md#config--tenant_quotas). Ingest `publish` is charged to the tenant the webhook resolves to (an enrolled registry's tenant), after HMAC — a lone `default:publish` does not limit registries enrolled under other tenants; add `<tenant>:publish` ([INGEST.md](./INGEST.md#quota-and-rate-limits)). |
 
 ## Policy
 

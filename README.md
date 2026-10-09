@@ -116,7 +116,7 @@ Full env reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | Capability | Endpoint(s) / hook | Notes |
 |---|---|---|
 | Policy engine | `@CheckPolicy(action)` + `PolicyGuard` | Static-rules **or** OPA backend (`POLICY_BACKEND`), caching decider |
-| Per-tenant quota | `@CheckQuota(action)` + `QuotaGuard` | Windowed counters (`TENANT_QUOTAS`); memory or Redis; `429` + `Retry-After` |
+| Per-tenant quota | `@CheckQuota(action)` + `QuotaGuard` (ingest: `QuotaService` after HMAC) | Windowed counters (`TENANT_QUOTAS`); memory or Redis; `429` + `Retry-After` |
 | Agent capability registry | `POST /capabilities`, `GET /capabilities/search`, `GET /capabilities/by-agent/*did` | URN `urn:acdp:cap:<verb>:<type>:<domain>`; Ed25519/ECDSA-P256 signed, idempotent |
 | Bandit routing | `GET /routing/stats` | Thompson sampling over capability-matched arms; reward channel + `BANDIT_EXPLORATION_FRACTION` |
 | Domain packs | `GET /domain-packs` | `DOMAIN_PACKS` gates ingest `context_type` (base RFC types always allowed) |

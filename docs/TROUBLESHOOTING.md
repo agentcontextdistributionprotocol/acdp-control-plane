@@ -3,9 +3,11 @@
 ## Ingest
 
 Order matters when reading an ingest rejection: the body-size, JSON-depth and
-JSON-parse checks, the `publish` quota, and the enrollment lookup all run
-**before** the HMAC check, so a `413`, `429`, `403` or malformed-JSON `400` says
-nothing about the signature. The ingest contract (header format, enrollment,
+JSON-parse checks, the per-IP throttle, and the enrollment lookup all run
+**before** the HMAC check, so a `413`, `429 RATE_LIMITED`, `403` or malformed-JSON
+`400` says nothing about the signature. The `publish` quota runs **after** it: a
+`429 QUOTA_EXCEEDED` from ingest means the request was correctly signed and would
+otherwise have been accepted. The ingest contract (header format, enrollment,
 tenant attribution) is in [INGEST.md](./INGEST.md#request-lifecycle).
 
 ### `401 INVALID_WEBHOOK_SIGNATURE` from `POST /ingest/acdp`
@@ -180,6 +182,19 @@ A `TENANT_QUOTAS` limit for `(tenant, action)` was exceeded. The body and
 `Retry-After` header give the window and wait. Distinguish from the coarse
 throttle (`THROTTLE_LIMIT`), which is per-principal and not action-scoped — it
 answers `429` with `errorCode: RATE_LIMITED` and no top-level `code`.
+
+On `POST /ingest/acdp` (action `publish`) the body's `tenantId` is the tenant the
+event resolved to — for an enrolled registry, its enrollment's tenant — so the rule
+to raise is `<that tenant>:publish`. The registry does not wait out `Retry-After`:
+after a few quick retries it **drops** the event, so each one is a lost event
+(`acdp_ingest_rejected_total{reason="quota"}`). Raise the limit to cover peak
+legitimate traffic; see
+[INGEST.md — Quota and rate limits](./INGEST.md#quota-and-rate-limits).
+
+**Enrolled registries stopped being throttled after an upgrade?** Since
+tenant-enroll-quota-fix P4 ingest is charged to the resolved tenant, not always
+`default`. A lone `default:publish` rule now only limits unenrolled authorities
+(and strict-mode fallbacks); add a `<tenant>:publish` rule per tenant.
 
 ### Every unauthenticated caller hits `429 RATE_LIMITED` together (behind a proxy)
 
