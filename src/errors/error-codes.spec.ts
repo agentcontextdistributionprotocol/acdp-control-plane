@@ -56,6 +56,8 @@ const SHIPPED: readonly string[] = [
   "SERVICE_DRAINING",
   // #210 — /readyz: a required backing dependency is down (503).
   "DEPENDENCY_UNAVAILABLE",
+  // tenant-enroll-quota-fix P1 — enrollment tenant binding is immutable (409).
+  "REGISTRY_ENROLLED_ELSEWHERE",
 ];
 
 describe("ErrorCode public surface", () => {

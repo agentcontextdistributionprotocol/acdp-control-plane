@@ -149,6 +149,7 @@ RFC-ACDP-0007 §5's retryable set, so no `4xx` ever carries it (#182).
 | `QUOTA_EXCEEDED` | 429 | specific | Per-tenant per-action `TENANT_QUOTAS` limit; see `Retry-After`. |
 | `REGISTRY_NOT_ENROLLED` | 403 | specific | Ingest from an unenrolled authority under `INGEST_REQUIRE_ENROLLMENT`. |
 | `REGISTRY_DISABLED` | 403 | specific | Ingest from an enrolled but disabled registry. |
+| `REGISTRY_ENROLLED_ELSEWHERE` | 409 | specific | `POST /registries/enroll` for an authority already enrolled under a different tenant; the tenant binding is immutable and the enrollment is left unchanged. The body does not name the owning tenant. Not retryable. |
 | `TENANT_HEADER_UNTRUSTED` | 403 | specific | A JWT with no `tenant` claim sent `X-Tenant-Id` and `TENANT_HEADER_TRUST=none` (default). Use a tenant-bound token, or set `TENANT_HEADER_TRUST=any_peer` behind an authenticating gateway. |
 | `ISSUER_READ_ONLY` | 403 | specific | The bearer token is from a `TRUSTED_ISSUERS` entry flagged `read_only` and the method is not GET/HEAD/OPTIONS (`POST /auth/introspect` is exempt). Use a CP-issued token, or have the operator lift the flag. |
 | `INVALID_WEBHOOK_SIGNATURE` | 401 | specific | HMAC `X-ACDP-Signature` failed on `/ingest/acdp` or the `/runs` notify routes. |
@@ -229,7 +230,7 @@ every route except the probes is also subject to the coarse throttle.
 | GET  | `/capabilities/by-agent/*did` | key/JWT | — | 200 | One agent's capabilities |
 | GET  | `/registries` | key/JWT | — | 200 | Observed registries |
 | GET  | `/registries/enrollments` | key/JWT | — | 200 | Enrolled registries (secrets omitted) |
-| POST | `/registries/enroll` | admin | — | 201 | Enroll/replace a registry enrollment |
+| POST | `/registries/enroll` | admin | — | 201 | Enroll a registry, or update it within its tenant — PATCH-like: omitted fields kept, explicit `null` clears (`409 REGISTRY_ENROLLED_ELSEWHERE` if bound to another tenant) |
 | GET  | `/registries/:authority/log-witness` | key/JWT | — | 200 | Witnessed checkpoints + alert state (RFC-ACDP-0012) |
 | GET  | `/registries/log-witness/alerts` | key/JWT | — | 200 | Alerted registries worklist |
 | POST | `/registries/:authority/log-witness/ack` | admin | — | 201 | Acknowledge a witness alert |
@@ -631,7 +632,7 @@ One agent's capabilities: `{ "data": [ … ], "total": N }`.
 |--------|------|-------------|
 | `GET`  | `/registries` | Registries **observed** via ingest in this tenant: `{ data, total }`, each `{ authority, tenantId, baseUrl, firstSeen, lastSeen, eventCount }`, most recently seen first. |
 | `GET`  | `/registries/enrollments` | Enrollments bound to this tenant: `{ data, total }`; `webhookSecret` is always omitted. |
-| `POST` | `/registries/enroll` | **Admin-only**. Create or replace an enrollment. `201`. |
+| `POST` | `/registries/enroll` | **Admin-only**. Create an enrollment, or update one already bound to the requested tenant (PATCH-like: omitted fields keep their stored values, explicit `null` clears). `201`; `409 REGISTRY_ENROLLED_ELSEWHERE` when the authority is bound to a different tenant. |
 | `GET`  | `/registries/:authority/log-witness` | Witness state + latest witnessed checkpoints. |
 | `GET`  | `/registries/log-witness/alerts` | Witness alerts worklist for this tenant. |
 | `POST` | `/registries/:authority/log-witness/ack` | **Admin-only**. Acknowledge an active witness alert. `201`. |
@@ -649,24 +650,59 @@ One agent's capabilities: `{ "data": [ … ], "total": N }`.
   "enabled": true
 }
 ```
-- `authority` (required) — ACDP authority / hostname. It is **globally unique**:
-  enrolling an authority that is already enrolled — under any tenant —
-  replaces that enrollment, including its tenant binding.
-- `tenantId` (optional) — defaults to the caller's tenant. Explicitly passing
-  `"default"` is `403 TENANT_RESERVED`.
-- `baseUrl` (optional, URL) — the registry's public base URL; ingest uses it as
-  a base-URL fallback for the federation proxy.
-- `registryDid` (optional).
-- `webhookSecret` (optional, ≥ 16 chars) — per-registry ingest HMAC secret;
-  omit to use the global `WEBHOOK_SECRET`.
-- `enabled` (optional, default `true`) — whether ingest from this authority is
-  accepted.
+- `authority` (required) — ACDP authority / hostname. It is **globally unique**
+  and bound to exactly one tenant, and that binding is **immutable**:
+  re-enrolling an authority under the tenant it is already bound to updates the
+  enrollment; re-enrolling it under any **other** tenant is
+  `409 REGISTRY_ENROLLED_ELSEWHERE` and leaves the enrollment unchanged. The
+  check is atomic (one `INSERT … ON CONFLICT … DO UPDATE … WHERE` statement), so
+  two concurrent cross-tenant enrolls of a new authority yield exactly one
+  success. The `409` body does not name the owning tenant (it is logged
+  server-side as a structured `warn`). There is no unenroll or transfer route.
+- `tenantId` (optional) — defaults to the caller's tenant: the admin key's
+  bound tenant, or `default` for an unbound key. So an unbound admin
+  re-enrolling another tenant's authority without `tenantId` gets `409`; name
+  the owning tenant explicitly to update it. Explicitly passing `"default"` is
+  `403 TENANT_RESERVED`.
+- `baseUrl` (optional, URL or `null`) — the registry's public base URL; ingest
+  uses it as a base-URL fallback for the federation proxy.
+- `registryDid` (optional, string or `null`).
+- `webhookSecret` (optional, ≥ 16 chars, or `null`) — per-registry ingest HMAC
+  secret; while unset, ingest verifies against the global `WEBHOOK_SECRET`.
+  Never echoed back.
+- `enabled` (optional; `true` on first enroll) — whether ingest from this
+  authority is accepted.
 
-The write is a full replace: an omitted optional field is reset (`baseUrl`,
-`registryDid`, `webhookSecret` → `null`, `enabled` → `true`), so re-send the
-secret when updating other fields. The response echoes the enrollment
-**without** `webhookSecret`. How enrollment drives ingest:
-[INGEST.md](./INGEST.md).
+**First enroll** inserts the row: an omitted `baseUrl` / `registryDid` /
+`webhookSecret` is stored as `null` and an omitted `enabled` as `true`.
+
+**Re-enroll** (same tenant) is **PATCH-like** — only the fields present in the
+body change:
+
+| Field in the body | Effect on the stored enrollment |
+|-------------------|---------------------------------|
+| omitted | kept unchanged |
+| `null` (`baseUrl` / `registryDid` / `webhookSecret`) | cleared to `null` |
+| a value | replaced |
+| `enabled` omitted or `null` | kept unchanged (never re-enables a disabled registry) |
+| `enabled: true` / `false` | replaced |
+
+So rotating the secret, changing the base URL, or disabling a registry needs
+only the fields being changed (plus `authority` and, for an unbound admin key,
+`tenantId`). Sending `"webhookSecret": null` deliberately clears the
+per-registry secret: ingest for that authority then falls back to the global
+`WEBHOOK_SECRET` (no HMAC check at all if that is also unset), and the CP logs a
+structured `warn`. `""` or a secret shorter than 16 characters is still `400`.
+`created_at` and the tenant binding never change on a re-enroll.
+
+> **Behaviour change (tenant-enroll-quota-fix P2).** Re-enroll used to be a
+> full replace: an omitted field was reset (`baseUrl`, `registryDid`,
+> `webhookSecret` → `null`, `enabled` → `true`), silently dropping the
+> per-registry HMAC secret and re-enabling a disabled registry. Callers that
+> relied on omission to clear a field must now send an explicit `null`.
+
+The response echoes the enrollment **without** `webhookSecret`. How
+enrollment drives ingest: [INGEST.md](./INGEST.md).
 
 ### `GET /registries/:authority/log-witness`
 

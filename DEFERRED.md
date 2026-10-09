@@ -20,7 +20,8 @@ category, then `file:line` evidence. File an issue only once an item has a repro
 - **bug** — `TENANT_AGENTS` is also parsed lazily, inside `mintJwt` (`src/auth/token-issuer.service.ts:449-452`), after the challenge nonce has been consumed (`:163`), so a malformed value fails `/auth/token` and burns the nonce.
 - **bug** — an `http://` `TRUSTED_ISSUERS` EdDSA JWKS URL passes startup (`src/auth/trusted-issuers.ts:166`) but every fetch rejects it (`src/auth/jwks-client.ts:112`).
 - **design** — run-notify endpoints let any HMAC holder pick any non-`default` tenant via `X-Tenant-Id` (`src/runs/runs.controller.ts:252-257`).
-- **design** — re-enrolling an authority through `POST /registries/enroll` upserts on `authority` alone and overwrites `tenant_id`, moving it across tenants (`src/storage/registry-enrollment.repository.ts:37-39`). Admin isn't tenant-scoped (`AUTH_ADMIN_API_KEYS` is one global list, `src/auth/auth.guard.ts:218`), so any admin key can do this. The same upsert also nulls an omitted `webhookSecret` (`:42`).
+- **gap** — no unenroll/transfer route exists, so an enrollment's (now immutable) tenant binding cannot be moved; an admin `DELETE /registries/enrollments/:authority` would also have to handle the old tenant's `log_witness_cursors` (PK `(tenant_id, registry_authority)`, `src/db/schema.ts:549`) (`src/storage/registry-enrollment.repository.ts` has no delete).
+- **design** — per-tenant admin scoping is deferred: admin keys are global operator keys (`AUTH_ADMIN_API_KEYS`, `src/auth/auth.guard.ts:218`), so any admin may create an enrollment for any tenant via `body.tenantId` (`src/registries/registries.controller.ts`); separating operator vs tenant-admin keys is an auth-model change.
 - **security** — failed authentication is never rate-limited: `AuthGuard` is registered before `ThrottleByUserGuard` (`src/app.module.ts:130-131`) and throws 401 before the throttle runs (`src/auth/auth.guard.ts:62-89`).
 - **comment** — `src/auth/revoke.controller.ts:25-27` says revoke is "throttled separately"; the controller has no throttle override.
 
@@ -43,7 +44,6 @@ category, then `file:line` evidence. File an issue only once an item has a repro
 ## Swagger metadata
 
 - **swagger** — `/events` `limit` is advertised as `default: 200` (`src/dto/list-events-query.dto.ts:36`); the controller defaults it to 500 (`src/events/events.controller.ts:39`).
-- **swagger** — enroll `tenantId` is described as "Defaults to \"default\"" (`src/dto/enroll-registry.dto.ts:17`); it actually defaults to the caller's tenant (`src/registries/registries.controller.ts:173`).
 - **swagger** — capability search and by-agent are declared `isArray: true` (`src/agents/capability.controller.ts:128,142`) but return `{ data, total }` (`:137`, `:149`).
 - **swagger** — `/auth/token` says it "issues an HS256 JWT" (`src/auth/auth.controller.ts:103`); `JWT_SIGNING_ALG` also allows `EdDSA`.
 - **swagger** — only 5 tags get descriptions (`src/bootstrap.ts:111-115`; `contexts` is described as "lineage browsing" though it is the federation proxy), while controllers declare 14 `@ApiTags`.

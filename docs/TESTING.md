@@ -168,6 +168,7 @@ npm run test:integration -- ingest.integration # single spec (regex against path
 | `pinned-keys-admin.integration.spec.ts` | Admin pinned-key reload |
 | `ingest.integration.spec.ts` | HMAC verify, payload validation, run correlation |
 | `ingest-trust.integration.spec.ts` | Enrollment gate + strict-tenant ingest |
+| `registry-enroll-partial.integration.spec.ts` | PATCH-like re-enroll: omitted secret / `enabled:false` kept (ingest HMAC still 204 / still 403), explicit `null` clears (falls back to the global `WEBHOOK_SECRET`), insert defaults, `created_at` stable |
 | `lineage.integration.spec.ts` | DAG construction, edge dedup, empty-DAG path |
 | `runs-lifecycle.integration.spec.ts` | `running`→`completed`, list filters + pagination, 404s |
 | `events-stream.integration.spec.ts` | Per-run SSE isolation, global firehose |

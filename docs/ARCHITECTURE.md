@@ -466,7 +466,7 @@ and `issuance_ledger` carries a `tenant_id`.
 | `revoked_tokens` | Local + imported JWT revocations, keyed `(iss, jti)` | 0003 | 0025 |
 | `issuance_ledger` | Hash-chained token-issuance audit log | 0004 | — |
 | `agent_capabilities` | Signed capability declarations | 0005 | 0007, 0008 |
-| `registry_enrollments` | Authority → tenant, secret, base URL, enabled | 0010 | — |
+| `registry_enrollments` | Authority → tenant (immutable once bound), secret, base URL, enabled | 0010 | — |
 | `revocation_cursors` | Per-issuer cursor for peer revocation feeds | 0013 | — |
 | `receipt_audits` | Receipt-audit verdicts + §7 revocation columns | 0014 | 0023, 0024 |
 | `context_lifecycle` | Retract/republish projection | 0015 | — |

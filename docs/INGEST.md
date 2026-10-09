@@ -139,7 +139,14 @@ authority)`).
 
 Enrollment (`POST /registries/enroll`, admin-only — [API.md](./API.md#registries))
 binds an authority to **one** tenant (the authority is the table's primary key),
-with an optional `webhookSecret` and `baseUrl`, and an `enabled` flag.
+with an optional `webhookSecret` and `baseUrl`, and an `enabled` flag. The
+tenant binding is **immutable**: re-enrolling under the same tenant updates the
+enrollment (PATCH-like — omitted fields, including `webhookSecret` and a
+disabled `enabled: false`, are kept; an explicit `"webhookSecret": null` clears
+the per-registry secret so ingest falls back to the global `WEBHOOK_SECRET`),
+while re-enrolling under a different tenant is rejected with
+`409 REGISTRY_ENROLLED_ELSEWHERE` and leaves the binding (and so the tenant that
+ingest resolves for the authority) unchanged.
 
 | Enrollment state | `INGEST_REQUIRE_ENROLLMENT=false` (default) | `INGEST_REQUIRE_ENROLLMENT=true` |
 |------------------|---------------------------------------------|----------------------------------|

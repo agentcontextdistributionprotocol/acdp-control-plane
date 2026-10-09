@@ -117,6 +117,14 @@ async list(@Req() req: TenantedRequest) {
   defaulting safely to `DEFAULT_TENANT_ID`.
 - `assertNotReservedTenant(value)` rejects an explicit `default` assertion (used
   where a tenant is supplied in a body, e.g. registry enrollment).
+- A registry enrollment's tenant is **immutable**: `POST /registries/enroll` for an
+  authority already bound to a different tenant is `409 REGISTRY_ENROLLED_ELSEWHERE`
+  (row unchanged; the response does not name the owning tenant). `tenantId` defaults
+  to the caller's tenant, so an unbound admin key (tenant `default`) re-enrolling
+  another tenant's authority without `tenantId` also gets `409`. Admin keys
+  (`AUTH_ADMIN_API_KEYS`) are global operator keys: they may still create an
+  enrollment for any tenant, or update one within its owning tenant (a re-enroll is
+  PATCH-like: omitted fields are kept, explicit `null` clears — [API.md](./API.md#post-registriesenroll)).
 - Repositories filter `WHERE tenant_id = …` and stamp it on writes. Composite
   unique / conflict targets include `tenant_id` (e.g. ingest idempotency is keyed
   by `(tenant_id, fingerprint)`; runs PK is `(tenant_id, run_id)`), so identical
@@ -171,7 +179,7 @@ is trusted only as far as the `WEBHOOK_SECRET` (or per-registry secret) holder i
 
 | Claimed registry authority | `INGEST_STRICT_TENANT` | Tenant used |
 |----------------------------|------------------------|-------------|
-| enrolled (`POST /registries/enroll`, which carries a `tenantId`) | either | the enrollment's tenant; the header is ignored |
+| enrolled (`POST /registries/enroll`, which carries a `tenantId`, immutable once bound) | either | the enrollment's tenant; the header is ignored |
 | enrolled but disabled | either | — `403 REGISTRY_DISABLED` |
 | not enrolled, `INGEST_REQUIRE_ENROLLMENT=true` | either | — `403 REGISTRY_NOT_ENROLLED` |
 | not enrolled | `false` (default) | `X-Tenant-Id` if present, else `default` |
