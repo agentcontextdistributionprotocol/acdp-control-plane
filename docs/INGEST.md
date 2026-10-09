@@ -264,7 +264,7 @@ Unknown fields are kept in `raw_payload` and returned by
 ### Registry base URL
 
 The federation proxy (`GET /contexts/*ctxId`) needs a base URL for each
-authority. The pipeline's registry upsert takes the first non-empty value of:
+authority. The pipeline's registry upsert takes the first value that is not `null`/`undefined` (chained with `??`, so an empty string stops the chain and leaves the stored URL unchanged):
 
 1. body `registry_base_url`,
 2. the request's `Origin` header,

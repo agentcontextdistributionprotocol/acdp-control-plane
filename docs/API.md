@@ -54,7 +54,7 @@ How `X-Tenant-Id` is treated depends on the credential:
 | API key bound in `TENANT_API_KEYS` | the binding | must equal the binding, else `403 TENANT_MISMATCH` |
 | Unbound API key | `default` | **ignored** |
 
-On every path, explicitly asserting the reserved `default` tenant (header or
+On every authenticated path (the empty-`AUTH_API_KEYS` development bypass never inspects the header), explicitly asserting the reserved `default` tenant (header or
 claim) is `403 TENANT_RESERVED`. With `AUTH_REQUIRE_TENANT=true`, a request that
 resolves only to `default` is `403 TENANT_REQUIRED`. See
 [TENANCY.md](./TENANCY.md).
@@ -131,7 +131,7 @@ RFC-ACDP-0007 §5's retryable set, so no `4xx` ever carries it (#182).
 |------|------|------|---------|
 | `INVALID_PAYLOAD` | 400 | fallback | Request body/query failed validation or parsing (ValidationPipe, ingest checks, unsupported algorithm, malformed `ctxId`). |
 | `UNAUTHORIZED` | 401 | fallback | Credentials missing or rejected: no header, unknown API key, JWT that fails verification or arrives with `TOKEN_ISSUANCE_ENABLED=false`, and the non-signature `/auth/token` / capability failures (unknown/expired nonce, agent mismatch, no pinned key, algorithm mismatch). |
-| `FORBIDDEN` | 403 | fallback | Authenticated but not permitted — today only `POST /auth/token/revoke` on another subject's verified token. |
+| `FORBIDDEN` | 403 | specific | Authenticated but not permitted — today only `POST /auth/token/revoke` on another subject's verified token. |
 | `NOT_FOUND` | 404 | fallback | No such route (including the IdP routes when `TOKEN_ISSUANCE_ENABLED=false`). |
 | `PAYLOAD_TOO_LARGE` | 413 | fallback | JSON or urlencoded body over `INGEST_MAX_BODY_BYTES` — the limit applies to **every** route, rejected by the body parser before the handler. |
 | `RATE_LIMITED` | 429 | fallback | Coarse per-principal throttle (`THROTTLE_LIMIT` per `THROTTLE_TTL_MS`; 20/min/IP on `/auth/challenge` and `/auth/token`). |
