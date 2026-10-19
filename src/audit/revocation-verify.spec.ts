@@ -42,6 +42,35 @@ describe('revocation-verify (SDK feature detection)', () => {
     expect(() => parseKeyRevocation('{}', '')).toThrow(/non-empty signerFingerprint/);
   });
 
+  // ── Fail-closed on binding codes outside the union (0.15.0+) ─────────────
+  //
+  // acdp 0.15.0 added `.code = 'revocation_unknown'` (bindings/acdp-node/
+  // src/errors.rs, RevocationUnknown). It comes only from the Rust client's
+  // revocation DISCOVERY path, which parseKeyRevocation never reaches — but
+  // if it ever surfaced here it must map to 'unknown' (fail closed), never
+  // `ok`. Pinned so widening ParseRevocationFailureCode is a deliberate edit.
+  it("maps an unrecognised binding .code ('revocation_unknown') to code 'unknown', never ok", () => {
+    // The native binding's statics are read-only (jest.spyOn cannot patch
+    // them), so load the wrapper in isolation against a stub binding.
+    const fake = Object.assign(new Error('revocation status unknown'), {
+      code: 'revocation_unknown',
+    });
+    let isolated!: typeof import('./revocation-verify');
+    jest.isolateModules(() => {
+      jest.doMock('@agentcontextdistributionprotocol/acdp', () => ({
+        AcdpVerifier: {
+          parseKeyRevocation: () => {
+            throw fake;
+          },
+        },
+      }));
+      isolated = require('./revocation-verify');
+    });
+    jest.dontMock('@agentcontextdistributionprotocol/acdp');
+    const out = isolated.parseKeyRevocation('{}', 'sha256:' + 'a'.repeat(64));
+    expect(out).toEqual({ ok: false, code: 'unknown', reason: 'revocation status unknown' });
+  });
+
   describeRevocations('with the revocation-capable SDK installed', () => {
     const REASON = 'laptop theft; private key material presumed exfiltrated';
     const COMPROMISED_SINCE = '2026-05-01T00:00:00.000Z';
