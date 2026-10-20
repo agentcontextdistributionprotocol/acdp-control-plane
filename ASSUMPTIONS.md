@@ -1742,7 +1742,7 @@
 - **Chose:** atomic `ON CONFLICT … DO UPDATE … WHERE tenant_id = excluded.tenant_id`; unbound admin (tenant `default`) re-enrolling a tenant-x authority without `tenantId` now gets 409 instead of silently moving it. The owning-tenant lookup for the warn log is a separate non-atomic read (log-only; failure never masks the 409).
 - **Alternatives:** composite PK (breaks pre-HMAC tenant resolution); per-tenant admin scoping (removes the only cross-tenant enroll path under `AUTH_REQUIRE_TENANT=true`; deferred in DEFERRED.md); `transfer:true` flag (reintroduces takeover).
 - **Blast radius if wrong:** an operator workflow that relied on moving an authority between tenants via re-enroll now needs manual SQL until an unenroll route exists. Reversible by reverting the PR.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-20) — decided by the user (Fable analysis); see DECISIONS.md
 
 ## Re-enroll is PATCH-like: omitted fields kept, explicit null clears (P2)
 - **Plan:** plans/tenant-enroll-quota-fix.md
@@ -1750,12 +1750,12 @@
 - **Chose:** re-enroll of an existing authority changes only fields present in the body; explicit `null` clears `baseUrl`/`registryDid`/`webhookSecret` (secret clear logs a structured warn, ingest then uses the global `WEBHOOK_SECRET`); `enabled: null` is treated as omitted (NOT NULL column); built conditionally in TS rather than SQL `coalesce` (which cannot tell omitted from null).
 - **Alternatives:** keep full-replace (silently drops the per-registry HMAC secret and re-enables an operator-disabled registry); reject `enabled:null` with 400.
 - **Blast radius if wrong:** an external admin script that cleared a field by omitting it must now send `null`; revert the PR to restore old semantics.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-19) — decided by Opus; see DECISIONS.md
 
 ## Ingest `publish` quota enforced after HMAC under the resolved tenant (P3/P4)
 - **Plan:** plans/tenant-enroll-quota-fix.md
-- **Assumed:** counting accepted-and-signed requests (duplicates of stored events included) under the enrollment/header-resolved tenant is the intended `publish` semantics; operators with only `default:publish` rules accept that enrolled registries bound to other tenants are no longer throttled by it; per-IP throttle + body cap are adequate residual protection against unsigned floods. The registry worker makes ≤3 attempts (~0.75 s, ignores Retry-After) so a quota 429 drops the event — confirmed in acdp-registry-webhook/src/lib.rs:230-276 (its WEBHOOKS.md wording reads as more retries).
+- **Assumed:** counting accepted-and-signed requests (duplicates of stored events included) under the enrollment/header-resolved tenant is the intended `publish` semantics; operators with only `default:publish` rules accept that enrolled registries bound to other tenants are no longer throttled by it; per-IP throttle + body cap are adequate residual protection against unsigned floods. The registry worker makes ≤3 attempts (~0.75 s, ignores Retry-After) so a quota 429 drops the event — confirmed in acdp-registry-rs/crates/acdp-registry-webhook/src/lib.rs:247-276 (its WEBHOOKS.md wording reads as more retries).
 - **Chose:** `QuotaService.enforce` called from `IngestService` immediately before the pipeline; quota 429 body (existing shape, incl. `tenantId`) goes to the HMAC-authenticated sender; `ingestRejectedTotal{reason="quota"}`; non-429 errors rethrown without the metric.
 - **Alternatives:** keep guard (rejected: counts forged requests against `default`); interceptor (tenant/HMAC unknown there); not counting duplicates (needs pre-insert dedup).
 - **Blast radius if wrong:** rate-limit semantics change for multi-tenant operators (documented upgrade note); in non-strict tenant mode a global-secret holder can spend another tenant's budget (documented; mitigated by INGEST_STRICT_TENANT / per-enrollment secrets). Reversible by reverting the PR.
-- **Status:** UNCONFIRMED
+- **Status:** CONFIRMED (2026-10-20) — decided by the user (Fable analysis); see DECISIONS.md
