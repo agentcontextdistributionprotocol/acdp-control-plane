@@ -430,7 +430,7 @@ Read `acdp_key_revocation_checks_total{status}` and the sweep's logs:
   (ecdsa-p256, issue #170).
 
 The format and trust rules are in
-[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0014-key-revocation.md);
+[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0014-key-revocation.md);
 the knobs in [CONFIGURATION.md](./CONFIGURATION.md#producer-key-revocation-rfc-acdp-0014).
 
 ---
