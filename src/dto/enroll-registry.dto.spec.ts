@@ -72,4 +72,39 @@ describe('EnrollRegistryDto through the enroll ValidationPipe', () => {
   it('still requires authority (null is not accepted for the required field)', async () => {
     await expect(run({ authority: null })).rejects.toBeInstanceOf(BadRequestException);
   });
+
+  // #246: an enrollment's tenant is immutable and the API has no delete route,
+  // so a tenantId no key or claim can resolve to strands the authority for
+  // good. TENANT_API_KEYS bindings are trimmed (tenant-context.ts), so a
+  // padded value is unreachable — reject it rather than silently normalise.
+  describe('tenantId (#246)', () => {
+    it.each([
+      ['trailing space', 'acme '],
+      ['leading space', ' acme'],
+      ['tab', 'acme\t'],
+      ['newline', 'acme\n'],
+      ['non-breaking space', 'acme '],
+      ['whitespace only', '   '],
+      ['empty', ''],
+      ['control character', 'ac\u0000me'],
+      ['DEL', 'ac\u007fme'],
+    ])('rejects %s', async (_label, tenantId) => {
+      await expect(run({ authority: 'reg.example', tenantId })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it.each(['acme', 'tenant-a', 'Acme Corp', 'org:team', 'a'])(
+      'accepts %j unchanged (no charset beyond reachability)',
+      async (tenantId) => {
+        const out = await run({ authority: 'reg.example', tenantId });
+        expect(out.tenantId).toBe(tenantId);
+      },
+    );
+
+    it('still treats omitted / null as "use the caller tenant"', async () => {
+      expect((await run({ authority: 'reg.example' })).tenantId).toBeUndefined();
+      expect((await run({ authority: 'reg.example', tenantId: null })).tenantId).toBeNull();
+    });
+  });
 });
