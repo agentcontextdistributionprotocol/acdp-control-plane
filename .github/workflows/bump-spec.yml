@@ -1,0 +1,25 @@
+name: bump spec
+on:
+  repository_dispatch:
+    types: [spec-released]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Spec SHA to adopt (blank = spec HEAD)'
+        required: false
+        default: ''
+jobs:
+  bump:
+    # Opens a held (never auto-merged) PR that rewrites ci.yml's single spec
+    # `ref:` pin, so conformance re-runs against the new fixtures on that PR.
+    # It rewrites ONLY ci.yml: the spec blob links in README.md and docs/*.md
+    # pin the same SHA, and the reviewer bumps those in the same PR (#244 is
+    # what happens when they drift):
+    #   git grep -l <old> | xargs perl -pi -e 's/<old>/<new>/g'
+    uses: agentcontextdistributionprotocol/acdp-ci/.github/workflows/bump-spec-ref.yml@v1
+    with:
+      file: .github/workflows/ci.yml
+      sha: ${{ github.event.inputs.sha }}
+    secrets:
+      ACDP_BOT_APP_ID: '${{ secrets.ACDP_BOT_APP_ID }}'
+      ACDP_BOT_PRIVATE_KEY: '${{ secrets.ACDP_BOT_PRIVATE_KEY }}'

@@ -76,11 +76,13 @@ agentcontextdistributionprotocol/
 The `.env` file lives at the **repo root** (`acdp-control-plane/.env`), not
 inside `e2e/`. That way one secrets file serves both `npm run start:dev` and
 this E2E. The template (`e2e/.env.example`) stays in `e2e/` because its
-variables are E2E-specific.
+variables are E2E-specific. Only the LLM key is required; every other value
+has a default in `docker-compose.e2e.yml`.
 
 ```bash
 # from acdp-control-plane/
-cp e2e/.env.example .env            # one-time
+cp e2e/.env.example .env            # one-time, if there is no .env yet
+# cat e2e/.env.example >> .env      # ...or append, if .env already exists
 $EDITOR .env                        # paste OPENAI_API_KEY
 
 cd e2e

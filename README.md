@@ -157,7 +157,7 @@ subsystems and the ecosystem (which sibling repo owns what).
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common errors and how to diagnose them |
 
 This service is part of the ACDP ecosystem — the
-[spec](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/README.md)
+[spec](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/README.md)
 (RFC index, pinned to the commit CI tests against),
 the [`acdp` SDK](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/bindings.md)
 (this service consumes its Node binding), and

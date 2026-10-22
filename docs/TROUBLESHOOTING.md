@@ -430,7 +430,7 @@ Read `acdp_key_revocation_checks_total{status}` and the sweep's logs:
   (ecdsa-p256, issue #170).
 
 The format and trust rules are in
-[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0014-key-revocation.md);
+[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0014-key-revocation.md);
 the knobs in [CONFIGURATION.md](./CONFIGURATION.md#producer-key-revocation-rfc-acdp-0014).
 
 ---
@@ -641,7 +641,9 @@ start** if the binding accepts it. Cause: an `acdp` older than 0.14.4, or a nati
 `optionalDependency` that resolved to an older binary than the JS package. Fix: `npm ci`
 (the lockfile pins all four native packages at the strict version), then confirm
 `node -e "console.log(require('@agentcontextdistributionprotocol/acdp/package.json').version)"`
-prints `0.14.4` or later.
+prints `0.14.4` or later. 0.14.4 is the strict-Ed25519 *capability floor* — the first
+release whose binding uses `verify_strict` — not the version this repo pins; `package.json`
+pins `^0.15.1`, so a clean `npm ci` prints 0.15.1 or later.
 
 ### `npm run start` fails with `Cannot find module '.../dist/main'`, but `npm run build` exited 0
 

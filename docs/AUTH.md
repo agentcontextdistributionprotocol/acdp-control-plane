@@ -9,9 +9,9 @@ Endpoint shapes live in [API.md](./API.md#auth); tenancy in [TENANCY.md](./TENAN
 > registry's so agent code and tokens are interchangeable. The authoritative
 > description of that shared model is the registry's
 > [AUTHENTICATION.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md).
-> The normative wire rules are [RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0008-security.md#62-read-authentication)
-> (`bearer_jwt` read authentication; see also the [auth-methods registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/registries/auth-methods.md))
-> and the [signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/registries/signature-algorithms.md).
+> The normative wire rules are [RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0008-security.md#62-read-authentication)
+> (`bearer_jwt` read authentication; see also the [auth-methods registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/registries/auth-methods.md))
+> and the [signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/registries/signature-algorithms.md).
 > This page documents only what is **CP-specific** (how those rules are wired,
 > issuance ledger, persistence, the guard).
 
@@ -276,7 +276,7 @@ Signing still uses `node:crypto`.
 `kid` is `JWT_KID` if set, else derived from a stable fingerprint of the key
 material. It is embedded in the JWT header and published in JWKS so verifiers can
 match. The supported signature algorithms are governed by the spec's
-[signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/registries/signature-algorithms.md);
+[signature-algorithms registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/registries/signature-algorithms.md);
 the CP accepts exactly the set the SDK verifies.
 
 > **Witness signing key is separate.** When witness cosigning
@@ -288,8 +288,8 @@ the CP accepts exactly the set the SDK verifies.
 
 ## Relation to RFC-ACDP-0008 §6.2 `bearer_jwt`
 
-[RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/rfcs/RFC-ACDP-0008-security.md#62-read-authentication)
-(registered in the [auth-methods registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/34f14ab2ab454308e94fd6f137ef940db45c72c8/registries/auth-methods.md)) lets a
+[RFC-ACDP-0008 §6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0008-security.md#62-read-authentication)
+(registered in the [auth-methods registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/registries/auth-methods.md)) lets a
 **registry** admit a DID-bound bearer JWT for reads. The control plane is not a registry:
 it serves no `/.well-known/acdp.json`, so there is no `read_authentication_methods` field
 to advertise `bearer_jwt` in, and it deliberately does not. Its `/auth/challenge` +
