@@ -268,8 +268,8 @@ not updated by later events; `POST /runs/started` fills it in when it is still
 The wire format is the registry's
 ([WEBHOOKS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/WEBHOOKS.md));
 lifecycle events are normative in
-[RFC-ACDP-0013](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0013-lifecycle-events.md)
-and the [lifecycle-event-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/registries/lifecycle-event-types.md).
+[RFC-ACDP-0013](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0013-lifecycle-events.md)
+and the [lifecycle-event-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/registries/lifecycle-event-types.md).
 The CP stores the whole payload in `context_events.raw_payload` and reads only
 these fields:
 
@@ -332,9 +332,9 @@ startup. `GET /domain-packs` lists the active packs; there is no runtime reload.
 - **No packs configured** → no gate; every `context_type` is accepted.
 - **Always accepted:** the base types `data_snapshot`, `analysis`,
   `prediction`, `alert`
-  ([context-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/registries/context-types.md)),
+  ([context-types registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/registries/context-types.md)),
   plus `key-revocation` and its interim spelling `acdp:key-revocation`
-  ([RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0014-key-revocation.md)
+  ([RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0014-key-revocation.md)
   §4/§10), both from `src/contracts/revocation.ts`. An event with no
   `context_type` is also accepted.
 - **Anything else** must be declared by an active pack, or it is rejected
