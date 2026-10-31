@@ -4,8 +4,18 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  Matches,
   MinLength,
 } from 'class-validator';
+
+/**
+ * A tenant id some key or claim can actually resolve to (#246): non-empty, no
+ * leading/trailing whitespace (TENANT_API_KEYS bindings are trimmed, so a
+ * padded id is unreachable) and no control characters. Deliberately NOT a
+ * charset — a JWT `tenant` claim can already carry e.g. `Acme Corp`, and the
+ * registry defines none either.
+ */
+const REACHABLE_TENANT_ID = /^[^\s\p{Cc}](?:[^\p{Cc}]*[^\s\p{Cc}])?$/u;
 
 export class EnrollRegistryDto {
   @ApiProperty({ description: 'ACDP authority, e.g. registry-a.example' })
@@ -18,10 +28,15 @@ export class EnrollRegistryDto {
       "Tenant this authority belongs to. Defaults to the caller's tenant (the admin " +
       'key\'s bound tenant; an unbound key resolves to the untenanted bucket). The ' +
       'reserved `default` tenant cannot be named explicitly. Immutable once enrolled: ' +
-      're-enrolling under a different tenant is rejected with 409 REGISTRY_ENROLLED_ELSEWHERE.',
+      're-enrolling under a different tenant is rejected with 409 REGISTRY_ENROLLED_ELSEWHERE. ' +
+      'Must be non-empty with no leading/trailing whitespace or control characters (400 otherwise).',
   })
   @IsOptional()
   @IsString()
+  @Matches(REACHABLE_TENANT_ID, {
+    message:
+      'tenantId must be non-empty, with no leading/trailing whitespace or control characters',
+  })
   tenantId?: string;
 
   // Re-enroll is PATCH-like (tenant-enroll-quota-fix P2): for the nullable

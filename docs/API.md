@@ -230,7 +230,7 @@ every route except the probes is also subject to the coarse throttle.
 | GET  | `/capabilities/by-agent/*did` | key/JWT | — | 200 | One agent's capabilities |
 | GET  | `/registries` | key/JWT | — | 200 | Observed registries |
 | GET  | `/registries/enrollments` | key/JWT | — | 200 | Enrolled registries (secrets omitted) |
-| POST | `/registries/enroll` | admin | — | 201 | Enroll a registry, or update it within its tenant — PATCH-like: omitted fields kept, explicit `null` clears (`409 REGISTRY_ENROLLED_ELSEWHERE` if bound to another tenant) |
+| POST | `/registries/enroll` | admin | — | 201 | Enroll a registry, or update it within its tenant — PATCH-like: omitted fields kept, explicit `null` clears (`409 REGISTRY_ENROLLED_ELSEWHERE` if bound to another tenant; `400 INVALID_PAYLOAD` for a `tenantId` that is empty, whitespace-padded or contains control characters — no key could ever resolve to it) |
 | GET  | `/registries/:authority/log-witness` | key/JWT | — | 200 | Witnessed checkpoints + alert state (RFC-ACDP-0012) |
 | GET  | `/registries/log-witness/alerts` | key/JWT | — | 200 | Alerted registries worklist |
 | POST | `/registries/:authority/log-witness/ack` | admin | — | 201 | Acknowledge a witness alert |

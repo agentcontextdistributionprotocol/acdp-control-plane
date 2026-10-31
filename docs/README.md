@@ -31,7 +31,7 @@ out instead. When this doc and an authoritative source disagree, the source wins
 The single link index for normative and upstream material. Other docs in this
 folder link here (or straight to the files below) rather than restating them.
 
-**Spec** — pinned to commit `34f14ab` (the `ACDP_SPEC_DIR` checkout in
+**Spec** — pinned to commit `1ed9bec` (the `ACDP_SPEC_DIR` checkout in
 `.github/workflows/ci.yml`), so a link always shows the text this CP was
 tested against. RFCs whose behaviour the CP implements or consumes:
 
