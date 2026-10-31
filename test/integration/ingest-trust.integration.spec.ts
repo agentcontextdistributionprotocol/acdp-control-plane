@@ -165,6 +165,28 @@ describe('Ingest trust & reliability (integration)', () => {
     expect((resp.body as Record<string, unknown>).webhookSecret).toBeUndefined();
   });
 
+  // #246: a padded tenantId would bind the authority, immutably, to a tenant
+  // no trimmed key can resolve — 400 before anything is written.
+  it('rejects an unreachable (whitespace-padded) tenantId with 400 and writes no row', async () => {
+    const admin = new TestClient(ctx.url, 'admin-key');
+    const resp = await admin.requestRaw('POST', '/registries/enroll', {
+      body: { authority: 'registry-z.example', tenantId: 'acme ' },
+    });
+    expect(resp.status).toBe(400);
+    expect((resp.body as { errorCode: string }).errorCode).toBe('INVALID_PAYLOAD');
+    const db = ctx.module.get(DatabaseService);
+    const rows = await db.pool.query(
+      `SELECT 1 FROM registry_enrollments WHERE authority = $1`,
+      ['registry-z.example'],
+    );
+    expect(rows.rowCount).toBe(0);
+
+    const ok = await admin.requestRaw('POST', '/registries/enroll', {
+      body: { authority: 'registry-z.example', tenantId: 'acme' },
+    });
+    expect(ok.status).toBe(201);
+  });
+
   // ── Enrollment tenant immutability (tenant-enroll-quota-fix P1) ─────────
   describe('enrollment tenant binding is immutable', () => {
     const SECRET_X = 'tenant-x-original-secret-0001';

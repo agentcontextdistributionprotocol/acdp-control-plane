@@ -34,9 +34,12 @@ jobs:
         # Bumped from the 2026-09-21 pin to 34f14ab (#221) for RFC-ACDP-0001 §5.10 strict Ed25519
         # (conformance vector sig-004-ed25519-strict-negative, spec #73) and the
         # bearer_jwt registration (spec #74). No existing fixture changed.
-        # Bumped from 34f14ab to 1ed9bec (spec main 2026-10-21, #244): 13 new conformance vectors
+        # Bumped from 34f14ab to 1ed9bec (spec main 2026-10-21, #244): 12 new conformance vectors
         # and an extended rev-002; the existing suites pass unchanged. Later bumps arrive as held
         # PRs from bump-spec.yml.
+        # Bumped from 1ed9bec to 1560e0f (#282): 43 new conformance vectors (chain-, kl-, mcp-, rec-,
+        # trust-, rev-007); no existing fixture changed.
+        # Bumped from 1560e0f to da386c4: spec docs only (#111, #112); no conformance fixture changed.
         uses: actions/checkout@v7
         with:
           repository: agentcontextdistributionprotocol/agentcontextdistributionprotocol
