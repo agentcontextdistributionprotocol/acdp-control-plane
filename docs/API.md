@@ -96,7 +96,7 @@ runs (see below).
 Every error (`4xx`/`5xx`) is normalized by `GlobalExceptionFilter` and sent with
 `Content-Type: application/acdp+json`. The body keeps the CP's flat fields and
 adds the RFC-ACDP-0007 error envelope
-([§4](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0007-capabilities.md#4-error-envelope))
+([§4](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0007-capabilities.md#4-error-envelope))
 alongside them:
 
 ```json
@@ -119,8 +119,8 @@ alongside them:
 pinned by `src/errors/error-codes.spec.ts`, which also checks that every code
 has a row in this table). Codes are SCREAMING_SNAKE so they never collide with a
 registry's lowercase wire vocabulary
-([RFC-ACDP-0007 §5](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0007-capabilities.md#5-error-code-registry),
-[error-code registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/registries/error-codes.md)).
+([RFC-ACDP-0007 §5](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0007-capabilities.md#5-error-code-registry),
+[error-code registry](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/registries/error-codes.md)).
 
 **Generic fallbacks** are assigned by the filter, keyed on the real HTTP status,
 when the error's producer set no code; a **specific** code is used wherever one
@@ -187,7 +187,7 @@ latencyMs }` — an enum reason, never the driver's error text, host or port. No
 `Retry-After` (an outage has no known duration).
 
 `INVALID_LOG_PROOF` and `INVALID_WITNESS_COSIGNATURE` are deliberately distinct
-([RFC-ACDP-0015 §10](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0015-witness-cosigning.md#10-capabilities-profile-and-errors)):
+([RFC-ACDP-0015 §10](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md#10-capabilities-profile-and-errors)):
 the former indicts a transparency-log proof or checkpoint, the latter a
 witness's own cosignature.
 
@@ -359,11 +359,11 @@ milliseconds), not strict RFC3339; parse it with `new Date(...)`.
   until `POST /runs/started` sets it; `inputs`, `result` and `completedAt` are
   `null` until set.
 - `flagged` carries only `discrepancy` rows — registry-dishonesty signals
-  ([RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0010-registry-receipts.md)).
+  ([RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0010-registry-receipts.md)).
   `error` rows (environmental: fetch/DID failure, non-canonical stored `ctx_id`,
   unsupported algorithm) are counted in `errors` and never flagged.
 - `revoked` is the producer key-revocation classification
-  ([RFC-ACDP-0014 §7](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0014-key-revocation.md#7-consumer-semantics-normative)),
+  ([RFC-ACDP-0014 §7](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0014-key-revocation.md#7-consumer-semantics-normative)),
   kept apart from `flagged` because it is not evidence the registry misbehaved.
   `status` ∈ `pre_compromise` | `revoked_at_or_after` |
   `revoked_time_unverifiable`; `trustClass` ∈ `producer_signed` |
@@ -533,12 +533,12 @@ the caller's credentials, to `<baseUrl>/contexts/<ctxId>` through the SSRF-safe
 addresses, at most 3 same-authority redirects, 1 MiB body cap, 10 s deadline
 (defense model:
 [acdp-rs security](https://github.com/agentcontextdistributionprotocol/acdp-rs/blob/main/docs/security.md),
-[RFC-ACDP-0006 §7](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0006-cross-registry.md#7-server-side-request-forgery-ssrf-protections)).
+[RFC-ACDP-0006 §7](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0006-cross-registry.md#7-server-side-request-forgery-ssrf-protections)).
 
 **`ctx_id` binding.** On a `2xx` the proxy checks, via the SDK's
 `AcdpVerifier.verifyCtxIdBinding`, that the served `body.ctx_id` is the one
 requested **before** relaying anything
-([RFC-ACDP-0006 §4.1](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0006-cross-registry.md#41-steps),
+([RFC-ACDP-0006 §4.1](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0006-cross-registry.md#41-steps),
 step 7). It reads only `body.ctx_id` — not a schema gate — and fails closed.
 
 | Condition | Response |
@@ -710,7 +710,7 @@ enrollment drives ingest: [INGEST.md](./INGEST.md).
 ### `GET /registries/:authority/log-witness`
 
 Transparency-log witness state
-([RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0012-transparency-log.md))
+([RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0012-transparency-log.md))
 for a registry in this tenant; `404 REGISTRY_NOT_FOUND` when there is none.
 
 ```json
@@ -738,9 +738,9 @@ Each checkpoint row carries the RFC-ACDP-0015 quorum columns, all `null` while
 | `historicalWitnessedCount` | Witnesses that verified only under a **retired** `did:web` key — reported separately, never counted toward `witnessedCount`/`meetsQuorum`. |
 
 The verification rules behind these counts are
-[RFC-ACDP-0015 §8](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0015-witness-cosigning.md#8-consumer-verification-procedure-normative)
+[RFC-ACDP-0015 §8](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md#8-consumer-verification-procedure-normative)
 and
-[§9](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0015-witness-cosigning.md#9-witness-identity-keys-and-capabilities-normative).
+[§9](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md#9-witness-identity-keys-and-capabilities-normative).
 
 ### `GET /registries/log-witness/alerts?includeAcknowledged=true`
 
@@ -1029,11 +1029,11 @@ The two are independent knobs.
 
 Full knob reference: [CONFIGURATION.md](./CONFIGURATION.md). The cosignature
 object is defined by
-[RFC-ACDP-0015 §4](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0015-witness-cosigning.md#4-cosignature-object-normative) (served per [§6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0015-witness-cosigning.md#62-direct-from-witness))
+[RFC-ACDP-0015 §4](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md#4-cosignature-object-normative) (served per [§6.2](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md#62-direct-from-witness))
 and the
-[cosignature schema](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/schemas/json/acdp-log-cosignature.schema.json);
+[cosignature schema](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/schemas/json/acdp-log-cosignature.schema.json);
 witness identity and capabilities by
-[§9](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1ed9bec84d2fea77927f421e0167b4bc8b405ccf/rfcs/RFC-ACDP-0015-witness-cosigning.md#9-witness-identity-keys-and-capabilities-normative).
+[§9](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md#9-witness-identity-keys-and-capabilities-normative).
 
 All three routes are **Public** and answer `404 REGISTRY_NOT_FOUND` while
 `WITNESS_COSIGNING_ENABLED=false`.

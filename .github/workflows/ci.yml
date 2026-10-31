@@ -37,10 +37,12 @@ jobs:
         # Bumped from 34f14ab to 1ed9bec (spec main 2026-10-21, #244): 12 new conformance vectors
         # and an extended rev-002; the existing suites pass unchanged. Later bumps arrive as held
         # PRs from bump-spec.yml.
+        # Bumped from 1ed9bec to 1560e0f (#282): 43 new conformance vectors (chain-, kl-, mcp-, rec-,
+        # trust-, rev-007); no existing fixture changed.
         uses: actions/checkout@v7
         with:
           repository: agentcontextdistributionprotocol/agentcontextdistributionprotocol
-          ref: 1ed9bec84d2fea77927f421e0167b4bc8b405ccf
+          ref: 1560e0f389875be8addaa7b7908751e020db50fe
           path: acdp-spec
       - uses: actions/setup-node@v7
         with:
