@@ -237,7 +237,7 @@ on. Existing ledger rows (and their hash chain) are unchanged.
 An advisory-locked sweep that cross-checks each ingested `context_published`
 event's embedded `registry_receipt`, seals a verdict in `receipt_audits`, and
 surfaces it as `trust` on `GET /runs/:runId`. Receipt rules:
-[RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0010-registry-receipts.md)
+[RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0010-registry-receipts.md)
 (registry side: [RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md));
 how the sweep fits the pipeline:
 [ARCHITECTURE.md](./ARCHITECTURE.md#transparency-audit--witness-rfc-acdp-0010--0012--0014--0015).
@@ -254,7 +254,7 @@ how the sweep fits the pipeline:
 The checkpoint witness polls `GET /log/checkpoint` on enrolled registries that
 advertise `acdp-registry-transparency-log`, verifies each checkpoint against the
 last-witnessed head, and alerts on dishonesty signals. Checkpoint and proof rules:
-[RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0012-transparency-log.md).
+[RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0012-transparency-log.md).
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
@@ -266,7 +266,7 @@ last-witnessed head, and alerts on dishonesty signals. Checkpoint and proof rule
 its own dedicated Ed25519 witness key, stores one `log_cosignatures` row per
 observation (not per head), and serves them at `GET /log/witness`
 ([API.md](./API.md)). Cosignature rules:
-[RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md).
+[RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0015-witness-cosigning.md).
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
@@ -287,7 +287,7 @@ cosignatures a registry aggregates on `GET /log/checkpoint`, and records
 `historical_witnessed_count` sub-counts) on each witnessed head, surfaced on
 `GET /registries/:authority/log-witness` and the dashboard `logWitness` tile.
 Quorum, freshness and witness-key rules:
-[RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md)
+[RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0015-witness-cosigning.md)
 §8–§9.
 
 | Var | Type | Default | Meaning |
@@ -319,7 +319,7 @@ against them (`trust.revoked` on `GET /runs/:runId`, dashboard `keyRevocation`
 tile). Already-sealed verdicts are amended retroactively when a later revocation
 reaches back over them — no extra knob. Revocation format, trust classes and
 consumer semantics:
-[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0014-key-revocation.md);
+[RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0014-key-revocation.md);
 CP mechanics:
 [ARCHITECTURE.md](./ARCHITECTURE.md#transparency-audit--witness-rfc-acdp-0010--0012--0014--0015).
 

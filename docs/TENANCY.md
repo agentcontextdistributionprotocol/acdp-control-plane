@@ -16,7 +16,7 @@ guard layer pins the resolving tenant on the request. Key files:
 > [reserved `default`](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/MULTI-TENANCY.md#the-reserved-default-sentinel)).
 > The protocol itself defines no tenant; it only requires that tenant attribution
 > rest on an authenticated signal —
-> [RFC-ACDP-0008 §6.4](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0008-security.md#64-multi-tenancy-implementation-note).
+> [RFC-ACDP-0008 §6.4](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0008-security.md#64-multi-tenancy-implementation-note).
 > This page documents the CP's wiring (the guard, repositories, and the
 > fail-fast startup check) and where it differs, rather than re-deriving the model.
 
@@ -214,7 +214,7 @@ in `src/storage/log-cosignature.repository.ts`.
 
 `log_cosignatures`' unique constraint was widened again in migration
 `0020_cosignature_freshness.sql`: the witness re-mints a cosignature on every
-observation (why: [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md)),
+observation (why: [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0015-witness-cosigning.md)),
 so the key includes `witnessed_at` — one row per (tenant, witness, log, head)
 *observation*, not per head. Same per-tenant scoping as above; only the granularity changed.
 

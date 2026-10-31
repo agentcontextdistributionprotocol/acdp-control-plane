@@ -282,13 +282,13 @@ Full detail in [AUTH.md](./AUTH.md).
 > **Sources of truth.** The receipt, checkpoint, Merkle-proof, revocation, and
 > cosignature wire formats and verification procedures are normative in the
 > spec —
-> [RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0010-registry-receipts.md)
+> [RFC-ACDP-0010](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0010-registry-receipts.md)
 > (receipts),
-> [RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0012-transparency-log.md)
+> [RFC-ACDP-0012](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0012-transparency-log.md)
 > (transparency log),
-> [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0014-key-revocation.md)
+> [RFC-ACDP-0014](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0014-key-revocation.md)
 > (producer key-revocation),
-> [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md)
+> [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0015-witness-cosigning.md)
 > (cosigning) — and the registry side is documented in
 > [acdp-registry-rs/docs/RECEIPTS.md](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/RECEIPTS.md).
 > This section is **not** a restatement of those — it describes only what *this
@@ -364,7 +364,7 @@ the category for a locally failing checkpoint or proof.
 ### Key revocation (RFC-ACDP-0014)
 
 The fold, boundary and disarm rules are the RFC's
-([§4](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0014-key-revocation.md),
+([§4](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0014-key-revocation.md),
 §6, §7) and are evaluated by the SDK. What the CP decides:
 
 - **Lineage walk failure discipline** (`src/audit/revocation-lineage.ts`,
@@ -408,8 +408,8 @@ a walk evaluated, re-counted on every retry, so read it as a rate.
 
 ### Witness cosigning and quorum (RFC-ACDP-0015)
 
-Normative rules: [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/rfcs/RFC-ACDP-0015-witness-cosigning.md)
-and the [cosignature schema](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/1560e0f389875be8addaa7b7908751e020db50fe/schemas/json/acdp-log-cosignature.schema.json).
+Normative rules: [RFC-ACDP-0015](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/rfcs/RFC-ACDP-0015-witness-cosigning.md)
+and the [cosignature schema](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/blob/da386c4026d9105cd75c6023877b4197d855bf69/schemas/json/acdp-log-cosignature.schema.json).
 Minting and consuming are independent switches.
 
 - **Minting** (`WITNESS_COSIGNING_ENABLED`, rides `LOG_WITNESS_ENABLED`):
