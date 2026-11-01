@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: agentcontextdistributionprotocol/agentcontextdistributionprotocol
-          ref: da386c4026d9105cd75c6023877b4197d855bf69
+          ref: dd5486cecc8310432a1e8f2a619397a790b3cca4
           path: acdp-spec
       - uses: actions/setup-node@v7
         with:
