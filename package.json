@@ -27,10 +27,10 @@
   },
   "dependencies": {
     "@agentcontextdistributionprotocol/acdp": "^0.19.0",
-    "@nestjs/common": "^12.1.2",
-    "@nestjs/core": "^12.1.2",
-    "@nestjs/platform-express": "^12.1.2",
-    "@nestjs/swagger": "^12.0.2",
+    "@nestjs/common": "^12.3.2",
+    "@nestjs/core": "^12.3.2",
+    "@nestjs/platform-express": "^12.3.2",
+    "@nestjs/swagger": "^12.0.5",
     "@nestjs/throttler": "^6.7.1",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/auto-instrumentations-node": "^0.80.0",
@@ -56,9 +56,9 @@
     "esbuild": "^0.25.0"
   },
   "devDependencies": {
-    "@nestjs/cli": "^12.0.8",
-    "@nestjs/schematics": "^12.0.6",
-    "@nestjs/testing": "^12.1.2",
+    "@nestjs/cli": "^12.0.11",
+    "@nestjs/schematics": "^12.0.12",
+    "@nestjs/testing": "^12.3.2",
     "@swc/core": "^1.16.20",
     "@swc/jest": "^0.2.39",
     "@types/express": "^5.0.0",
