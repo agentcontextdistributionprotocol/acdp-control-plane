@@ -80,9 +80,11 @@ export class DataRetentionService implements OnModuleInit, OnModuleDestroy {
       return { events: 0, runs: 0, deliveries: 0, cosignatures: 0 };
     }
     try {
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - this.config.dataRetentionTtlDays);
-      const cutoffIso = cutoff.toISOString();
+      // Elapsed time, not local calendar days: `setDate()` would shift the
+      // cutoff by an hour whenever a DST change falls inside the window.
+      const cutoffIso = new Date(
+        Date.now() - this.config.dataRetentionTtlDays * 24 * 60 * 60 * 1000,
+      ).toISOString();
 
       // Order: runs (and webhook deliveries) before events isn't required —
       // there are no FK cascades between them — so each delete is independent.

@@ -64,6 +64,22 @@ describe('DataRetentionService', () => {
       expect(Math.abs(cutoffMs - expected)).toBeLessThan(60_000);
     });
 
+    // The TTL is an elapsed duration, not local calendar days: a host-local
+    // `setDate()` cutoff shifts by an hour whenever a DST change falls inside
+    // the window. Pinned at an instant 5 days after the 2026-11-01 US change.
+    // (Jest sandboxes process.env, so TZ cannot be forced from here: this
+    // catches the regression on a DST-zone host, not in UTC-only CI.)
+    it('keeps the cutoff exactly TTL x 24h back across a DST change', async () => {
+      jest.useFakeTimers({ now: new Date('2026-11-06T12:00:00.000Z') });
+      try {
+        const { svc, contextEventRepo } = makeDeps({ ttlDays: 10 });
+        await svc.purge();
+        expect(contextEventRepo.deleteBefore.mock.calls[0][0]).toBe('2026-10-27T12:00:00.000Z');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('skips the purge (and never touches repos) when the advisory lock is held elsewhere', async () => {
       const { svc, database, contextEventRepo, runRepo, deliveryRepo, cosignatureRepo } =
         makeDeps({ lock: false });
