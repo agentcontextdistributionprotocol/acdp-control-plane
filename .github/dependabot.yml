@@ -31,9 +31,15 @@ updates:
     # types explicitly AND both catch-alls exclude `@nestjs/*`: a framework
     # major and its plugin minors can only ever travel together (issue #155).
     groups:
+      # Same failure mode as @nestjs/* (#155), seen on #297: the 0.300.0 / 1.10.0
+      # line moved the API peer to >=1.10.0 while sdk-trace-base 2.x still peers
+      # <1.10.0, and resources/core 3.x (majors) are needed to close it. Split
+      # across the catch-alls, every job ERESOLVEd at `npm ci`. All OTel packages
+      # now travel together in this group at every update type.
       opentelemetry:
         patterns:
           - "@opentelemetry/*"
+        update-types: [major, minor, patch]
       nestjs:
         patterns:
           - "@nestjs/*"
@@ -69,11 +75,13 @@ updates:
         update-types: [minor, patch]
         exclude-patterns:
           - "@nestjs/*"
+          - "@opentelemetry/*"
           - "@swc/*"
       major-updates:
         update-types: [major]
         exclude-patterns:
           - "@nestjs/*"
+          - "@opentelemetry/*"
           - "@swc/*"
   # Node runtime pin (node:26-bookworm-slim in the Dockerfile).
   - package-ecosystem: docker
