@@ -40,15 +40,23 @@ literals — the right production posture. For local Docker networking we need
 the registry to POST to `http://playground:8000/webhooks/acdp`.
 
 `e2e/registry-permissive/Dockerfile` wraps the registry's standard
-`docker/Dockerfile` build flow and inserts a `sed` step that swaps the two
-`SsrfPolicy::default()` call sites for a struct literal with
-`allow_http: true` (the other fields stay strict — IP literals still rejected,
-loopback IPs still rejected at the resolver level):
+`docker/Dockerfile` build flow and inserts two `sed` patches:
 
-| File | Site |
-|---|---|
-| `crates/acdp-registry-server/src/main.rs:82` | startup config validation |
-| `crates/acdp-registry-webhook/src/lib.rs:53`  | emitter spawn validation |
+| File | Site | Patch |
+|---|---|---|
+| `crates/acdp-registry-server/src/main.rs` | startup `webhook.url` validation | `SsrfPolicy::default()` → `allow_http: true` |
+| `crates/acdp-registry-webhook/src/lib.rs` | `WebhookEmitter::try_spawn` URL check | `SsrfPolicy::default()` → `allow_http: true` |
+| `crates/acdp-registry-webhook/src/lib.rs` | `worker()` delivery client | `safe_http::safe_client(&policy, …)` → plain `reqwest` client |
+
+The third patch is needed because the URL check passing is not enough: the
+delivery client is built with the strict default policy, which refuses
+`http://` and filters every resolved IP — and the address `playground`
+resolves to on the Docker network (RFC 1918) is refused under every
+`SsrfPolicy` setting. Without it the registry boots, accepts the config,
+and silently fails every delivery. Each patch is checked with `grep -q`
+after the `sed`, so an upstream move fails the image build loudly. The
+registry's other outbound clients (DID resolution, federation) keep the
+strict guard.
 
 The patched image stays in your local Docker cache; the upstream registry
 source is untouched. When upstream adds a loopback/private-host exemption,
@@ -59,7 +67,8 @@ to `acdp-registry-rs/docker/Dockerfile`.
 
 - Docker + `docker compose`
 - `curl` + `jq` on PATH
-- An OpenAI API key with `gpt-4o-mini` access
+- An OpenAI API key with `gpt-4o-mini` access (or an Anthropic key, or
+  `LLM_PROVIDER=mock` for no key at all)
 - This sibling checkout layout (the compose builds from neighbour repos):
 
 ```
@@ -89,8 +98,8 @@ cd e2e
 ./run-e2e.sh
 ```
 
-First run: ~5–10 min (the patched registry rebuilds from source + cargo-chef
-caches the dep tree + playground builds a Python+Rust image). Subsequent runs:
+First run: ~5–10 min (the patched registry rebuilds from source without
+cargo-chef — see the Dockerfile — and the playground builds its Python image). Subsequent runs:
 ~30–90 s, dominated by the LLM calls.
 
 Keep the stack running afterwards to poke around:
@@ -102,6 +111,21 @@ KEEP_STACK=1 ./run-e2e.sh
 # registry-a:      http://localhost:8100/healthz
 # postgres-cp:     psql postgres://acdp:acdp@localhost:5434/acdp_control_plane
 docker compose -f docker-compose.e2e.yml --env-file ../.env down -v
+```
+
+Check the plumbing without spending tokens — the playground's deterministic
+`mock` agents publish the same lineage through the same registry → playground
+→ control-plane webhook path, with zero LLM calls and no key required:
+
+```bash
+LLM_PROVIDER=mock ./run-e2e.sh
+```
+
+Use Anthropic instead of OpenAI (`LLM_MODEL` is required — the playground's
+default is an OpenAI model name):
+
+```bash
+LLM_PROVIDER=anthropic LLM_MODEL=<claude-haiku-model-id> ./run-e2e.sh
 ```
 
 Run a different scenario:
@@ -146,10 +170,14 @@ integration-tested in `test/integration/ingest.integration.spec.ts`.
 |---|---|
 | `error: OPENAI_API_KEY is empty in .env` | Set it. The runner refuses to start otherwise. |
 | `webhook.url rejected by SSRF policy` in `registry-a` logs | The SSRF patch didn't apply — check the `sed` step output during `docker compose build registry-a`. |
+| `webhook delivery failed` in `registry-a` logs, CP never converges | The delivery-client half of the SSRF patch didn't apply (the URL check passing is not enough — the strict delivery client refuses `http://` and Docker's RFC 1918 addresses). |
 | `[FAIL] timeout — control-plane never converged` | The webhook chain broke somewhere. Look at `docker compose logs playground` (did `/webhooks/acdp` 401? signature mismatch usually) and `docker compose logs control-plane` (did `/ingest/acdp` 400 on missing fields?). |
 | `Cannot connect to the Docker daemon` | Start Docker Desktop / the daemon. |
 | `compose ... bind: address already in use` (port 8000/8100/8200/3001/5434) | Stop whatever else is listening (often the regular playground compose). |
 | `status = failed` after the LLM step | `docker compose logs playground` — usually a bad API key or model unavailable for your account. |
+| `agent_id method 'did:key' is not in this registry's supported_did_methods` | `e2e/config/registry-*.toml` lost `"did:key"` from `[auth] did_methods` — the playground's agents publish as did:key. |
+| `e2e SSRF patch no longer matches acdp-registry-rs` during the registry build | Upstream moved a webhook SSRF call site. Update the `sed` lines in `e2e/registry-permissive/Dockerfile` (both the URL check and the delivery client). |
+| `control-plane` is `unhealthy` but its logs look fine | The healthcheck must use `node` — the runtime image ships neither `wget` nor `curl`. |
 | First build hangs for ages | First-time Rust+Python+sed image builds are slow. `docker compose -f docker-compose.e2e.yml --env-file .env build --progress=plain` shows what's happening. |
 
 ## What this is *not*

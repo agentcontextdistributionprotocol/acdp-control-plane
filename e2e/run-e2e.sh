@@ -24,6 +24,7 @@
 #   ./run-e2e.sh                # full run + teardown
 #   KEEP_STACK=1 ./run-e2e.sh   # leave the stack running
 #   SCENARIO=s1_single_publish ./run-e2e.sh
+#   LLM_PROVIDER=mock ./run-e2e.sh   # same webhook path, zero LLM calls / no key
 
 set -euo pipefail
 
@@ -48,10 +49,18 @@ fi
 # shellcheck disable=SC1090
 set -a; . "$ENV_FILE"; set +a
 
-if [ -z "${OPENAI_API_KEY:-}" ] && [ "${LLM_PROVIDER:-openai}" = "openai" ]; then
-  echo "error: OPENAI_API_KEY is empty in $ENV_FILE." >&2
-  exit 1
-fi
+LLM_PROVIDER="${LLM_PROVIDER:-openai}"
+case "$LLM_PROVIDER" in
+  openai)
+    [ -n "${OPENAI_API_KEY:-}" ] || { echo "error: OPENAI_API_KEY is empty in $ENV_FILE." >&2; exit 1; } ;;
+  anthropic)
+    [ -n "${ANTHROPIC_API_KEY:-}" ] || { echo "error: ANTHROPIC_API_KEY is empty in $ENV_FILE." >&2; exit 1; }
+    # The playground's LLM_MODEL default is an OpenAI model name.
+    [ -n "${LLM_MODEL:-}" ] || { echo "error: LLM_PROVIDER=anthropic needs LLM_MODEL (e.g. a Claude Haiku model id)." >&2; exit 1; } ;;
+  mock) ;;  # playground's deterministic agents: zero LLM calls, no key needed
+  *) echo "error: LLM_PROVIDER must be openai, anthropic or mock (got '$LLM_PROVIDER')." >&2; exit 1 ;;
+esac
+export LLM_PROVIDER
 
 for bin in docker curl jq; do
   command -v "$bin" >/dev/null || { echo "error: '$bin' not on PATH" >&2; exit 1; }
@@ -183,7 +192,7 @@ echo "      ✓ edge set identical"
 green ""
 green "============================================================"
 green "  E2E PASSED — full webhook path exercised:"
-green "    LLM (OpenAI) → 3 agents → registry-a → playground"
+green "    LLM ($LLM_PROVIDER) → agents → registry-a → playground"
 green "    → /webhooks/acdp → forward_webhook → control-plane"
 green "    → /ingest/acdp → context_events + lineage_edges + SSE."
 green "  Control plane reconstructed $CP_NODES nodes / $CP_EDGES edges."

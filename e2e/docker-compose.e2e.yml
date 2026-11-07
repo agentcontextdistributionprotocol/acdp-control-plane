@@ -57,9 +57,11 @@ services:
       postgres-cp:
         condition: service_healthy
     healthcheck:
-      # Use 127.0.0.1 not localhost — alpine's busybox getaddrinfo prefers
-      # ::1 (IPv6) but Nest listens on 0.0.0.0 (IPv4 only).
-      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3001/healthz | grep -q '\"ok\":true'"]
+      # The runtime image (node:*-bookworm-slim, hardened in #129) ships
+      # neither wget nor curl, so probe with the node binary that runs the
+      # app — same probe as the Dockerfile's HEALTHCHECK. 127.0.0.1, not
+      # localhost: Nest listens on 0.0.0.0 (IPv4 only).
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -128,8 +130,11 @@ services:
   # ── Playground (Python — agents that hit the LLM) ──────────────────
   playground:
     build:
-      context: ../..
-      dockerfile: acdp-playground/Dockerfile
+      # The playground installs the `acdp` SDK as a prebuilt PyPI wheel, so
+      # its Dockerfile expects its OWN repo as the context (acdp-playground
+      # 3b99779). The old `../..` context fails with "/uv.lock: not found".
+      context: ../../acdp-playground
+      dockerfile: Dockerfile
     ports: ["8000:8000"]
     environment:
       REGISTRY_A_URL: http://registry-a:8100

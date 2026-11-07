@@ -28,7 +28,10 @@ max_connections = 10
 
 [auth]
 enabled                = true
-did_methods            = ["did:web"]
+# did:key: the playground's agents publish as did:key (ACDP 0.2.0, verified
+# offline from the DID itself) — without it every publish 400s with
+# "agent_id method 'did:key' is not in this registry's supported_did_methods".
+did_methods            = ["did:web", "did:key"]
 anonymous_public_reads = true
 token_ttl_seconds      = 3600
 challenge_ttl_seconds  = 300
