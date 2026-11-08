@@ -83,9 +83,11 @@ railway_token="${RAILWAY_API_TOKEN:-$(jq -r '.user.accessToken // .user.token //
 [ -n "$railway_token" ] || die "no Railway token: log in with the railway CLI or set RAILWAY_API_TOKEN"
 
 # POST a GraphQL request whose JSON body arrives on stdin, so values never reach argv.
+# The token travels as a header read from a file descriptor (-H @fd), not argv,
+# so it never shows up in the process list.
 railway_gql() {
   curl -fsS https://backboard.railway.com/graphql/v2 \
-    -H "Authorization: Bearer $railway_token" -H 'content-type: application/json' --data-binary @- |
+    -H @<(printf 'Authorization: Bearer %s\n' "$railway_token") -H 'content-type: application/json' --data-binary @- |
     jq -e 'if .errors then error("railway: \(.errors | map(.message) | join("; "))") else .data end'
 }
 gql() { jq -nc --arg q "$1" --argjson v "${2:-{\}}" '{query: $q, variables: $v}' | railway_gql; }
