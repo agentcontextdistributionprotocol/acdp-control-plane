@@ -70,6 +70,14 @@ starts the control-plane image), export `CP_API_KEY` (mapped to
 `NODE_ENV=production`, and production startup refuses an empty value for
 either.
 
+**Secrets live in Doppler** (project `acdp-control-plane`; configs `dev`,
+`dev_personal`, `stg`, `prd`). With the Doppler CLI, `doppler setup -p
+acdp-control-plane -c dev` once, then `doppler run -- npm run start:dev` (or
+`doppler run -- npm run test:integration`): injected variables win over `.env`,
+which stays as the offline fallback. Production values flow Doppler `prd` →
+Railway through `deploy/doppler-sync.sh` — see
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md#secrets-doppler).
+
 ## Testing
 
 ```bash

@@ -29,6 +29,35 @@ than `development` (so `test` and `staging` count as "production" here). A
 misconfiguration in the second tier boots silently under `NODE_ENV=development`
 — see [Startup validation](#startup-validation) for which check is which.
 
+## Secrets: Doppler
+
+Doppler is the source of truth for secrets and deployed config. Project
+`acdp-control-plane` has four configs: `dev` (the local-development values;
+`dev_personal` inherits it), `stg` (empty — there is no Railway staging
+environment) and `prd` (the Railway production values).
+
+- **Local:** `doppler setup -p acdp-control-plane -c dev` once, then prefix any
+  command with `doppler run --`, e.g. `doppler run -- npm run start:dev` or
+  `doppler run -- npm run test:integration`. A variable already in the
+  environment wins over `.env` (see above), so Doppler's values take precedence
+  and `.env` remains a fallback for offline work.
+- **Production:** `deploy/doppler-sync.sh` pushes the keys listed in
+  `deploy/doppler-keys.txt` from Doppler `prd` into the Railway service
+  `acdp-control-plane` (project `acdp-runner`, environment `production`). It is a
+  dry run by default (key names and `unchanged`/`changed`/`new`, plus a sha256 of
+  the managed set on both sides — never a value); `--apply` sets the changed keys
+  and redeploys only if something changed (`--no-redeploy` to defer). It never
+  deletes a variable, refuses a dirty tree on `--apply`, and refuses `RAILWAY_*`
+  keys and Railway references. To change a production value: set it in Doppler
+  `prd`, run the dry run, then `--apply`. A new key also needs a line in the
+  allowlist (committed first).
+- **Railway-managed, never in the allowlist:** `DATABASE_URL` (a `${{…}}`
+  reference to the Railway Postgres service) and Railway's `RAILWAY_*` system
+  variables.
+- **Doppler-only:** `RAILWAY_TOKEN` in `prd` is the Railway project token the
+  release workflow (`.github/workflows/release.yml`) uses for its deploy job; it
+  is mirrored to the GitHub secret of the same name and never synced to Railway.
+
 > Several keys are env-var equivalents of the registry's TOML config (e.g.
 > `AUTH_REQUIRE_TENANT` ↔ `auth.require_tenant`, `TENANT_AGENTS` ↔
 > `[[auth.tenant_agents]]`, `REVOCATION_FEEDS` ↔ `[[auth.revocation_feeds]]`,
@@ -153,7 +182,7 @@ See [INGEST.md](./INGEST.md).
 | `THROTTLE_TTL_MS` | number | `60000` | Throttle window per `(actorId\|ip)`. |
 | `THROTTLE_LIMIT` | number | `200` | Requests per window. `/auth/*` uses a tighter override. |
 | `THROTTLE_IPV6_SUBNET_PREFIX` | integer `1`–`128` | `64` | Prefix an unauthenticated IPv6 caller's address is collapsed to before keying. Anything but a decimal integer in range — out-of-range, fractional, or non-numeric (`/48`, `sixty-four`, `0x40`, `1e2`, empty) — fails startup (every environment) — a set value is never silently replaced by `64`. `128` = per-address. |
-| `TRUST_PROXY` | hop count \| address list | unset (off) | Express `trust proxy` — which reverse proxies may set the client address via `X-Forwarded-For`. See **Behind a reverse proxy** below. Invalid values (including `true`) fail startup in every environment. |
+| `TRUST_PROXY` | hop count \| address list | unset (off) | Express `trust proxy` — which reverse proxies may set the client address via `X-Forwarded-For`. See **Behind a reverse proxy** below. Invalid values (including `true`) fail startup in every environment. Production (Railway) runs `1`: exactly one edge hop, managed in Doppler `prd`. |
 
 **Tracker.** An authenticated request (API key or bearer JWT) is keyed on its
 principal (`actorId`), whatever address it comes from. An unauthenticated
