@@ -157,9 +157,18 @@ export class TestClient {
     return this.requestJson('GET', '/readyz');
   }
 
+  /**
+   * Prometheus text from `/metrics` (admin-only — call it on
+   * `ctx.adminClient`). Throws on any non-200 so a missing admin key fails
+   * loudly instead of handing a JSON error body to a metric regex.
+   */
   async metrics(): Promise<string> {
     const res = await this.requestRaw('GET', '/metrics');
-    return typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+    const body = typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+    if (res.status !== 200) {
+      throw new Error(`GET /metrics returned ${res.status}: ${body.slice(0, 200)}`);
+    }
+    return body;
   }
 
   // ── Low-level ────────────────────────────────────────────────

@@ -34,8 +34,11 @@ non-`@Public()` request it:
    `POST /runs/:runId/complete` — both HMAC-authenticated like ingest —
    `/auth/challenge`, `/auth/token`, `/.well-known/jwks.json`,
    `/log/witness`, `/.well-known/acdp-witness.json`, `/.well-known/did.json`,
-   `/healthz`, `/readyz`, `/metrics`). `/metrics` carries no token gate of its own
-   (unlike the registry's separately gated `/metrics`); restrict it at the network edge.
+   `/healthz`, `/readyz`). `/metrics` is NOT public: it requires an
+   `AUTH_ADMIN_API_KEYS` key (401 without a key, 403 `ADMIN_REQUIRED` otherwise),
+   so point a Prometheus scraper at it with that key as a bearer token. Under
+   `AUTH_REQUIRE_TENANT=true` the admin key must be tenant-bound: an unbound key
+   gets 403 `TENANT_REQUIRED` before the admin check runs.
    The CP also has no anonymous mode on guarded routes — unlike the registry, where
    [an unrecognised `Authorization` value means anonymous](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/blob/main/docs/AUTHENTICATION.md#unrecognised-means-anonymous-on-the-ordinary-routes).
 2. **Dispatches on token shape** — a value that splits into exactly three

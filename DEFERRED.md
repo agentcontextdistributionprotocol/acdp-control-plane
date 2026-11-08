@@ -35,7 +35,6 @@ category, then `file:line` evidence. File an issue only once an item has a repro
 ## API surface
 
 - **bug** — `PATCH /webhooks/:id` with an unknown id returns 200 with an empty body instead of 404 (`src/webhooks/webhook.repository.ts:84` returns null → `src/webhooks/webhook.controller.ts:85`).
-- **security** — `/metrics` is `@Public()`, so it's served without authentication (`src/metrics/metrics.controller.ts:9`).
 
 ## Config and telemetry
 

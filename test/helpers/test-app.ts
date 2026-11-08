@@ -16,9 +16,20 @@ export interface TestAppContext {
   app: INestApplication;
   url: string;
   client: TestClient;
+  /**
+   * Client carrying the admin api key (`opts.adminApiKey`, else the default
+   * `DEFAULT_TEST_ADMIN_KEY`). Use it for admin-only routes such as `/metrics`.
+   * Unbound to any tenant, so under strict tenancy (`requireTenant` /
+   * `tenantApiKeys`) AuthGuard refuses it with 403 TENANT_REQUIRED before any
+   * admin check — such suites must not read `/metrics` through it.
+   */
+  adminClient: TestClient;
   module: TestingModule;
   cleanup: () => Promise<void>;
 }
+
+/** Admin api key every test app accepts unless `adminApiKey` overrides it. */
+export const DEFAULT_TEST_ADMIN_KEY = 'test-admin-key';
 
 export interface TestAppOptions {
   /** When set, HMAC verification is enabled with this secret (matches WEBHOOK_SECRET). */
@@ -40,10 +51,11 @@ export interface TestAppOptions {
    */
   domainPacks?: string;
   /**
-   * Admin api key. When provided, joins the AUTH_API_KEYS union AND
-   * sets AUTH_ADMIN_API_KEYS so the AuthGuard flags requests carrying
-   * this key as `actorIsAdmin = true`. Used by admin-only endpoint
-   * tests (revocation feed, pinned-keys reload).
+   * Admin api key. Joins the AUTH_API_KEYS union AND sets
+   * AUTH_ADMIN_API_KEYS so the AuthGuard flags requests carrying this key
+   * as `actorIsAdmin = true`. Defaults to `DEFAULT_TEST_ADMIN_KEY`, so every
+   * app has one (`ctx.adminClient`) — `/metrics` is admin-only. The plain
+   * `client` key is never admin.
    */
   adminApiKey?: string;
   /**
@@ -162,18 +174,17 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
   } else {
     delete process.env.AUTH_REQUIRE_TENANT;
   }
-  if (opts.adminApiKey) {
-    // Union the admin key into AUTH_API_KEYS so AuthGuard accepts it,
-    // then mark it as admin via AUTH_ADMIN_API_KEYS.
+  // Union the admin key into AUTH_API_KEYS so AuthGuard accepts it, then
+  // mark it as admin via AUTH_ADMIN_API_KEYS.
+  const adminApiKey = opts.adminApiKey ?? DEFAULT_TEST_ADMIN_KEY;
+  {
     const existing = process.env.AUTH_API_KEYS ?? '';
     const set = new Set(
       existing.split(',').map((s) => s.trim()).filter(Boolean),
     );
-    set.add(opts.adminApiKey);
+    set.add(adminApiKey);
     process.env.AUTH_API_KEYS = Array.from(set).join(',');
-    process.env.AUTH_ADMIN_API_KEYS = opts.adminApiKey;
-  } else {
-    delete process.env.AUTH_ADMIN_API_KEYS;
+    process.env.AUTH_ADMIN_API_KEYS = adminApiKey;
   }
   process.env.WEBHOOK_SECRET = webhookSecret;
   // Receipt audit stays off in the harness (its sweep would race tests);
@@ -267,11 +278,12 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
   await app.listen(0);
   const url = await app.getUrl();
   const client = new TestClient(url, apiKey);
+  const adminClient = new TestClient(url, adminApiKey);
 
   const cleanup = async () => {
     const db = moduleRef.get(DatabaseService);
     await truncateAll(db.pool);
   };
 
-  return { app, url, client, module: moduleRef, cleanup };
+  return { app, url, client, adminClient, module: moduleRef, cleanup };
 }

@@ -199,7 +199,7 @@ describe('Readiness — /readyz vs. a failing database (issue #210, integration)
     // Warm: an idle client exists, so refuse() destroys an idle socket and the
     // pool emits 'error' — the event that used to latch /healthz forever.
     expect((await anon.requestRaw('GET', '/readyz')).status).toBe(200);
-    const errorsBefore = metricValue(await anon.metrics(), POOL_ERRORS) ?? 0;
+    const errorsBefore = metricValue(await ctx.adminClient.metrics(), POOL_ERRORS) ?? 0;
 
     await proxy.refuse();
     await sleep(CACHE_MS + 50);
@@ -211,7 +211,7 @@ describe('Readiness — /readyz vs. a failing database (issue #210, integration)
       service: 'acdp-control-plane',
       version: expect.any(String),
     });
-    expect(metricValue(await anon.metrics(), POOL_ERRORS)).toBeGreaterThanOrEqual(errorsBefore + 1);
+    expect(metricValue(await ctx.adminClient.metrics(), POOL_ERRORS)).toBeGreaterThanOrEqual(errorsBefore + 1);
 
     await proxy.restore();
     const restoredAt = performance.now();
@@ -265,14 +265,14 @@ describe('Readiness — /readyz vs. a failing database (issue #210, integration)
     }
     expect(maxTotal).toBeLessThanOrEqual(before + 1);
 
-    const during = await anon.metrics();
+    const during = await ctx.adminClient.metrics();
     expect(metricValue(during, TIMEOUTS)).toBeGreaterThanOrEqual(1);
     expect(metricValue(during, DB_UP)).toBe(0);
 
     await proxy.restore();
     const elapsed = await pollReady(anon, CACHE_MS + TIMEOUT_MS + 500);
     expect(elapsed).toBeLessThan(CACHE_MS + TIMEOUT_MS + 500);
-    expect(metricValue(await anon.metrics(), DB_UP)).toBe(1);
+    expect(metricValue(await ctx.adminClient.metrics(), DB_UP)).toBe(1);
 
     // The app pool serves real traffic again.
     expect((await ctx.client.requestRaw('GET', '/runs')).status).toBe(200);

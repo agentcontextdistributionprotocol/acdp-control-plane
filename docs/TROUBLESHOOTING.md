@@ -467,7 +467,7 @@ should stop routing here until it recovers. The body is the standard error envel
   the shared app pool, so if every connection is busy for longer than the timeout,
   readiness reads as down too — real requests are also waiting at that point. Check
   for long-running queries and `DB_POOL_MAX` before suspecting the network.
-  **Tell saturation from an outage with `/metrics`:**
+  **Tell saturation from an outage with `/metrics`** (admin key required):
   `acdp_db_pool_connections{state="waiting"} > 0` alongside `reason: "timeout"`
   (and `total` at `DB_POOL_MAX`) means the pool is saturated — requests are queued
   for a connection — while `waiting` at 0 means the pool itself is not the bottleneck and the database

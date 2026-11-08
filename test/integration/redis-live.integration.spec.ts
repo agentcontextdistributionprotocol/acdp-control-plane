@@ -242,7 +242,7 @@ describe('Readiness reports the Redis stream hub without gating on it (issue #21
         streamHub: { status: 'down', required: false },
       },
     });
-    const metrics = await anon.metrics();
+    const metrics = await app.adminClient.metrics();
     expect(metrics).toMatch(/^acdp_dependency_up\{dependency="redis_stream_hub"\} 0$/m);
     expect(metrics).toMatch(/^acdp_dependency_up\{dependency="database"\} 1$/m);
     // Liveness is untouched by it too.
@@ -275,6 +275,6 @@ describe('Readiness reports the Redis stream hub without gating on it (issue #21
       await new Promise((r) => setTimeout(r, 50));
     }
     expect(body).toMatchObject({ checks: { streamHub: { status: 'up', required: false } } });
-    expect(await anon.metrics()).toMatch(/^acdp_dependency_up\{dependency="redis_stream_hub"\} 1$/m);
+    expect(await app.adminClient.metrics()).toMatch(/^acdp_dependency_up\{dependency="redis_stream_hub"\} 1$/m);
   });
 });
