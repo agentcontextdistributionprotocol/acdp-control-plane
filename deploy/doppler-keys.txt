@@ -1,0 +1,34 @@
+# Railway variables that Doppler (acdp-control-plane/prd) owns for the acdp-control-plane
+# service in Railway project acdp-runner (production).
+# deploy/doppler-sync.sh sets and updates exactly these; it never deletes anything.
+# Never list RAILWAY_* variables or Railway references (${{...}}): Railway owns those.
+# Left Railway-managed on purpose:
+#   DATABASE_URL = ${{...}} (reference to the Railway Postgres service)
+# Doppler-only, never synced to Railway:
+#   RAILWAY_TOKEN (Railway project token for .github/workflows/release.yml; also a GitHub secret)
+# This list only grows: dropping a key stops the sync managing it, never deletes it.
+
+# Secrets
+AUTH_ADMIN_API_KEYS
+AUTH_API_KEYS
+JWT_SECRET
+WEBHOOK_SECRET
+
+# Config
+AUTH_PERSISTENCE
+AUTH_REQUIRE_TENANT
+CORS_ORIGIN
+DOMAIN_PACKS
+HOST
+JWT_AUDIENCE
+JWT_AUTHORITY
+JWT_SIGNING_ALG
+NODE_ENV
+PLAYGROUND_URL
+POLICY_BACKEND
+PORT
+STREAM_HUB_STRATEGY
+TOKEN_ISSUANCE_ENABLED
+# 1 = trust exactly Railway's single edge hop for req.ip (throttle keys on the real client IP;
+# client-written X-Forwarded-For entries are ignored). parseTrustProxy rejects `true`.
+TRUST_PROXY
