@@ -160,6 +160,21 @@ jobs:
       - name: Integration tests
         run: npm run test:integration
 
+  deploy-scripts:
+    # deploy/doppler-sync.sh pushes prod secrets into Railway. Prove it fails
+    # closed (bad token = HTTP 200 + errors, data:null, variables:null, non-2xx,
+    # network, garbage body, failed Doppler read) and keeps secrets off argv.
+    # Offline: fake curl/doppler/railway; shellcheck + jq are on the runner image.
+    name: deploy scripts (shellcheck + doppler-sync fail-closed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: shellcheck deploy/*.sh
+      - name: doppler-sync.sh fails closed and keeps secrets off argv
+        run: python3 deploy/test_doppler_sync.py
+
   docker:
     # The release workflow builds this same Dockerfile on tag push — catching a
     # broken build here (PR time) instead of at release time. push: false, so
