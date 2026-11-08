@@ -96,6 +96,7 @@ describe('Health Probes (integration)', () => {
     expect(admin.status).toBe(200);
     expect(String(admin.headers['content-type'])).toMatch(/^text\/plain/);
     expect(admin.body).toMatch(/^# TYPE acdp_/m);
+    expect((await ctx.adminClient.requestRaw('HEAD', '/metrics')).status).toBe(200);
   });
 });
 
