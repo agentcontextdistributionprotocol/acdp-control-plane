@@ -428,9 +428,8 @@ binding. Both return `204`.
   `completed` | `failed` | `cancelled`. Sets `status`, `completedAt` and
   `result` (replaced; `null` when omitted). An unknown run is
   `404 RUN_NOT_FOUND`. `completed`/`failed` also feed a reward (1/0) to the
-  bandit router for every agent seen in the run, and when `PLAYGROUND_URL` is set
-  the CP forwards `{ status, result }` to `<PLAYGROUND_URL>/runs/:runId/complete`
-  (fire-and-forget, 5 s timeout).
+  bandit router for every agent seen in the run. The CP makes no outbound call
+  here: the playground is the caller of this route, not a recipient.
 
 ### SSE streams
 

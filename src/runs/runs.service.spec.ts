@@ -2,7 +2,6 @@ import { RunsService } from './runs.service';
 
 describe('RunsService', () => {
   let runRepo: any;
-  let config: any;
   let contextEventRepo: any;
   let receiptAuditRepo: any;
   let bandit: any;
@@ -16,13 +15,11 @@ describe('RunsService', () => {
       findByIdOrThrow: jest.fn(),
       markComplete: jest.fn(),
     };
-    config = { playgroundUrl: '' };
     contextEventRepo = { listByRun: jest.fn().mockResolvedValue([]) };
     receiptAuditRepo = { summarizeByRun: jest.fn().mockResolvedValue(null) };
     bandit = { recordReward: jest.fn() };
     svc = new RunsService(
       runRepo,
-      config,
       contextEventRepo as any,
       receiptAuditRepo as any,
       bandit as any,
@@ -116,42 +113,12 @@ describe('RunsService', () => {
     expect(bandit.recordReward).not.toHaveBeenCalled();
   });
 
-  it('markComplete does not call playground when PLAYGROUND_URL is empty', async () => {
+  it('markComplete makes no outbound HTTP call (the playground calls the CP, never the reverse)', async () => {
     runRepo.markComplete.mockResolvedValue({ runId: 'r-1', status: 'completed' });
     const out = await svc.markComplete('r-1', 'completed', { ok: true });
     expect(out).toEqual({ runId: 'r-1', status: 'completed' });
+    // Let any fire-and-forget work (the bandit reward) settle first.
+    await new Promise((r) => setImmediate(r));
     expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('markComplete fires playground notification when PLAYGROUND_URL is set', async () => {
-    config.playgroundUrl = 'http://playground.local';
-    runRepo.markComplete.mockResolvedValue({ runId: 'r-1' });
-    fetchMock.mockResolvedValue({ ok: true, status: 200 });
-
-    await svc.markComplete('r-1', 'completed', { ok: true });
-    // notify is fire-and-forget — give it a tick
-    await new Promise((r) => setImmediate(r));
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://playground.local/runs/r-1/complete',
-      expect.objectContaining({
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
-  });
-
-  it('swallows playground notification failures', async () => {
-    config.playgroundUrl = 'http://playground.local';
-    runRepo.markComplete.mockResolvedValue({ runId: 'r-1' });
-    fetchMock.mockRejectedValue(new Error('connection refused'));
-
-    // The notification failure is swallowed: markComplete still returns the
-    // persisted run rather than propagating the fetch rejection.
-    await expect(svc.markComplete('r-1', 'completed')).resolves.toEqual({
-      runId: 'r-1',
-    });
-    await new Promise((r) => setImmediate(r));
-    expect(fetchMock).toHaveBeenCalled();
   });
 });

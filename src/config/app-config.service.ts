@@ -394,9 +394,6 @@ export class AppConfigService implements OnModuleInit {
   // Bandit router exploration fraction (Thompson sampling). 0..1.
   readonly banditExplorationFraction = readNumber('BANDIT_EXPLORATION_FRACTION', 0.05);
 
-  // Playground URL — for run-completion notifications back to the playground.
-  readonly playgroundUrl = process.env.PLAYGROUND_URL ?? '';
-
   // SSE / stream hub
   readonly streamHubStrategy = process.env.STREAM_HUB_STRATEGY ?? 'memory';
   readonly redisUrl = process.env.REDIS_URL ?? '';

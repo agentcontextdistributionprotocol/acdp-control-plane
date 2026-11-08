@@ -389,7 +389,6 @@ CP mechanics:
 
 | Var | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `PLAYGROUND_URL` | string | `''` | Playground backend for run-completion notifications; empty disables. |
 
 ## Startup validation
 
