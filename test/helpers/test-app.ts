@@ -59,6 +59,12 @@ export interface TestAppOptions {
    */
   adminApiKey?: string;
   /**
+   * Read-only api key. Joins the AUTH_API_KEYS union AND sets
+   * AUTH_READ_ONLY_API_KEYS (safe methods only, else 403 API_KEY_READ_ONLY).
+   * Unset → AUTH_READ_ONLY_API_KEYS is cleared so it never leaks across suites.
+   */
+  readOnlyApiKey?: string;
+  /**
    * Force strict tenant mode (AUTH_REQUIRE_TENANT=true). Auto-enabled whenever
    * `tenantApiKeys` is set, because the app now fails startup if tenant
    * bindings exist without strict mode (multi-tenant fail-fast). Set
@@ -185,6 +191,13 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
     set.add(adminApiKey);
     process.env.AUTH_API_KEYS = Array.from(set).join(',');
     process.env.AUTH_ADMIN_API_KEYS = adminApiKey;
+    if (opts.readOnlyApiKey) {
+      set.add(opts.readOnlyApiKey);
+      process.env.AUTH_API_KEYS = Array.from(set).join(',');
+      process.env.AUTH_READ_ONLY_API_KEYS = opts.readOnlyApiKey;
+    } else {
+      delete process.env.AUTH_READ_ONLY_API_KEYS;
+    }
   }
   process.env.WEBHOOK_SECRET = webhookSecret;
   // Receipt audit stays off in the harness (its sweep would race tests);

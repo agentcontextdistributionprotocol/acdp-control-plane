@@ -5,7 +5,9 @@ Plan: `plans/cp-wave-2026-11-07b.md` (plans/ is gitignored; this file is tracked
 ## Phase log
 PR strategy: ONE PR (P1 + P2 commits; shared files), then P3 ops (Doppler + v0.1.7).
 - Plan review: round 1 REVISE → applied (see plan § Plan review).
-- P1 DONE — config parser + branded TrustedFetchBase, SafeFederationClient.getTrusted, controller wiring, unit + integration (real loopback egress), docs CONFIGURATION/API/TROUBLESHOOTING/CLAUDE.md/.env.example/doppler-keys, DEFERRED line.
+- P1 DONE (Opus verify PASS, 1 round; nit b applied in P2) — config parser + branded TrustedFetchBase, SafeFederationClient.getTrusted, controller wiring, unit + integration (real loopback egress), docs CONFIGURATION/API/TROUBLESHOOTING/CLAUDE.md/.env.example/doppler-keys, DEFERRED line.
+
+- P2 DONE — assertAdmin on enrollments; AUTH_READ_ONLY_API_KEYS (config validate pre-dev-return, guard gate, actorReadOnly, ErrorCode.API_KEY_READ_ONLY); unit + integration read-only-api-key spec; docs API/AUTH/TENANCY/CONFIGURATION/.env.example/doppler-keys.
 
 ## Findings (ops, no values)
 - Task 3: the old CP callback (removed in #325) caused the playground 401s from 10.139.199.179. The last one was at 2026-11-08T02:59:19Z, and there have been none since. CP 0.1.6 has been live since 03:14Z.

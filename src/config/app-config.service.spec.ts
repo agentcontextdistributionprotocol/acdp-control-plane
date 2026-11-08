@@ -444,12 +444,54 @@ describe('AppConfigService', () => {
       expect(msg).not.toContain('s3cret');
     });
 
+    it('never echoes a malformed key that could carry credentials', () => {
+      expect(() =>
+        parseRegistryFetchUrlOverrides('{"http://user:s3cret@host":"http://x"}'),
+      ).toThrow(/<invalid key>/);
+      expect(() =>
+        parseRegistryFetchUrlOverrides('{"http://user:s3cret@host":"http://x"}'),
+      ).not.toThrow(/s3cret/);
+    });
+
     it('is parsed at construction in every environment', () => {
       process.env.NODE_ENV = 'development';
       process.env.REGISTRY_FETCH_URL_OVERRIDES = '{"BAD":"http://x"}';
       expect(() => freshConfig()).toThrow(/REGISTRY_FETCH_URL_OVERRIDES/);
       process.env.REGISTRY_FETCH_URL_OVERRIDES = '{"ok.example":"http://x:1"}';
       expect(freshConfig().registryFetchUrlOverrides.get('ok.example')).toBe('http://x:1');
+    });
+  });
+
+  describe('AUTH_READ_ONLY_API_KEYS (validate, every environment)', () => {
+    it.each(['development', 'production'])('rejects a read-only key absent from AUTH_API_KEYS (%s)', (env) => {
+      process.env.NODE_ENV = env;
+      process.env.AUTH_API_KEYS = 'rw-key';
+      process.env.AUTH_READ_ONLY_API_KEYS = 'ro-key';
+      expect(() => freshConfig().onModuleInit()).toThrow(/1 key\(s\) are not in AUTH_API_KEYS/);
+    });
+
+    it.each(['development', 'production'])('rejects a key that is both read-only and admin (%s)', (env) => {
+      process.env.NODE_ENV = env;
+      process.env.AUTH_API_KEYS = 'k1,k2';
+      process.env.AUTH_ADMIN_API_KEYS = 'k1';
+      process.env.AUTH_READ_ONLY_API_KEYS = 'k1';
+      expect(() => freshConfig().onModuleInit()).toThrow(/also in AUTH_ADMIN_API_KEYS/);
+    });
+
+    it('never echoes key material in the error', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.AUTH_API_KEYS = 'rw-key';
+      process.env.AUTH_READ_ONLY_API_KEYS = 'super-secret-ro-key';
+      expect(() => freshConfig().onModuleInit()).not.toThrow(/super-secret-ro-key/);
+    });
+
+    it('accepts a valid subset (dev)', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.AUTH_API_KEYS = 'rw-key,ro-key';
+      process.env.AUTH_READ_ONLY_API_KEYS = 'ro-key';
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).not.toThrow();
+      expect(cfg.authReadOnlyApiKeys).toEqual(['ro-key']);
     });
   });
 

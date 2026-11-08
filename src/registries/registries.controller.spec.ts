@@ -279,4 +279,29 @@ describe('RegistriesController.enroll', () => {
       controller.acknowledgeLogWitnessAlert('reg.example', req()),
     ).rejects.toBeInstanceOf(AppException);
   });
+
+  describe('listEnrollments (admin-only)', () => {
+    it('rejects a non-admin caller with 403 ADMIN_REQUIRED and never reads the table', async () => {
+      await expect(controller.listEnrollments(req({ actorIsAdmin: false }))).rejects.toMatchObject({
+        errorCode: ErrorCode.ADMIN_REQUIRED,
+        status: 403,
+      });
+      await expect(controller.listEnrollments(req({ actorIsAdmin: undefined }))).rejects.toMatchObject({
+        errorCode: ErrorCode.ADMIN_REQUIRED,
+      });
+      expect(enrollmentRepo.list).not.toHaveBeenCalled();
+    });
+
+    it('lists the tenant enrollments for an admin, without webhook secrets', async () => {
+      enrollmentRepo.list.mockResolvedValue([
+        { authority: 'reg.example', tenantId: 'tenant-a', baseUrl: 'http://reg.internal', webhookSecret: 'shh' },
+      ]);
+      const out = await controller.listEnrollments(req());
+      expect(enrollmentRepo.list).toHaveBeenCalledWith('tenant-a');
+      expect(out).toEqual({
+        data: [{ authority: 'reg.example', tenantId: 'tenant-a', baseUrl: 'http://reg.internal' }],
+        total: 1,
+      });
+    });
+  });
 });

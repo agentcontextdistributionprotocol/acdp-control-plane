@@ -57,6 +57,7 @@ non-`@Public()` request it:
    | `actorIsAdmin` | always `false` | key ∈ `AUTH_ADMIN_API_KEYS` |
    | `actorIssuer` | verified `iss` | unset |
    | `actorFederated` | `true` iff a `TRUSTED_ISSUERS` entry vouched for it | `false` |
+   | `actorReadOnly` | unset (issuer `read_only` is enforced directly) | key ∈ `AUTH_READ_ONLY_API_KEYS` |
 
    `actorId` is what `ThrottleByUserGuard` buckets on and what `PolicyGuard` falls back
    to as `subjectDid` when there is no `actorDid` (see [POLICY.md](./POLICY.md#policyrequest)).
@@ -85,7 +86,9 @@ flowchart TD
     M -- no --> E401
     M -- yes --> KT["tenant checks: reserved, mismatch, strict"]
     KT -- fails --> E403
-    KT -- ok --> PASS
+    KT -- ok --> ROK{"key in AUTH_READ_ONLY_API_KEYS and<br/>non-GET/HEAD/OPTIONS?"}
+    ROK -- "yes (except POST /auth/introspect)" --> E403K["403 API_KEY_READ_ONLY"]
+    ROK -- no --> PASS
 ```
 
 ### API-key path
@@ -95,6 +98,12 @@ flowchart TD
   is already in `AUTH_API_KEYS`; a key listed only in either of them is `401`.
 - `req.actorIsAdmin` = key ∈ `AUTH_ADMIN_API_KEYS` (constant-time). Admin routes call
   `assertAdmin` (`src/auth/admin.ts`) → `403 ADMIN_REQUIRED` for anyone else.
+- `req.actorReadOnly` = key ∈ `AUTH_READ_ONLY_API_KEYS` (constant-time). After the
+  tenant checks, a read-only key on anything but GET/HEAD/OPTIONS (or the read-shaped
+  `POST /auth/introspect`) is `403 API_KEY_READ_ONLY`. That covers every write route,
+  present and future, including webhook subscription management. Startup fails in
+  every environment if a read-only key is missing from `AUTH_API_KEYS` (the dev no-keys
+  bypass would otherwise grant it full access) or is also an admin key.
 - Tenant: a key bound in `TENANT_API_KEYS` resolves to its tenant; a bare key →
   `default` and ignores `X-Tenant-Id`. A bound key with a different `X-Tenant-Id` is
   `403 TENANT_MISMATCH`. Full rules: [TENANCY.md](./TENANCY.md#how-the-guard-resolves-the-tenant).
