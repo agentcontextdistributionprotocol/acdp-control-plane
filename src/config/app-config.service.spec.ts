@@ -1,5 +1,10 @@
 import { Logger } from '@nestjs/common';
-import { AppConfigService, parseTrustProxy, TRUST_PROXY_MAX_HOPS } from './app-config.service';
+import {
+  AppConfigService,
+  parseRegistryFetchUrlOverrides,
+  parseTrustProxy,
+  TRUST_PROXY_MAX_HOPS,
+} from './app-config.service';
 
 describe('AppConfigService', () => {
   const originalEnv = { ...process.env };
@@ -388,6 +393,105 @@ describe('AppConfigService', () => {
       } finally {
         warnSpy.mockRestore();
       }
+    });
+  });
+
+  describe('REGISTRY_FETCH_URL_OVERRIDES', () => {
+    it.each([undefined, '', '   '])('is an empty map when unset/blank (%p)', (raw) => {
+      expect(parseRegistryFetchUrlOverrides(raw).size).toBe(0);
+    });
+
+    it('parses a valid map, dropping a trailing slash and keeping a path prefix', () => {
+      const m = parseRegistryFetchUrlOverrides(
+        JSON.stringify({
+          'registry-a.playground.local': 'http://acdp-registry.railway.internal:8100/',
+          'registry-b.playground.local': 'https://gw.example/registries/b/',
+        }),
+      );
+      expect([...m.entries()]).toEqual([
+        ['registry-a.playground.local', 'http://acdp-registry.railway.internal:8100'],
+        ['registry-b.playground.local', 'https://gw.example/registries/b'],
+      ]);
+    });
+
+    it.each([
+      ['non-JSON', 'registry-a=http://x'],
+      ['a JSON array', '["http://x"]'],
+      ['a JSON string', '"http://x"'],
+      ['JSON null', 'null'],
+      ['an uppercase authority', '{"Registry-A.example":"http://x"}'],
+      ['a port-bearing authority', '{"registry-a.example:8100":"http://x"}'],
+      ['a scheme in the key', '{"http://registry-a.example":"http://x"}'],
+      ['a non-string value', '{"registry-a.example":8100}'],
+      ['a relative value', '{"registry-a.example":"/contexts"}'],
+      ['a non-http scheme', '{"registry-a.example":"ftp://x"}'],
+      ['credentials in the URL', '{"registry-a.example":"http://u:p@x"}'],
+      ['a query', '{"registry-a.example":"http://x/?a=1"}'],
+      ['a bare query marker', '{"registry-a.example":"http://x/?"}'],
+      ['a fragment', '{"registry-a.example":"http://x/#f"}'],
+    ])('fails fast on %s', (_label, raw) => {
+      expect(() => parseRegistryFetchUrlOverrides(raw)).toThrow(/REGISTRY_FETCH_URL_OVERRIDES/);
+    });
+
+    it('never echoes a value in its error (only the key)', () => {
+      let msg = '';
+      try {
+        parseRegistryFetchUrlOverrides('{"registry-a.example":"http://user:s3cret@x"}');
+      } catch (e) {
+        msg = (e as Error).message;
+      }
+      expect(msg).toContain('registry-a.example');
+      expect(msg).not.toContain('s3cret');
+    });
+
+    it('never echoes a malformed key that could carry credentials', () => {
+      expect(() =>
+        parseRegistryFetchUrlOverrides('{"http://user:s3cret@host":"http://x"}'),
+      ).toThrow(/<invalid key>/);
+      expect(() =>
+        parseRegistryFetchUrlOverrides('{"http://user:s3cret@host":"http://x"}'),
+      ).not.toThrow(/s3cret/);
+    });
+
+    it('is parsed at construction in every environment', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.REGISTRY_FETCH_URL_OVERRIDES = '{"BAD":"http://x"}';
+      expect(() => freshConfig()).toThrow(/REGISTRY_FETCH_URL_OVERRIDES/);
+      process.env.REGISTRY_FETCH_URL_OVERRIDES = '{"ok.example":"http://x:1"}';
+      expect(freshConfig().registryFetchUrlOverrides.get('ok.example')).toBe('http://x:1');
+    });
+  });
+
+  describe('AUTH_READ_ONLY_API_KEYS (validate, every environment)', () => {
+    it.each(['development', 'production'])('rejects a read-only key absent from AUTH_API_KEYS (%s)', (env) => {
+      process.env.NODE_ENV = env;
+      process.env.AUTH_API_KEYS = 'rw-key';
+      process.env.AUTH_READ_ONLY_API_KEYS = 'ro-key';
+      expect(() => freshConfig().onModuleInit()).toThrow(/1 key\(s\) are not in AUTH_API_KEYS/);
+    });
+
+    it.each(['development', 'production'])('rejects a key that is both read-only and admin (%s)', (env) => {
+      process.env.NODE_ENV = env;
+      process.env.AUTH_API_KEYS = 'k1,k2';
+      process.env.AUTH_ADMIN_API_KEYS = 'k1';
+      process.env.AUTH_READ_ONLY_API_KEYS = 'k1';
+      expect(() => freshConfig().onModuleInit()).toThrow(/also in AUTH_ADMIN_API_KEYS/);
+    });
+
+    it('never echoes key material in the error', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.AUTH_API_KEYS = 'rw-key';
+      process.env.AUTH_READ_ONLY_API_KEYS = 'super-secret-ro-key';
+      expect(() => freshConfig().onModuleInit()).not.toThrow(/super-secret-ro-key/);
+    });
+
+    it('accepts a valid subset (dev)', () => {
+      process.env.NODE_ENV = 'development';
+      process.env.AUTH_API_KEYS = 'rw-key,ro-key';
+      process.env.AUTH_READ_ONLY_API_KEYS = 'ro-key';
+      const cfg = freshConfig();
+      expect(() => cfg.onModuleInit()).not.toThrow();
+      expect(cfg.authReadOnlyApiKeys).toEqual(['ro-key']);
     });
   });
 

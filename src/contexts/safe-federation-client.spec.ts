@@ -2,7 +2,11 @@ import { HttpStatus, Logger } from '@nestjs/common';
 import { SsrfPolicy } from '../auth/did-web/ssrf-guard';
 import { AppException } from '../errors/app-exception';
 import { ErrorCode } from '../errors/error-codes';
-import { FederationFetchError, SafeFederationClient } from './safe-federation-client';
+import {
+  FederationFetchError,
+  mintTrustedFetchBase,
+  SafeFederationClient,
+} from './safe-federation-client';
 
 /**
  * Builds a genuine streaming `ReadableStream<Uint8Array>` so tests exercise
@@ -358,5 +362,189 @@ describe('SafeFederationClient', () => {
     const r = await client.get('https://localhost/contexts/x');
     expect(r.body).toBe('done');
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  describe('getTrusted (operator-configured REGISTRY_FETCH_URL_OVERRIDES targets)', () => {
+    /** A policy whose every check throws — proves getTrusted never consults it. */
+    function rejectingPolicy(): {
+      policy: SsrfPolicy;
+      checkUrl: jest.Mock;
+      checkResolvedHost: jest.Mock;
+    } {
+      const checkUrl = jest.fn(() => {
+        throw new Error('ssrf: blocked');
+      });
+      const checkResolvedHost = jest.fn(async () => {
+        throw new Error('ssrf: blocked');
+      });
+      return {
+        policy: { checkUrl, checkResolvedHost } as unknown as SsrfPolicy,
+        checkUrl,
+        checkResolvedHost,
+      };
+    }
+
+    it('fetches an http private-network target the SSRF policy would refuse, byte-for-byte', async () => {
+      const body = '{"body":{"ctx_id":"x"},"registry_state":{"status":"active"},"k":"\u00e9 ü"}';
+      const fetchMock = jest.fn().mockResolvedValue(
+        resp({
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          body,
+        }),
+      );
+      const { policy, checkUrl, checkResolvedHost } = rejectingPolicy();
+      const client = new SafeFederationClient(policy, fetchMock as unknown as typeof fetch);
+
+      const r = await client.getTrusted(
+        mintTrustedFetchBase('http://registry-a.railway.internal:8100'),
+        '/contexts/x',
+      );
+      expect(r).toEqual({ status: 200, contentType: 'application/json', body });
+      expect(checkUrl).not.toHaveBeenCalled();
+      expect(checkResolvedHost).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://registry-a.railway.internal:8100/contexts/x',
+        expect.objectContaining({ redirect: 'manual' }),
+      );
+    });
+
+    it('get() on the same URL is still refused (the bypass is opt-in per call)', async () => {
+      const fetchMock = jest.fn();
+      const client = new SafeFederationClient(
+        new SsrfPolicy(),
+        fetchMock as unknown as typeof fetch,
+      );
+      await expect(client.get('http://10.0.0.5:8100/contexts/x')).rejects.toMatchObject({
+        code: 'SSRF',
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a cross-origin redirect away from the configured target', async () => {
+      const fetchMock = jest.fn().mockResolvedValue(
+        resp({
+          status: 302,
+          headers: { location: 'http://169.254.169.254/latest' },
+        }),
+      );
+      const client = new SafeFederationClient(
+        rejectingPolicy().policy,
+        fetchMock as unknown as typeof fetch,
+      );
+      await expect(
+        client.getTrusted(mintTrustedFetchBase('http://10.0.0.5:8100'), '/contexts/x'),
+      ).rejects.toMatchObject({
+        code: 'REDIRECT',
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('follows a same-origin redirect on the configured target', async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce(resp({ status: 307, headers: { location: '/contexts/y' } }))
+        .mockResolvedValueOnce(resp({ status: 200, body: 'done' }));
+      const client = new SafeFederationClient(
+        rejectingPolicy().policy,
+        fetchMock as unknown as typeof fetch,
+      );
+      const r = await client.getTrusted(
+        mintTrustedFetchBase('http://10.0.0.5:8100'),
+        '/contexts/x',
+      );
+      expect(r.body).toBe('done');
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        'http://10.0.0.5:8100/contexts/y',
+        expect.anything(),
+      );
+    });
+
+    it('still enforces the body cap', async () => {
+      const fetchMock = jest.fn().mockResolvedValue(
+        resp({
+          status: 200,
+          headers: { 'content-length': String(2 * 1024 * 1024) },
+          body: 'x',
+        }),
+      );
+      const client = new SafeFederationClient(
+        rejectingPolicy().policy,
+        fetchMock as unknown as typeof fetch,
+      );
+      await expect(
+        client.getTrusted(mintTrustedFetchBase('http://10.0.0.5'), '/contexts/x'),
+      ).rejects.toMatchObject({
+        code: 'BODY_TOO_LARGE',
+      });
+    });
+
+    it('still maps an upstream 429 to FEDERATION_UPSTREAM_RATE_LIMITED', async () => {
+      const fetchMock = jest.fn().mockResolvedValue(resp({ status: 429 }));
+      const client = new SafeFederationClient(
+        rejectingPolicy().policy,
+        fetchMock as unknown as typeof fetch,
+      );
+      const err = await client
+        .getTrusted(mintTrustedFetchBase('http://10.0.0.5'), '/contexts/x')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AppException);
+      expect((err as AppException).getStatus()).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+
+    it('surfaces a transport failure as FETCH', async () => {
+      const fetchMock = jest.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      const client = new SafeFederationClient(
+        rejectingPolicy().policy,
+        fetchMock as unknown as typeof fetch,
+      );
+      await expect(
+        client.getTrusted(mintTrustedFetchBase('http://10.0.0.5'), '/contexts/x'),
+      ).rejects.toBeInstanceOf(FederationFetchError);
+    });
+
+    it('refuses a relative path without fetching', async () => {
+      const fetchMock = jest.fn();
+      const client = new SafeFederationClient(
+        rejectingPolicy().policy,
+        fetchMock as unknown as typeof fetch,
+      );
+      await expect(
+        client.getTrusted(mintTrustedFetchBase('http://10.0.0.5'), 'contexts/x'),
+      ).rejects.toMatchObject({ code: 'FETCH' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('preserves a path prefix on the configured base', async () => {
+      const fetchMock = jest.fn().mockResolvedValue(resp({ status: 200, body: 'ok' }));
+      const client = new SafeFederationClient(
+        rejectingPolicy().policy,
+        fetchMock as unknown as typeof fetch,
+      );
+      await client.getTrusted(
+        mintTrustedFetchBase('http://10.0.0.5:8100/registries/a'),
+        '/contexts/x',
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://10.0.0.5:8100/registries/a/contexts/x',
+        expect.anything(),
+      );
+    });
+
+    it('refuses an http -> https redirect on the same host (origin includes the scheme)', async () => {
+      const fetchMock = jest.fn().mockResolvedValue(
+        resp({
+          status: 301,
+          headers: { location: 'https://10.0.0.5/contexts/x' },
+        }),
+      );
+      const client = new SafeFederationClient(
+        rejectingPolicy().policy,
+        fetchMock as unknown as typeof fetch,
+      );
+      await expect(
+        client.getTrusted(mintTrustedFetchBase('http://10.0.0.5'), '/contexts/x'),
+      ).rejects.toMatchObject({ code: 'REDIRECT' });
+    });
   });
 });

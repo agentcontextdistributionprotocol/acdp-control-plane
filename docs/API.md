@@ -24,7 +24,9 @@ The guard dispatches on the credential's shape, with no fallback between the two
   limited to GET/HEAD/OPTIONS (`403 ISSUER_READ_ONLY`; `POST /auth/introspect`
   is exempt). **A JWT is never an admin credential** — local or federated.
 - **API key** — anything else, matched (constant-time) against `AUTH_API_KEYS`.
-  An unknown key is `401`.
+  An unknown key is `401`. A key also listed in `AUTH_READ_ONLY_API_KEYS` is
+  limited to GET/HEAD/OPTIONS (`403 API_KEY_READ_ONLY`; `POST /auth/introspect`
+  is exempt). Use one for any credential handed to a read-only client.
 
 **Admin** routes need an API key listed in **both** `AUTH_API_KEYS` and
 `AUTH_ADMIN_API_KEYS`; any other caller gets `403 ADMIN_REQUIRED`.
@@ -151,6 +153,7 @@ RFC-ACDP-0007 §5's retryable set, so no `4xx` ever carries it (#182).
 | `REGISTRY_DISABLED` | 403 | specific | Ingest from an enrolled but disabled registry. |
 | `REGISTRY_ENROLLED_ELSEWHERE` | 409 | specific | `POST /registries/enroll` for an authority already enrolled under a different tenant; the tenant binding is immutable and the enrollment is left unchanged. The body does not name the owning tenant. Not retryable. |
 | `TENANT_HEADER_UNTRUSTED` | 403 | specific | A JWT with no `tenant` claim sent `X-Tenant-Id` and `TENANT_HEADER_TRUST=none` (default). Use a tenant-bound token, or set `TENANT_HEADER_TRUST=any_peer` behind an authenticating gateway. |
+| `API_KEY_READ_ONLY` | 403 | specific | The API key is listed in `AUTH_READ_ONLY_API_KEYS` and the method is not GET/HEAD/OPTIONS (`POST /auth/introspect` is exempt). Use a read-write key for writes. |
 | `ISSUER_READ_ONLY` | 403 | specific | The bearer token is from a `TRUSTED_ISSUERS` entry flagged `read_only` and the method is not GET/HEAD/OPTIONS (`POST /auth/introspect` is exempt). Use a CP-issued token, or have the operator lift the flag. |
 | `INVALID_WEBHOOK_SIGNATURE` | 401 | specific | HMAC `X-ACDP-Signature` failed on `/ingest/acdp` or the `/runs` notify routes. |
 | `INVALID_SIGNATURE` | 401 | specific | The final Ed25519/ECDSA-P256 signature check failed on `POST /auth/token` or `POST /capabilities`. Every earlier rejection on those routes is a plain `401 UNAUTHORIZED`. |
@@ -222,14 +225,14 @@ every route except the probes is also subject to the coarse throttle.
 | POST | `/runs/:runId/complete` | Public (HMAC) | — | 204 | Mark run terminal |
 | GET  | `/events` | key/JWT | — | 200 | Cross-run event history |
 | GET  | `/events/stream` | key/JWT | — | 200 | SSE — global feed |
-| GET  | `/contexts/*ctxId` | key/JWT | policy `context.retrieve` | relayed | Federation proxy (SSRF-gated, served `ctx_id` bound) |
+| GET  | `/contexts/*ctxId` | key/JWT | policy `context.retrieve` | relayed | Federation proxy (SSRF-gated unless the authority has an operator `REGISTRY_FETCH_URL_OVERRIDES` target; served `ctx_id` bound) |
 | GET  | `/agents` | key/JWT | — | 200 | Known agents |
 | GET  | `/agents/*did` | key/JWT | — | 200 | Agent detail |
 | POST | `/capabilities` | key/JWT | policy + quota `capability.declare` | 200 | Declare a signed capability |
 | GET  | `/capabilities/search` | key/JWT | — | 200 | Find agents by capability |
 | GET  | `/capabilities/by-agent/*did` | key/JWT | — | 200 | One agent's capabilities |
 | GET  | `/registries` | key/JWT | — | 200 | Observed registries |
-| GET  | `/registries/enrollments` | key/JWT | — | 200 | Enrolled registries (secrets omitted) |
+| GET  | `/registries/enrollments` | Admin API key | — | 200 | Enrolled registries (secrets omitted). 403 `ADMIN_REQUIRED` for a non-admin key or a JWT; enrolled base URLs are operator topology |
 | POST | `/registries/enroll` | admin | — | 201 | Enroll a registry, or update it within its tenant — PATCH-like: omitted fields kept, explicit `null` clears (`409 REGISTRY_ENROLLED_ELSEWHERE` if bound to another tenant; `400 INVALID_PAYLOAD` for a `tenantId` that is empty, whitespace-padded or contains control characters — no key could ever resolve to it) |
 | GET  | `/registries/:authority/log-witness` | key/JWT | — | 200 | Witnessed checkpoints + alert state (RFC-ACDP-0012) |
 | GET  | `/registries/log-witness/alerts` | key/JWT | — | 200 | Alerted registries worklist |
@@ -526,7 +529,13 @@ caller's tenant (the `registries` table that `GET /registries` lists — not the
 enrollment table); its stored `baseUrl` comes from the event's
 `registry_base_url`, the webhook's `Origin`, or the enrollment's `baseUrl` (see
 [INGEST.md](./INGEST.md)). An authority not observed, or observed without a base
-URL, is `404 REGISTRY_NOT_FOUND`. The request is then forwarded, **without**
+URL, is `404 REGISTRY_NOT_FOUND`. The base URL is replaced by an operator
+override when `REGISTRY_FETCH_URL_OVERRIDES` maps the exact authority (see
+[CONFIGURATION.md](./CONFIGURATION.md#federation-proxy)). That trusted target
+is fetched with the public-only SSRF checks skipped, so private-network
+`http://` registries work; everything below except those checks still applies,
+and an override never makes an authority reachable that the tenant hasn't
+observed. The request is then forwarded, **without**
 the caller's credentials, to `<baseUrl>/contexts/<ctxId>` through the SSRF-safe
 `SafeFederationClient` — HTTPS only, no private/loopback/link-local/IMDS
 addresses, at most 3 same-authority redirects, 1 MiB body cap, 10 s deadline
@@ -633,7 +642,7 @@ One agent's capabilities: `{ "data": [ … ], "total": N }`.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET`  | `/registries` | Registries **observed** via ingest in this tenant: `{ data, total }`, each `{ authority, tenantId, baseUrl, firstSeen, lastSeen, eventCount }`, most recently seen first. |
-| `GET`  | `/registries/enrollments` | Enrollments bound to this tenant: `{ data, total }`; `webhookSecret` is always omitted. |
+| `GET`  | `/registries/enrollments` | **Admin-only** (`403 ADMIN_REQUIRED` otherwise). Enrollments bound to this tenant: `{ data, total }`; `webhookSecret` is always omitted. |
 | `POST` | `/registries/enroll` | **Admin-only**. Create an enrollment, or update one already bound to the requested tenant (PATCH-like: omitted fields keep their stored values, explicit `null` clears). `201`; `409 REGISTRY_ENROLLED_ELSEWHERE` when the authority is bound to a different tenant. |
 | `GET`  | `/registries/:authority/log-witness` | Witness state + latest witnessed checkpoints. |
 | `GET`  | `/registries/log-witness/alerts` | Witness alerts worklist for this tenant. |

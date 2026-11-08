@@ -75,7 +75,8 @@ where the operator declares a boundary that authenticates callers and sets it:
 An explicit `default` header is `403 TENANT_RESERVED` in every row. Local and federated
 (`TRUSTED_ISSUERS`) tokens are treated identically — in particular a registry-issued
 token with no `tenant` claim can no longer choose its tenant. The check runs after the
-reserved / mismatch / strict checks and before the federated `read_only` gate.
+reserved / mismatch / strict checks and before the federated `read_only` gate (the
+API-key equivalent, `AUTH_READ_ONLY_API_KEYS`, likewise runs after the tenant checks).
 `TENANT_HEADER_TRUST` does not apply to the `@Public()` HMAC routes (`/ingest/acdp`,
 `/runs/started|complete`) — see [HMAC-authenticated routes](#hmac-authenticated-routes-ingest-and-run-notify)
 below. Bare API keys ignore the header regardless (they resolve to `default`); API-key

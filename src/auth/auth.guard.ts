@@ -175,7 +175,7 @@ export class AuthGuard implements CanActivate {
       // tenant checks so tenant 403s keep precedence. Method-based, not
       // route-based, so any future write route is covered automatically —
       // but a future state-changing GET would bypass it: never add one.
-      if (trusted?.readOnly && !isSafeForReadOnlyIssuer(request)) {
+      if (trusted?.readOnly && !isReadOnlySafe(request)) {
         this.logger.warn({
           msg: 'read-only issuer: non-safe method denied',
           iss: claims.iss,
@@ -252,6 +252,24 @@ export class AuthGuard implements CanActivate {
     }
     request.tenantId = keyTenant;
     request.actorScopes = []; // api keys carry no scopes
+    // Read-only API keys (AUTH_READ_ONLY_API_KEYS): safe methods only. Same
+    // method-based gate as the per-issuer `read_only` flag above, placed after
+    // the tenant checks so tenant 403s keep precedence — and, like that gate,
+    // any future state-changing GET would bypass it: never add one.
+    request.actorReadOnly = constantTimeIncludes(this.config.authReadOnlyApiKeys, token);
+    if (request.actorReadOnly && !isReadOnlySafe(request)) {
+      this.logger.warn({
+        msg: 'read-only API key: non-safe method denied',
+        actorId: request.actorId,
+        method: request.method,
+        path: request.path,
+      });
+      throw new AppException(
+        ErrorCode.API_KEY_READ_ONLY,
+        'this API key is read-only',
+        HttpStatus.FORBIDDEN,
+      );
+    }
 
     return true;
   }
@@ -278,12 +296,13 @@ function looksLikeJwt(token: string): boolean {
 const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**
- * Whether a request from a `read_only` issuer may proceed: GET/HEAD/OPTIONS,
+ * Whether a read-only principal (a `read_only` issuer's token, or an
+ * `AUTH_READ_ONLY_API_KEYS` key) may proceed: GET/HEAD/OPTIONS,
  * plus `POST /auth/introspect` (RFC 7662 mandates POST; it is read-shaped and
  * never mutates). Path match is normalised (case, trailing slashes) the way
  * Express routes it.
  */
-function isSafeForReadOnlyIssuer(request: { method?: string; path?: string }): boolean {
+function isReadOnlySafe(request: { method?: string; path?: string }): boolean {
   const method = (request.method ?? '').toUpperCase();
   if (SAFE_METHODS.has(method)) return true;
   const path = (request.path ?? '').toLowerCase().replace(/\/+$/, '');

@@ -43,8 +43,14 @@ export class RegistriesController {
   }
 
   @Get('enrollments')
-  @ApiOperation({ summary: 'List registry enrollments for this tenant.' })
-  async listEnrollments(@Req() req: TenantedRequest) {
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'List registry enrollments for this tenant (admin-only — enrolled base URLs are ' +
+      'operator topology, often private-network addresses).',
+  })
+  async listEnrollments(@Req() req: TenantedRequest & { actorIsAdmin?: boolean }) {
+    assertAdmin(req, 'registry enrollments are admin-only');
     const data = await this.enrollmentRepo.list(tenantOf(req));
     // Never echo secrets back.
     const sanitized = data.map(({ webhookSecret: _omit, ...rest }) => rest);

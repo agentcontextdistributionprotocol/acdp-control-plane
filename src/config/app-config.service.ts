@@ -1,5 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { isIP } from 'node:net';
+import { isCanonicalCtxId } from '../audit/receipt-verify';
+import { mintTrustedFetchBase, TrustedFetchBase } from '../contexts/safe-federation-client';
 
 function readBoolean(name: string, defaultValue = false): boolean {
   const raw = process.env[name];
@@ -69,6 +71,81 @@ function readStringList(name: string): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * Parse `REGISTRY_FETCH_URL_OVERRIDES`: a JSON object mapping a registry
+ * AUTHORITY (the `<authority>` of `acdp://<authority>/<uuid>`) to the base URL
+ * the federation proxy should fetch that registry's contexts from, e.g.
+ * `{"registry-a.example":"http://registry-a.internal:8100"}`.
+ *
+ * These targets are TRUSTED OPERATOR CONFIG: `GET /contexts/*` fetches them
+ * via `SafeFederationClient.getTrusted`, which skips the public-only SSRF
+ * checks (https-only, no private/loopback addresses) so a registry reachable
+ * only on a private network can be served. The bypass applies ONLY to an
+ * authority that exactly matches a key here; every other authority — and
+ * every payload-sourced base URL — keeps the full SSRF gate.
+ *
+ * Fails fast (at construction, every environment) on anything that would
+ * otherwise be a silent no-op or an unsafe target: non-JSON / non-object,
+ * a key outside the ctx_id authority grammar (lowercase DNS, no port — the
+ * proxy matches keys verbatim against parsed ctx_ids, so `Registry-A` could
+ * never match), or a value that is not an absolute http(s) URL or carries
+ * credentials, a query or a fragment. Errors name the key, never the value.
+ * A trailing slash on a value is dropped.
+ */
+export function parseRegistryFetchUrlOverrides(
+  raw: string | undefined,
+): ReadonlyMap<string, TrustedFetchBase> {
+  const out = new Map<string, TrustedFetchBase>();
+  if (raw === undefined || raw.trim() === '') return out;
+  const fail = (why: string): never => {
+    throw new Error(`REGISTRY_FETCH_URL_OVERRIDES: ${why}`);
+  };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    fail('must be a JSON object of {"<authority>": "<base url>"}');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    fail('must be a JSON object of {"<authority>": "<base url>"}');
+  }
+  for (const [authority, value] of Object.entries(parsed as Record<string, unknown>)) {
+    // Same grammar the proxy's ctx_id parse enforces (a fixed valid v4 UUID
+    // supplies the id half), so a key either matches real ctx_ids or fails here.
+    if (!isCanonicalCtxId(`acdp://${authority}/00000000-0000-4000-8000-000000000000`)) {
+      // Echo the key only when it is plausibly a hostname — a URL with
+      // credentials pasted into the key slot must not land in the boot log.
+      const shown = /^[A-Za-z0-9.-]{1,253}$/.test(authority) ? `'${authority}'` : '<invalid key>';
+      fail(`key ${shown} is not a lowercase DNS authority (no port, no scheme)`);
+    }
+    if (typeof value !== 'string') {
+      fail(`value for '${authority}' must be a string URL`);
+    }
+    let url: URL;
+    try {
+      url = new URL(value as string);
+    } catch {
+      return fail(`value for '${authority}' is not an absolute URL`);
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      fail(`value for '${authority}' must use http or https`);
+    }
+    if (url.username !== '' || url.password !== '') {
+      fail(`value for '${authority}' must not carry credentials`);
+    }
+    if (
+      url.search !== '' ||
+      url.hash !== '' ||
+      (value as string).includes('?') ||
+      (value as string).includes('#')
+    ) {
+      fail(`value for '${authority}' must not carry a query or fragment`);
+    }
+    out.set(authority, mintTrustedFetchBase(url.toString().replace(/\/+$/, '')));
+  }
+  return out;
 }
 
 /**
@@ -241,6 +318,14 @@ export class AppConfigService implements OnModuleInit {
   // (default) = no admins, so only the JWT-self path can authorize sensitive
   // operations. Documented in `src/auth/revoke.controller.ts`.
   readonly authAdminApiKeys = readStringList('AUTH_ADMIN_API_KEYS');
+  // API keys restricted to safe methods (GET/HEAD/OPTIONS, plus the
+  // read-shaped POST /auth/introspect): every other method is 403
+  // API_KEY_READ_ONLY in AuthGuard. For a credential handed to a read-only
+  // client (e.g. the console's anonymous-read key) so it can never create,
+  // change or delete anything — webhook subscriptions included. Each entry
+  // MUST also be in AUTH_API_KEYS and MUST NOT be in AUTH_ADMIN_API_KEYS
+  // (validate(), every environment).
+  readonly authReadOnlyApiKeys = readStringList('AUTH_READ_ONLY_API_KEYS');
   // Multi-tenant API-key mapping. Wire format: `tenantId:key,tenantId:key,bareKey`
   // — bare keys (no `:` prefix) bind to the `default` tenant. Documented on
   // `src/tenant/tenant-context.ts`. Empty (default) = single-tenant deployment.
@@ -463,6 +548,12 @@ export class AppConfigService implements OnModuleInit {
   // in every environment — see parseTrustProxy and docs/CONFIGURATION.md.
   readonly trustProxy: TrustProxySetting = parseTrustProxy(process.env.TRUST_PROXY);
 
+  // Operator-trusted federation fetch targets for `GET /contexts/*` (see
+  // parseRegistryFetchUrlOverrides). Parsed at CONSTRUCTION — every
+  // environment — so a malformed map fails boot instead of 502ing at runtime.
+  readonly registryFetchUrlOverrides: ReadonlyMap<string, TrustedFetchBase> =
+    parseRegistryFetchUrlOverrides(process.env.REGISTRY_FETCH_URL_OVERRIDES);
+
   // Receipt audit mode (ACDP 0.2.0, RFC-ACDP-0010). When enabled, a
   // background sweep cross-checks registry receipts on ingested publish
   // events — structural checks always; full signature verification when the
@@ -657,6 +748,31 @@ export class AppConfigService implements OnModuleInit {
           'that resolves to no tenant would run unscoped and leak cross-tenant ' +
           'data. Set AUTH_REQUIRE_TENANT=true to enable strict enforcement.',
       );
+    }
+
+    // Read-only API keys (every environment — BEFORE the dev early-return):
+    // a read-only key absent from AUTH_API_KEYS would never authenticate, and
+    // in dev with AUTH_API_KEYS empty the guard's no-keys bypass would hand
+    // its holder FULL access while the operator believes it is read-only. A
+    // key in both the read-only and admin lists is contradictory. Counts
+    // only — never echo key material.
+    if (this.authReadOnlyApiKeys.length > 0) {
+      const all = new Set(this.authApiKeys);
+      const admin = new Set(this.authAdminApiKeys);
+      const missing = this.authReadOnlyApiKeys.filter((k) => !all.has(k)).length;
+      const alsoAdmin = this.authReadOnlyApiKeys.filter((k) => admin.has(k)).length;
+      if (missing > 0) {
+        throw new Error(
+          `AUTH_READ_ONLY_API_KEYS: ${missing} key(s) are not in AUTH_API_KEYS; ` +
+            'a read-only key must also be listed in AUTH_API_KEYS',
+        );
+      }
+      if (alsoAdmin > 0) {
+        throw new Error(
+          `AUTH_READ_ONLY_API_KEYS: ${alsoAdmin} key(s) are also in AUTH_ADMIN_API_KEYS; ` +
+            'a key cannot be both read-only and admin',
+        );
+      }
     }
 
     if (this.tenantHeaderTrust !== 'none' && this.tenantHeaderTrust !== 'any_peer') {

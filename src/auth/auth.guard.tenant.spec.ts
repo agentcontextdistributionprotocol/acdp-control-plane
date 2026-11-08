@@ -38,6 +38,7 @@ function newGuard(authApiKeys: string[], tenantApiKeysRaw = ''): { guard: AuthGu
   const config = {
     authApiKeys,
     authAdminApiKeys: [] as string[],
+    authReadOnlyApiKeys: [] as string[],
     tenantApiKeysRaw,
   } as unknown as AppConfigService;
   const guard = new AuthGuard(reflector as unknown as Reflector, config);

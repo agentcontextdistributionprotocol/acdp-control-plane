@@ -138,6 +138,12 @@ export enum ErrorCode {
    * token, or have the operator lift `read_only` for that issuer.
    */
   ISSUER_READ_ONLY = "ISSUER_READ_ONLY",
+  /**
+   * 403 — the API key is listed in `AUTH_READ_ONLY_API_KEYS` and the request
+   * method is not GET/HEAD/OPTIONS (`POST /auth/introspect` is exempt). Use a
+   * read-write key for writes.
+   */
+  API_KEY_READ_ONLY = "API_KEY_READ_ONLY",
   /** 403 — INGEST_REQUIRE_ENROLLMENT and the registry is not enrolled. */
   REGISTRY_NOT_ENROLLED = "REGISTRY_NOT_ENROLLED",
   /**

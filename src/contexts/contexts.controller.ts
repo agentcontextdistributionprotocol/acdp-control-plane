@@ -11,6 +11,7 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { isCanonicalCtxId, verifyCtxIdBinding } from '../audit/receipt-verify';
+import { AppConfigService } from '../config/app-config.service';
 import { AppException } from '../errors/app-exception';
 import { ErrorCode } from '../errors/error-codes';
 import { CheckPolicy } from '../policy/check-policy.decorator';
@@ -30,6 +31,7 @@ export class ContextsController {
   constructor(
     private readonly registryRepo: RegistryRepository,
     private readonly federationClient: SafeFederationClient,
+    private readonly config: AppConfigService,
   ) {}
 
   // Catch-all path parameter. NestJS 11 / path-to-regexp v6+ uses the
@@ -59,9 +61,16 @@ export class ContextsController {
       throw new BadRequestException(`Invalid ctx_id format: ${ctxId}`);
     }
 
-    // Resolve the registry within the caller's tenant only.
+    // Resolve the registry within the caller's tenant only. This lookup gates
+    // BOTH fetch paths: an operator override never widens which authorities a
+    // tenant can reach — the authority must still be known in its tenant.
     const registry = await this.registryRepo.findByAuthority(parsed.authority, tenantId);
-    if (!registry?.baseUrl) {
+    // Operator-trusted fetch target (REGISTRY_FETCH_URL_OVERRIDES): an EXACT
+    // authority match only, boot-validated config, never payload-derived.
+    const override = this.config.registryFetchUrlOverrides.get(parsed.authority);
+    const fetchTarget: 'override' | 'observed' = override ? 'override' : 'observed';
+    const base = override ?? registry?.baseUrl;
+    if (!registry || !base) {
       // REGISTRY_NOT_FOUND, not CONTEXT_NOT_FOUND: no context was looked up —
       // the authority is unknown in the caller's tenant (#182).
       throw new AppException(
@@ -71,7 +80,8 @@ export class ContextsController {
       );
     }
 
-    const upstream = `${registry.baseUrl.replace(/\/$/, '')}/contexts/${encodeURIComponent(ctxId)}`;
+    const path = `/contexts/${encodeURIComponent(ctxId)}`;
+    const upstream = `${base.replace(/\/$/, '')}${path}`;
 
     // Credential strategy (Phase 3.4): PUBLIC-ONLY proxy. We forward no
     // caller credentials upstream, so the registry enforces its own
@@ -80,7 +90,12 @@ export class ContextsController {
     // verbatim rather than us attempting (and leaking) access.
     let response: FederationResponse;
     try {
-      response = await this.federationClient.get(upstream);
+      // The observed base URL comes from webhook payloads (untrusted) and is
+      // fully SSRF-gated; only the operator override skips the public-only
+      // checks (http + private-network targets are allowed there).
+      response = override
+        ? await this.federationClient.getTrusted(override, path)
+        : await this.federationClient.get(upstream);
     } catch (err) {
       // SSRF / transport / redirect / oversize failures are upstream
       // problems, not "context not found" and not a control-plane fault —
@@ -94,6 +109,7 @@ export class ContextsController {
           registryAuthority: parsed.authority,
           ctxId,
           upstream,
+          fetchTarget,
           fetchErrorCode: err.code,
           detail: err.message,
         });

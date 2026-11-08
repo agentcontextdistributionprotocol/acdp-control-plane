@@ -18,4 +18,9 @@ export interface AuthenticatedActorFields {
    * and API keys.
    */
   actorFederated?: boolean;
+  /**
+   * `true` iff the principal authenticated with an API key listed in
+   * `AUTH_READ_ONLY_API_KEYS` (safe methods only — `API_KEY_READ_ONLY`).
+   */
+  actorReadOnly?: boolean;
 }

@@ -10,7 +10,7 @@ import { IS_PUBLIC_KEY } from './public.decorator';
 
 describe('AuthGuard', () => {
   let reflector: { getAllAndOverride: jest.Mock };
-  let config: { authApiKeys: string[]; authAdminApiKeys: string[] };
+  let config: { authApiKeys: string[]; authAdminApiKeys: string[]; authReadOnlyApiKeys: string[] };
   let request: Record<string, any>;
   let guard: AuthGuard;
 
@@ -36,8 +36,9 @@ describe('AuthGuard', () => {
   beforeEach(() => {
     reflector = { getAllAndOverride: jest.fn().mockReturnValue(false) };
     config = {
-      authApiKeys: ['valid-token-12345678', 'admin-token-aaaaaaaa'],
+      authApiKeys: ['valid-token-12345678', 'admin-token-aaaaaaaa', 'readonly-token-bbbbbbbb'],
       authAdminApiKeys: ['admin-token-aaaaaaaa'],
+      authReadOnlyApiKeys: ['readonly-token-bbbbbbbb'],
     };
     request = { headers: {} };
     // Default: no JWT validator wired (TOKEN_ISSUANCE_ENABLED=false path).
@@ -54,6 +55,67 @@ describe('AuthGuard', () => {
       expect.anything(),
       expect.anything(),
     ]);
+  });
+
+  describe('read-only API keys (AUTH_READ_ONLY_API_KEYS)', () => {
+    function as(token: string, method: string, path = '/webhooks'): Record<string, any> {
+      return { headers: { authorization: `Bearer ${token}` }, method, path };
+    }
+
+    it.each(['GET', 'HEAD', 'OPTIONS', 'get'])('lets a read-only key use %s', async (method) => {
+      const req = as('readonly-token-bbbbbbbb', method);
+      await expect(guard.canActivate(ctx(req))).resolves.toBe(true);
+      expect(req.actorReadOnly).toBe(true);
+      expect(req.actorIsAdmin).toBe(false);
+    });
+
+    it.each(['POST', 'PUT', 'PATCH', 'DELETE'])(
+      'denies a read-only key %s with 403 API_KEY_READ_ONLY',
+      async (method) => {
+        await expect(
+          guard.canActivate(ctx(as('readonly-token-bbbbbbbb', method, '/webhooks/abc'))),
+        ).rejects.toMatchObject({ errorCode: ErrorCode.API_KEY_READ_ONLY, status: 403 });
+      },
+    );
+
+    it.each(['/auth/introspect', '/auth/introspect/', '/AUTH/Introspect'])(
+      'exempts the read-shaped POST %s',
+      async (path) => {
+        await expect(
+          guard.canActivate(ctx(as('readonly-token-bbbbbbbb', 'POST', path))),
+        ).resolves.toBe(true);
+      },
+    );
+
+    it('denies POST /auth/token/revoke (not read-shaped)', async () => {
+      await expect(
+        guard.canActivate(ctx(as('readonly-token-bbbbbbbb', 'POST', '/auth/token/revoke'))),
+      ).rejects.toMatchObject({ errorCode: ErrorCode.API_KEY_READ_ONLY });
+    });
+
+    it('leaves an ordinary key read-write', async () => {
+      const req = as('valid-token-12345678', 'POST');
+      await expect(guard.canActivate(ctx(req))).resolves.toBe(true);
+      expect(req.actorReadOnly).toBe(false);
+    });
+
+    it('composes with a tenant-bound key: tenant pinned on GET, writes still denied', async () => {
+      (config as Record<string, unknown>).requireTenant = true;
+      (config as Record<string, unknown>).tenantApiKeysRaw = 'tenant-a:readonly-token-bbbbbbbb';
+      guard = new AuthGuard(reflector as unknown as Reflector, config as AppConfigService);
+      const get = as('readonly-token-bbbbbbbb', 'GET', '/runs');
+      await expect(guard.canActivate(ctx(get))).resolves.toBe(true);
+      expect(get.tenantId).toBe('tenant-a');
+      await expect(
+        guard.canActivate(ctx(as('readonly-token-bbbbbbbb', 'POST', '/webhooks'))),
+      ).rejects.toMatchObject({ errorCode: ErrorCode.API_KEY_READ_ONLY });
+    });
+
+    it('leaves an admin key read-write', async () => {
+      await expect(
+        guard.canActivate(ctx(as('admin-token-aaaaaaaa', 'DELETE', '/webhooks/abc'))),
+      ).resolves.toBe(true);
+    });
   });
 
   it('rejects requests without Authorization header', async () => {
@@ -136,7 +198,7 @@ describe('AuthGuard', () => {
 
 describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
   let reflector: { getAllAndOverride: jest.Mock };
-  let config: { authApiKeys: string[]; authAdminApiKeys: string[] };
+  let config: { authApiKeys: string[]; authAdminApiKeys: string[]; authReadOnlyApiKeys: string[] };
   let request: Record<string, any>;
   // `verify` is the per-test claims mock; `verifyWithProvenance` (what the guard
   // calls) wraps it and reports `trustedEntry` as the vouching trust entry.
@@ -163,7 +225,7 @@ describe('AuthGuard — JWT path (TOKEN_ISSUANCE_ENABLED=true)', () => {
 
   beforeEach(() => {
     reflector = { getAllAndOverride: jest.fn().mockReturnValue(false) };
-    config = { authApiKeys: [], authAdminApiKeys: [] };
+    config = { authApiKeys: [], authAdminApiKeys: [], authReadOnlyApiKeys: [] };
     request = { headers: {} };
     trustedEntry = null;
     validator = {

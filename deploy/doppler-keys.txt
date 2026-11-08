@@ -11,6 +11,8 @@
 # Secrets
 AUTH_ADMIN_API_KEYS
 AUTH_API_KEYS
+# Read-only subset of AUTH_API_KEYS (the console's CONTROL_PLANE_READ_API_KEY).
+AUTH_READ_ONLY_API_KEYS
 JWT_SECRET
 WEBHOOK_SECRET
 
@@ -27,6 +29,8 @@ NODE_ENV
 PLAYGROUND_URL
 POLICY_BACKEND
 PORT
+# Operator-trusted GET /contexts/* fetch targets (authority -> private-network URL).
+REGISTRY_FETCH_URL_OVERRIDES
 STREAM_HUB_STRATEGY
 TOKEN_ISSUANCE_ENABLED
 # 1 = trust exactly Railway's single edge hop for req.ip (throttle keys on the real client IP;

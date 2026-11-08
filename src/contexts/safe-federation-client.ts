@@ -34,6 +34,27 @@ export class FederationFetchError extends Error {
   }
 }
 
+/**
+ * A fetch base URL that came from boot-validated OPERATOR config
+ * (`REGISTRY_FETCH_URL_OVERRIDES`). Branded so it cannot be fabricated from an
+ * arbitrary string: the only producer is `parseRegistryFetchUrlOverrides`
+ * (via {@link mintTrustedFetchBase}). {@link SafeFederationClient.getTrusted}
+ * accepts nothing else, so a payload-sourced URL (e.g. `registries.base_url`)
+ * cannot reach the SSRF-bypassing path without an explicit, reviewable cast.
+ */
+declare const trustedFetchBaseBrand: unique symbol;
+export type TrustedFetchBase = string & {
+  readonly [trustedFetchBaseBrand]: true;
+};
+
+/**
+ * Mint a {@link TrustedFetchBase}. Call ONLY from boot-time config parsing of
+ * operator-set values — never with request- or payload-derived input.
+ */
+export function mintTrustedFetchBase(validatedBaseUrl: string): TrustedFetchBase {
+  return validatedBaseUrl as TrustedFetchBase;
+}
+
 export interface FederationResponse {
   status: number;
   contentType: string | null;
@@ -57,22 +78,51 @@ export class SafeFederationClient {
    * policy violation, transport error, or oversized body.
    */
   async get(rawUrl: string): Promise<FederationResponse> {
+    return this.fetchWithPolicy(rawUrl, true);
+  }
+
+  /**
+   * GET `path` under an OPERATOR-CONFIGURED base (`REGISTRY_FETCH_URL_OVERRIDES`)
+   * with the public-only SSRF checks (steps 1-2: https-only, no IP literals,
+   * no private/loopback resolved addresses) skipped, so a registry reachable
+   * only on a private network (`http://registry.internal:8100`) can be
+   * fetched. Everything else is identical to {@link get}: same-origin-only
+   * redirects (anchored on the configured origin, so a trusted target cannot
+   * bounce the fetch anywhere else — an http→https hop on the same host is
+   * also refused, since the origin includes the scheme), the 429 mapping, the
+   * body cap and the deadline. `base` is a {@link TrustedFetchBase}, so only
+   * boot-validated config can reach this path; `path` must be absolute
+   * (`/contexts/...`) and is appended verbatim.
+   */
+  async getTrusted(base: TrustedFetchBase, path: string): Promise<FederationResponse> {
+    if (!path.startsWith('/')) {
+      throw new FederationFetchError('FETCH', 'trusted fetch path must start with "/"');
+    }
+    return this.fetchWithPolicy(`${base}${path}`, false);
+  }
+
+  private async fetchWithPolicy(rawUrl: string, enforceSsrf: boolean): Promise<FederationResponse> {
     let url = rawUrl;
     const origin = safeOrigin(rawUrl);
+    if (!enforceSsrf && origin === '') {
+      throw new FederationFetchError('FETCH', 'trusted fetch target is not an absolute URL');
+    }
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      // 1. scheme + IP-literal (synchronous, no DNS).
-      try {
-        this.ssrf.checkUrl(url);
-      } catch (e) {
-        throw new FederationFetchError('SSRF', errMsg(e));
-      }
-      // 2. DNS-time: every resolved address must pass.
-      const parsed = new URL(url);
-      try {
-        await this.ssrf.checkResolvedHost(parsed.hostname);
-      } catch (e) {
-        throw new FederationFetchError('SSRF', errMsg(e));
+      if (enforceSsrf) {
+        // 1. scheme + IP-literal (synchronous, no DNS).
+        try {
+          this.ssrf.checkUrl(url);
+        } catch (e) {
+          throw new FederationFetchError('SSRF', errMsg(e));
+        }
+        // 2. DNS-time: every resolved address must pass.
+        const parsed = new URL(url);
+        try {
+          await this.ssrf.checkResolvedHost(parsed.hostname);
+        } catch (e) {
+          throw new FederationFetchError('SSRF', errMsg(e));
+        }
       }
 
       // One AbortController/timer per hop, covering fetch() AND the body
