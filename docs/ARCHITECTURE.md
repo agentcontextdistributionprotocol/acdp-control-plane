@@ -83,8 +83,8 @@ Routes, grouped (full index with auth/quota/policy columns in
 `/.well-known/jwks.json`); witness (`/log/witness`,
 `/.well-known/acdp-witness.json`, `/.well-known/did.json`); admin
 (`/registries/enroll`, `/registries/log-witness/alerts`,
-`/registries/:authority/log-witness[/ack]`, `/admin/pinned-keys/reload`);
-probes (`/healthz`, `/readyz`, `/metrics`, `/docs`).
+`/registries/:authority/log-witness[/ack]`, `/admin/pinned-keys/reload`, `/metrics`);
+probes (`/healthz`, `/readyz`, `/docs`).
 
 ## Module layout
 

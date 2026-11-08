@@ -253,7 +253,7 @@ every route except the probes is also subject to the coarse throttle.
 | GET  | `/.well-known/did.json` | Public | — | 200 | Witness DID document |
 | GET  | `/healthz` | Public | unthrottled | 200 | Liveness — never touches the DB |
 | GET  | `/readyz` | Public | unthrottled | 200 | Readiness — 503 when draining or the DB is down |
-| GET  | `/metrics` | Public | — | 200 | Prometheus text format |
+| GET  | `/metrics` | Admin API key | — | 200 | Prometheus text format. 401 without a valid key; 403 `ADMIN_REQUIRED` for a non-admin key or a JWT |
 | GET  | `/docs` | Public | — | 200 | Swagger UI (dev / `SWAGGER_ENABLED`) |
 
 > Authoritative against `src/**/*.controller.ts` as of this writing; confirm
@@ -1072,7 +1072,7 @@ host must point at this CP for the document to resolve.
 |--------|------|-------------|
 | `GET`  | `/healthz` | Liveness (`{ ok, service, version }`). **Public**, not throttled, `Cache-Control: no-store`. **Never touches the database** (issue #210): it never awaits any I/O, so it is **200** whenever the process can answer — the only non-200 is the drain gate's `503 SERVICE_DRAINING` once a shutdown has entered `closing` (issue #192). `ok` mirrors the **last readiness verdict** (`true` before the first probe), so `200` + `ok: false` means "alive but degraded". When that verdict is missing or older than `max(READINESS_CACHE_MS, 5000 ms)` the request starts a background refresh (single-flight, bounded; never while draining) and still answers from the old verdict at once. `HEAD` gets the same status. |
 | `GET`  | `/readyz` | Readiness. **Public**, not throttled (issue #210), `Cache-Control: no-store` on every arm. Drain first: once a shutdown signal has arrived it answers `503 SERVICE_DRAINING` (with `Retry-After`) without consulting readiness or the database; with `SHUTDOWN_DRAIN_DELAY_MS` set that happens while every other route still serves (issue #192). Otherwise **200** `{ ok: true, database: "ok", checks }` when Postgres answers `SELECT 1` within `READINESS_DB_TIMEOUT_MS` (default 1000 ms), else **503** `DEPENDENCY_UNAVAILABLE` (`error.details` = `{ ok: false, database: "unhealthy", checks }`). `checks.database` = `{ status: "up" \| "down", reason?: "error" \| "timeout", latencyMs }`. Report-only members appear only where the dependency is in use and **never** affect the status: `checks.streamHub` (`STREAM_HUB_STRATEGY=redis`) and `checks.quotaStore` (`TENANT_QUOTAS` with `REDIS_URL`), each `{ status: "up" \| "down", required: false }`, read from the Redis client's connection state (no round-trip). The verdict is cached for `READINESS_CACHE_MS` (default 1000 ms) and the probe is single-flight, so any probe rate costs at most one DB query per window. `HEAD` gets the same status. |
-| `GET`  | `/metrics` | Prometheus text format. **Public** (throttled like any other route). |
+| `GET`  | `/metrics` | Prometheus text format. **Admin-only**: scrape with `Authorization: Bearer <AUTH_ADMIN_API_KEYS key>`. No key → 401; a non-admin key or a JWT → 403 `ADMIN_REQUIRED`. Under `AUTH_REQUIRE_TENANT=true` the admin key must be tenant-bound (an unbound key gets 403 `TENANT_REQUIRED` first). |
 | `GET`  | `/docs` | Swagger UI (dev / opt-in). |
 
 **Deploying the probes (issue #210).** Kubernetes: `livenessProbe` → `/healthz`,

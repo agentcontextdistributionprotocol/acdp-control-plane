@@ -155,7 +155,7 @@ describe('Ingest quota is charged to the enrollment-resolved tenant (integration
     expect((d2.body as Record<string, unknown>).tenantId).toBe('default');
 
     // Every quota 429 is visible as an ingest rejection.
-    const metrics = await ctx.client.metrics();
+    const metrics = await ctx.adminClient.metrics();
     expect(metrics).toMatch(/acdp_ingest_rejected_total\{reason="quota"\} 2/);
   });
 });

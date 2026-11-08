@@ -30,10 +30,14 @@ describe('Auth (integration)', () => {
     expect(res.status).toBe(200);
   });
 
-  it('@Public() endpoints (healthz, metrics, /ingest/health) are accessible without auth', async () => {
+  it('@Public() endpoints (healthz, /ingest/health) are accessible without auth', async () => {
     const noAuth = new TestClient(ctx.url);
     expect((await noAuth.requestRaw('GET', '/healthz')).status).toBe(200);
-    expect((await noAuth.requestRaw('GET', '/metrics')).status).toBe(200);
     expect((await noAuth.requestRaw('GET', '/ingest/health')).status).toBe(200);
+  });
+
+  it('/metrics is not public: 401 without a key', async () => {
+    const noAuth = new TestClient(ctx.url);
+    expect((await noAuth.requestRaw('GET', '/metrics')).status).toBe(401);
   });
 });

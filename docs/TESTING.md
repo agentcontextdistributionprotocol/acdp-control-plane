@@ -161,7 +161,7 @@ npm run test:integration -- ingest.integration # single spec (regex against path
 
 | Spec | Covers |
 |------|--------|
-| `health.integration.spec.ts` | `/healthz`, `/readyz`, `/metrics` shape + public access; both probes `no-store` + HEAD; the pool diagnostics series (`acdp_db_pool_connections`, `acdp_db_pool_errors_total`); probes public under strict tenancy |
+| `health.integration.spec.ts` | `/healthz`, `/readyz` shape + public access; `/metrics` admin-only (no key 401, plain key 403 `ADMIN_REQUIRED`, `ctx.adminClient` 200); both probes `no-store` + HEAD; the pool diagnostics series (`acdp_db_pool_connections`, `acdp_db_pool_errors_total`); probes public under strict tenancy |
 | `readiness.integration.spec.ts` | Issue #210: `/readyz` 503 `DEPENDENCY_UNAVAILABLE` with the DB refused / black-holed (via `test/helpers/pg-fault-proxy.ts`), recovery bounds incl. a connect pending at restore, ≤ 1 probe pool client under 50 concurrent probes, probes never `429`, metrics, boot validation of the readiness knobs; `/healthz` liveness (Phase 2): < 200 ms and 200 while the DB is black-holed, `ok` mirrors the verdict and returns to `true` after recovery with no restart and no latch |
 | `auth.integration.spec.ts` | Missing / wrong / valid bearer; `@Public()` bypass |
 | `auth-persistence.integration.spec.ts` | Postgres-backed challenge / revocation / ledger |
@@ -213,6 +213,10 @@ npm run test:integration -- ingest.integration # single spec (regex against path
   origin (`shutdown.integration.spec.ts` spawns the real entrypoint for the drain path).
 - Listens on a random port (`app.listen(0)`); reach it via `ctx.url` or the typed
   `ctx.client` (`TestClient`).
+- Every app also accepts an admin key (`adminApiKey`, default `DEFAULT_TEST_ADMIN_KEY`);
+  `ctx.adminClient` carries it — use it for admin-only routes such as `/metrics`
+  (`TestClient.metrics()` throws on a non-200). It is unbound, so strict-tenancy suites
+  get 403 `TENANT_REQUIRED` with it.
 - `databaseUrl` points the app (not the migrations) at another URL — e.g. a
   `PgFaultProxy` (`test/helpers/pg-fault-proxy.ts`), an in-process TCP proxy in
   front of the test Postgres that can `refuse()` (ECONNREFUSED), `blackhole()`

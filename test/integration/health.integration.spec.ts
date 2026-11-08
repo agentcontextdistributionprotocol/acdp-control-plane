@@ -53,7 +53,7 @@ describe('Health Probes (integration)', () => {
   });
 
   it('GET /metrics exposes the pool diagnostics (issue #210 Phases 2-3)', async () => {
-    const text = await client.metrics();
+    const text = await ctx.adminClient.metrics();
     expect(text).toMatch(/^acdp_db_pool_connections\{state="waiting"\} \d+$/m);
     expect(text).toMatch(/^acdp_db_pool_connections\{state="total"\} \d+$/m);
     expect(text).toMatch(/^acdp_db_pool_connections\{state="idle"\} \d+$/m);
@@ -61,27 +61,41 @@ describe('Health Probes (integration)', () => {
   });
 
   it('GET /metrics returns Prometheus text', async () => {
-    const text = await client.metrics();
+    const text = await ctx.adminClient.metrics();
     expect(typeof text).toBe('string');
     expect(text).toMatch(/process_cpu|nodejs_/);
   });
 
   it('GET /metrics exposes the app-specific acdp_* metrics, not just runtime defaults', async () => {
-    const text = (await client.metrics()) as string;
+    const text = await ctx.adminClient.metrics();
     // InstrumentationService registers these at boot; a wiring regression
     // (metric constructed outside the service, registry cleared, renamed
     // prefix) would drop them even while default nodejs_* metrics survive.
     expect(text).toMatch(/^# TYPE acdp_/m);
   });
 
-  it('health/metrics endpoints do not require auth', async () => {
+  it('health probes do not require auth', async () => {
     const noAuth = new TestClient(ctx.url);
     const healthRes = await noAuth.requestRaw('GET', '/healthz');
     const readyRes = await noAuth.requestRaw('GET', '/readyz');
-    const metricsRes = await noAuth.requestRaw('GET', '/metrics');
     expect(healthRes.status).toBe(200);
     expect(readyRes.status).toBe(200);
-    expect(metricsRes.status).toBe(200);
+  });
+
+  it('GET/HEAD /metrics is admin-only: no key 401, plain key 403 ADMIN_REQUIRED, admin key 200', async () => {
+    const noAuth = new TestClient(ctx.url);
+    expect((await noAuth.requestRaw('GET', '/metrics')).status).toBe(401);
+    expect((await noAuth.requestRaw('HEAD', '/metrics')).status).toBe(401);
+
+    const plain = await ctx.client.requestRaw('GET', '/metrics');
+    expect(plain.status).toBe(403);
+    expect(plain.body).toMatchObject({ errorCode: 'ADMIN_REQUIRED' });
+    expect((await ctx.client.requestRaw('HEAD', '/metrics')).status).toBe(403);
+
+    const admin = await ctx.adminClient.requestRaw('GET', '/metrics');
+    expect(admin.status).toBe(200);
+    expect(String(admin.headers['content-type'])).toMatch(/^text\/plain/);
+    expect(admin.body).toMatch(/^# TYPE acdp_/m);
   });
 });
 
