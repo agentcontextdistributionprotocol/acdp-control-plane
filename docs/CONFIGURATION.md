@@ -385,12 +385,6 @@ CP mechanics:
 | `SWAGGER_ENABLED` | bool | on when `NODE_ENV=development`, else off | Serve Swagger UI. |
 | `SWAGGER_PATH` | string | `docs` | Swagger UI path. |
 
-## Misc
-
-| Var | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `PLAYGROUND_URL` | string | `''` | Playground backend for run-completion notifications; empty disables. |
-
 ## Startup validation
 
 Checks fall into two tiers. `AppConfigService.validate()` runs the first block

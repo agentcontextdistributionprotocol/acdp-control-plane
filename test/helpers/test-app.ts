@@ -196,7 +196,6 @@ export async function createTestApp(opts: TestAppOptions = {}): Promise<TestAppC
   delete process.env.LOG_INCLUSION_AUDIT_ENABLED;
   process.env.OTEL_ENABLED = 'false';
   process.env.LOG_LEVEL = 'warn';
-  process.env.PLAYGROUND_URL = '';
   process.env.STREAM_SSE_HEARTBEAT_MS = '60000';
   if (opts.domainPacks) {
     process.env.DOMAIN_PACKS = opts.domainPacks;

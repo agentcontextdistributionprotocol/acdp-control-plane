@@ -10,7 +10,6 @@ services:
     environment:
       DATABASE_URL: postgresql://acdp:acdp@postgres/acdp_control_plane
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
-      PLAYGROUND_URL: ${PLAYGROUND_URL:-http://playground:8000}
       AUTH_API_KEYS: ${CP_API_KEY:-}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       STREAM_HUB_STRATEGY: ${STREAM_HUB_STRATEGY:-memory}

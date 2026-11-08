@@ -48,7 +48,6 @@ services:
       DATABASE_URL: postgres://acdp:acdp@postgres-cp:5432/acdp_control_plane
       AUTH_API_KEYS: ${CP_API_KEY:-e2e-cp-key}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-playground-dev-secret}
-      PLAYGROUND_URL: http://playground:8000
       CORS_ORIGIN: http://localhost:3000
       STREAM_HUB_STRATEGY: memory
       LOG_LEVEL: ${CP_LOG_LEVEL:-info}

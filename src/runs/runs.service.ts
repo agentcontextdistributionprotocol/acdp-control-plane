@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { AppConfigService } from '../config/app-config.service';
 import { Run } from '../db/schema';
 import { BanditRouter } from '../routing/bandit-router.service';
 import { ContextEventRepository } from '../storage/context-event.repository';
@@ -16,7 +15,6 @@ export class RunsService {
 
   constructor(
     private readonly runRepo: RunRepository,
-    private readonly config: AppConfigService,
     private readonly contextEventRepo: ContextEventRepository,
     private readonly receiptAuditRepo: ReceiptAuditRepository,
     private readonly bandit: BanditRouter,
@@ -90,11 +88,6 @@ export class RunsService {
       void this.recordRouterReward(run, status === 'completed' ? 1 : 0, tenantId);
     }
 
-    // Optionally notify the playground that the run is complete.
-    if (this.config.playgroundUrl) {
-      void this.notifyPlayground(runId, status, result);
-    }
-
     return run;
   }
 
@@ -113,35 +106,6 @@ export class RunsService {
       this.logger.warn({
         msg: 'bandit reward failed',
         runId: run.runId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  private async notifyPlayground(
-    runId: string,
-    status: string,
-    result?: Record<string, unknown>,
-  ): Promise<void> {
-    try {
-      const url = `${this.config.playgroundUrl.replace(/\/$/, '')}/runs/${runId}/complete`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status, result }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!response.ok) {
-        this.logger.warn({
-          msg: 'playground notify returned non-OK status',
-          runId,
-          status: response.status,
-        });
-      }
-    } catch (err) {
-      this.logger.warn({
-        msg: 'playground notify failed',
-        runId,
         error: err instanceof Error ? err.message : String(err),
       });
     }
