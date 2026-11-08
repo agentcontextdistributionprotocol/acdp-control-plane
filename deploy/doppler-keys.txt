@@ -27,6 +27,8 @@ NODE_ENV
 PLAYGROUND_URL
 POLICY_BACKEND
 PORT
+# Operator-trusted GET /contexts/* fetch targets (authority -> private-network URL).
+REGISTRY_FETCH_URL_OVERRIDES
 STREAM_HUB_STRATEGY
 TOKEN_ISSUANCE_ENABLED
 # 1 = trust exactly Railway's single edge hop for req.ip (throttle keys on the real client IP;

@@ -354,6 +354,14 @@ body (>1 MiB), or a transport/timeout error. The specific cause is in the
 carrying `CONTEXT_ID_MISMATCH` / `CONTEXT_BINDING_UNVERIFIABLE` is different:
 the registry did answer, but the served `ctx_id` binding failed.
 
+If the observed base URL is not reachable from the CP at all (the registry has
+no public domain, or its webhook payloads carry an internal or placeholder name
+such as `https://registry-a.playground.local`), every retrieval fails with
+`fetchErrorCode: SSRF` or `FETCH` and `fetchTarget: observed`. Map the authority
+to a URL the CP *can* reach (for example the private-network address) with
+`REGISTRY_FETCH_URL_OVERRIDES` ([CONFIGURATION.md](./CONFIGURATION.md#federation-proxy)).
+Failures on that path log `fetchTarget: override`.
+
 ### `404 REGISTRY_NOT_FOUND` from `GET /contexts/*`
 
 The proxy looks the authority up in the **observed** `registries` table (filled

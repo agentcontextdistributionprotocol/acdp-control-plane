@@ -46,3 +46,4 @@ category, then `file:line` evidence. File an issue only once an item has a repro
 - **swagger** — capability search and by-agent are declared `isArray: true` (`src/agents/capability.controller.ts:128,142`) but return `{ data, total }` (`:137`, `:149`).
 - **swagger** — `/auth/token` says it "issues an HS256 JWT" (`src/auth/auth.controller.ts:103`); `JWT_SIGNING_ALG` also allows `EdDSA`.
 - **swagger** — only 5 tags get descriptions (`src/bootstrap.ts:111-115`; `contexts` is described as "lineage browsing" though it is the federation proxy), while controllers declare 14 `@ApiTags`.
+- 2026-11-07: `REGISTRY_FETCH_URL_OVERRIDES` is wired only into `GET /contexts/*`. The audit sweeps (receipt audit, log witness, log inclusion, revocation audit) still fetch observed/enrolled base URLs via `SafeFederationClient.get()`. They are off in prod; wire them through `getTrusted` if one is enabled against private-network registries.

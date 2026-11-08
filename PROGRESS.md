@@ -1,36 +1,24 @@
-# Progress — tenant-enroll-quota-fix
+# Progress — cp-wave-2026-11-07b
 
-Plan: `plans/tenant-enroll-quota-fix.md` (plans/ is gitignored; this file is tracked)
+Plan: `plans/cp-wave-2026-11-07b.md` (plans/ is gitignored; this file is tracked)
 
 ## Phase log
-PR strategy (planned): PR-A = P1+P2 (enrollment), PR-B = P3+P4 (quota).
-- P1 DONE (Opus solo gate PASS, 1 round; gap: log read could mask 409 → fixed) — files: registry-enrollment.repository(+spec), registries.controller(+spec), error-codes(+spec), enroll-registry.dto, ingest-trust.integration.spec, docs API/INGEST/TENANCY/ARCHITECTURE, DEFERRED.md
-- P2 DONE (Opus gate GAPS→PASS after fixes, 2 rounds incl. fixes) — repo set-builder, DTO nullable, controller pass-through, registry-enroll-partial integration spec, docs
-- P3 DONE (Opus solo gate PASS, 1 round) — quota.service(+spec), guard thin wrapper, module
-- P4 DONE (Opus solo gate GAPS→fixed, 2 rounds) — ingest.controller/service, quota integration + capabilities quota tests, 8 docs, DEFERRED.md
+PR strategy: ONE PR (P1 + P2 commits; shared files), then P3 ops (Doppler + v0.1.7).
+- Plan review: round 1 REVISE → applied (see plan § Plan review).
+- P1 DONE — config parser + branded TrustedFetchBase, SafeFederationClient.getTrusted, controller wiring, unit + integration (real loopback egress), docs CONFIGURATION/API/TROUBLESHOOTING/CLAUDE.md/.env.example/doppler-keys, DEFERRED line.
 
-## Repo map (discovery notes for `/implement` — don't re-scan)
+## Findings (ops, no values)
+- Task 3: the old CP callback (removed in #325) caused the playground 401s from 10.139.199.179. The last one was at 2026-11-08T02:59:19Z, and there have been none since. CP 0.1.6 has been live since 03:14Z.
+- Read key on 0.1.6: /metrics 403, /auth/revocations 403, /routing/stats 403; /registries/enrollments 200 (bug); GET /webhooks 200, POST /webhooks reaches validation (bug).
+- Railway acdp-runner/production holds CP, registry-a, registry-b and the playground (same private network).
 
-Enrollment:
-- `src/storage/registry-enrollment.repository.ts` — upsert (`:21-49`, conflict target authority `:37`, `set` incl. tenantId `:39`), findByAuthority `:52` (global), list(tenant) `:61`, listAllEnabled `:73`, count `:82`; no delete.
-- `src/db/schema.ts:203-222` — `registry_enrollments`, PK authority; `drizzle/0010_registry_enrollments.sql`; next migration number 0026 (not needed).
-- `src/registries/registries.controller.ts:154-182` — enroll handler (assertAdmin, assertNotReservedTenant, `tenantId: body.tenantId ?? tenantOf(req)`); `src/dto/enroll-registry.dto.ts` (Swagger default text `:17` wrong).
-- `src/auth/auth.guard.ts:218` — global admin list; `src/auth/admin.ts` assertAdmin.
-- `src/ingest/ingest.service.ts:72-112` — enrollment → tenant/secret/baseUrl; HMAC `:114`.
-- `src/audit/checkpoint-witness.service.ts:213,240` — listAllEnabled, per-row tenant; `log_witness_cursors` PK (tenant, authority) `schema.ts:549`.
-- `src/errors/error-codes.ts` (~`:142` insert point), `src/errors/error-codes.spec.ts` (`SHIPPED` set equality + API.md row).
-- `src/storage/context-lifecycle.repository.ts:68` — existing `setWhere` upsert pattern.
-- Tests: `src/registries/registries.controller.spec.ts:38-68`; `test/integration/ingest-trust.integration.spec.ts:143-164`; `log-witness.integration.spec.ts:337,454`.
-
-Quota:
-- `src/quota/quota.guard.ts:62-110` (tenant fallback `:62-65`, key `:70`, 429 shape `:86-110`), `quota-config.ts:139-147` resolveLimit, `quota-store.ts:78-90`, `quota.module.ts`; decorator `@CheckQuota`.
-- `src/ingest/ingest.controller.ts:24-25,42-43`; `src/ingest/ingest.service.ts:42-192`; `src/processor/event-processor.service.ts:72-93` dedup after insert.
-- `src/agents/capability.controller.ts:95` — only other `@CheckQuota` user (authenticated).
-- `src/app.module.ts:130-138` — guard order Auth, Throttle, Policy, Quota.
-- `src/telemetry/instrumentation.service.ts:128` — ingest rejected counter.
-- Tests: `src/quota/quota.guard.spec.ts:59-135`, `src/ingest/ingest.service.spec.ts` (`new IngestService(` at :47,:73,:103,:276,:292), `test/integration/quota.integration.spec.ts` (:1-5,:38-39 stale), `test/helpers/test-client.ts:46` signatureOverride.
-- Registry retry on 429: `../acdp-registry-rs/docs/WEBHOOKS.md:258-263`.
-
-Docs to update: docs/{API,INGEST,POLICY,TENANCY,TROUBLESHOOTING,ARCHITECTURE,CONFIGURATION}.md (line refs in the plan phases), `DEFERRED.md`, local CLAUDE.md:317-318.
-pushed fix/enrollment-tenant-immutable 80699bd
-pushed fix/ingest-quota-after-hmac
+## Repo map
+- `src/contexts/contexts.controller.ts:63-109` — registry lookup, upstream URL, fetch, 502 mapping; binding check `:134+`.
+- `src/contexts/safe-federation-client.ts:63-170` — hop loop (checkUrl, checkResolvedHost, redirect, 429, readCapped).
+- `src/config/app-config.service.ts` — readStringList `:65`, parseTrustProxy `:104` (construction-time pattern), authAdminApiKeys `:243`, validate() dev early-return (~:766).
+- `src/auth/auth.guard.ts:173-190` issuer read_only gate; `:195-217` api-key path; `isSafeForReadOnlyIssuer` `:281`.
+- `src/auth/admin.ts` assertAdmin; `src/registries/registries.controller.ts:45-52` enrollments.
+- `src/errors/error-codes.ts:140` ISSUER_READ_ONLY (insert the new code nearby); `error-codes.spec.ts` SHIPPED set + API.md table.
+- `test/helpers/test-app.ts:179-187` admin key, `adminClient` `:280`.
+- No integration spec calls GET /registries/enrollments (the earlier note was wrong).
+- Console contract: `../acdp-ui-console/lib/server/proxy-allowlist.ts` (enrollments/webhooks/metrics = admin).

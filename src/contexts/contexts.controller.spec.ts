@@ -89,15 +89,18 @@ async function caught(fn: () => Promise<unknown>): Promise<unknown> {
 
 describe('ContextsController', () => {
   let registryRepo: { findByAuthority: jest.Mock };
-  let federationClient: { get: jest.Mock };
+  let federationClient: { get: jest.Mock; getTrusted: jest.Mock };
+  let overrides: Map<string, string>;
   let controller: ContextsController;
 
   beforeEach(() => {
     registryRepo = { findByAuthority: jest.fn() };
-    federationClient = { get: jest.fn() };
+    federationClient = { get: jest.fn(), getTrusted: jest.fn() };
+    overrides = new Map();
     controller = new ContextsController(
       registryRepo as never,
       federationClient as never,
+      { registryFetchUrlOverrides: overrides } as never,
     );
   });
 
@@ -286,6 +289,7 @@ describe('ContextsController', () => {
       registryAuthority: 'acme.example',
       ctxId: CTX_ID,
       upstream: `https://acme.example/contexts/${encodeURIComponent(CTX_ID)}`,
+      fetchTarget: 'observed',
       fetchErrorCode: 'FETCH',
       detail: 'connect ETIMEDOUT',
     });
@@ -445,6 +449,109 @@ describe('ContextsController', () => {
       expect((err as AppException).errorCode).toBe(ErrorCode.CONTEXT_BINDING_UNVERIFIABLE);
       expect((err as AppException).getStatus()).toBe(HttpStatus.BAD_GATEWAY);
       expect(res._body).toBeUndefined();
+    });
+  });
+
+  describe('REGISTRY_FETCH_URL_OVERRIDES (operator-trusted fetch target)', () => {
+    const OVERRIDE = 'http://registry-a.railway.internal:8100';
+
+    it('fetches an overridden authority from the override via getTrusted, even with no observed base_url', async () => {
+      overrides.set('acme.example', OVERRIDE);
+      registryRepo.findByAuthority.mockResolvedValue({ baseUrl: null });
+      const body = fullContext(CTX_ID);
+      federationClient.getTrusted.mockResolvedValue({
+        status: 200,
+        contentType: 'application/json',
+        body,
+      });
+      const res = fakeRes();
+
+      await controller.getContext(CTX_ID, req, res);
+
+      expect(federationClient.getTrusted).toHaveBeenCalledWith(
+        OVERRIDE,
+        `/contexts/${encodeURIComponent(CTX_ID)}`,
+      );
+      expect(federationClient.get).not.toHaveBeenCalled();
+      expect(res._status).toBe(200);
+      // Relayed byte-for-byte — content_hash / signature checks downstream
+      // depend on the exact upstream bytes.
+      expect(res._body).toBe(body);
+    });
+
+    it('prefers the override over the observed (payload-sourced) base_url', async () => {
+      overrides.set('acme.example', `${OVERRIDE}/registries/a`);
+      registryRepo.findByAuthority.mockResolvedValue({
+        baseUrl: 'https://acme.example',
+      });
+      federationClient.getTrusted.mockResolvedValue({
+        status: 200,
+        contentType: 'application/json',
+        body: fullContext(CTX_ID),
+      });
+
+      await controller.getContext(CTX_ID, req, fakeRes());
+
+      expect(federationClient.getTrusted).toHaveBeenCalledWith(
+        `${OVERRIDE}/registries/a`,
+        `/contexts/${encodeURIComponent(CTX_ID)}`,
+      );
+      expect(federationClient.get).not.toHaveBeenCalled();
+    });
+
+    it('keeps the SSRF-gated get() for an authority with no override', async () => {
+      overrides.set('other.example', OVERRIDE);
+      upstreamReturns({
+        status: 200,
+        contentType: 'application/json',
+        body: fullContext(CTX_ID),
+      });
+
+      await controller.getContext(CTX_ID, req, fakeRes());
+
+      expect(federationClient.get).toHaveBeenCalledWith(
+        `https://acme.example/contexts/${encodeURIComponent(CTX_ID)}`,
+      );
+      expect(federationClient.getTrusted).not.toHaveBeenCalled();
+    });
+
+    it('still 404s an overridden authority unknown in the caller tenant (no tenant widening)', async () => {
+      overrides.set('acme.example', OVERRIDE);
+      registryRepo.findByAuthority.mockResolvedValue(undefined);
+
+      await expect(controller.getContext(CTX_ID, req, fakeRes())).rejects.toMatchObject({
+        errorCode: ErrorCode.REGISTRY_NOT_FOUND,
+        status: 404,
+      });
+      expect(federationClient.getTrusted).not.toHaveBeenCalled();
+    });
+
+    it('still enforces the ctx_id binding on the override path', async () => {
+      overrides.set('acme.example', OVERRIDE);
+      registryRepo.findByAuthority.mockResolvedValue({ baseUrl: null });
+      federationClient.getTrusted.mockResolvedValue({
+        status: 200,
+        contentType: 'application/json',
+        body: fullContext(OTHER_CTX_ID),
+      });
+
+      await expect(controller.getContext(CTX_ID, req, fakeRes())).rejects.toMatchObject({
+        errorCode: ErrorCode.CONTEXT_ID_MISMATCH,
+        status: 502,
+      });
+    });
+
+    it('maps an unreachable override target to 502 FEDERATION_UPSTREAM_ERROR', async () => {
+      overrides.set('acme.example', OVERRIDE);
+      registryRepo.findByAuthority.mockResolvedValue({ baseUrl: null });
+      federationClient.getTrusted.mockRejectedValue(
+        new FederationFetchError('FETCH', 'ECONNREFUSED'),
+      );
+
+      await expect(controller.getContext(CTX_ID, req, fakeRes())).rejects.toMatchObject({
+        errorCode: ErrorCode.FEDERATION_UPSTREAM_ERROR,
+        status: 502,
+      });
     });
   });
 });

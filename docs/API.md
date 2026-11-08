@@ -222,7 +222,7 @@ every route except the probes is also subject to the coarse throttle.
 | POST | `/runs/:runId/complete` | Public (HMAC) | — | 204 | Mark run terminal |
 | GET  | `/events` | key/JWT | — | 200 | Cross-run event history |
 | GET  | `/events/stream` | key/JWT | — | 200 | SSE — global feed |
-| GET  | `/contexts/*ctxId` | key/JWT | policy `context.retrieve` | relayed | Federation proxy (SSRF-gated, served `ctx_id` bound) |
+| GET  | `/contexts/*ctxId` | key/JWT | policy `context.retrieve` | relayed | Federation proxy (SSRF-gated unless the authority has an operator `REGISTRY_FETCH_URL_OVERRIDES` target; served `ctx_id` bound) |
 | GET  | `/agents` | key/JWT | — | 200 | Known agents |
 | GET  | `/agents/*did` | key/JWT | — | 200 | Agent detail |
 | POST | `/capabilities` | key/JWT | policy + quota `capability.declare` | 200 | Declare a signed capability |
@@ -526,7 +526,13 @@ caller's tenant (the `registries` table that `GET /registries` lists — not the
 enrollment table); its stored `baseUrl` comes from the event's
 `registry_base_url`, the webhook's `Origin`, or the enrollment's `baseUrl` (see
 [INGEST.md](./INGEST.md)). An authority not observed, or observed without a base
-URL, is `404 REGISTRY_NOT_FOUND`. The request is then forwarded, **without**
+URL, is `404 REGISTRY_NOT_FOUND`. The base URL is replaced by an operator
+override when `REGISTRY_FETCH_URL_OVERRIDES` maps the exact authority (see
+[CONFIGURATION.md](./CONFIGURATION.md#federation-proxy)). That trusted target
+is fetched with the public-only SSRF checks skipped, so private-network
+`http://` registries work; everything below except those checks still applies,
+and an override never makes an authority reachable that the tenant hasn't
+observed. The request is then forwarded, **without**
 the caller's credentials, to `<baseUrl>/contexts/<ctxId>` through the SSRF-safe
 `SafeFederationClient` — HTTPS only, no private/loopback/link-local/IMDS
 addresses, at most 3 same-authority redirects, 1 MiB body cap, 10 s deadline

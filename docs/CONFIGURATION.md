@@ -158,6 +158,12 @@ See [INGEST.md](./INGEST.md).
 | `INGEST_MAX_JSON_DEPTH` | number | `64` | JSON nesting-depth cap. |
 | `DOMAIN_PACKS` | CSV | `''` | Active domain packs; gates custom `context_type`s. The only compiled-in pack today is `finance`; an unknown or duplicate name fails startup (every environment). |
 
+## Federation proxy
+
+| Var | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `REGISTRY_FETCH_URL_OVERRIDES` | JSON object | `''` (none) | Operator-trusted fetch targets for `GET /contexts/*`: `{"<authority>": "<base url>"}`, e.g. `{"registry-a.example":"http://registry-a.internal:8100"}`. For a ctx_id whose authority **exactly** matches a key, the proxy fetches `<base url>/contexts/<ctx_id>` with the public-only SSRF checks skipped, so `http://` and private-network targets work (redirects stay same-origin, and the 1 MiB cap and 10 s deadline still apply). Every other authority, and every payload-sourced base URL, keeps the full SSRF gate. The authority must still be observed in the caller's tenant (otherwise `404 REGISTRY_NOT_FOUND`), and the `ctx_id` binding check still runs. Parsed at construction in every environment. Startup fails on non-JSON, a non-object, a key outside the ctx_id authority grammar (lowercase DNS, no port, no scheme), or a value that is not an absolute `http(s)` URL or that carries credentials, a query or a fragment. Errors name the key, never the value. |
+
 ## Outbound webhooks
 
 | Var | Type | Default | Meaning |
